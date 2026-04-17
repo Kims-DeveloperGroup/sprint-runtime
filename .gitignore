@@ -1,1 +1,30 @@
-__pycache__
+# Python bytecode caches
+__pycache__/
+
+# Runtime-generated workspaces
+/teams_generated/
+/workspace/teams_generated/
+
+# Session seed/runtime runtime artifacts
+/.teams_runtime/
+/shared_workspace/
+/logs/
+/tmp/
+
+# Generated role session workdirs
+/orchestrator/
+/planner/
+/designer/
+/architect/
+/developer/
+/qa/
+/internal/
+
+# Workspace config/docs generated at runtime
+/team_runtime.yaml
+/discord_agents_config.yaml
+/communication_protocol.md
+/file_contracts.md
+/COMMIT_POLICY.md
+/workspace_context.md
+/session_pool.json
