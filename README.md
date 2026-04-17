@@ -59,20 +59,20 @@ Commands below assume `teams_runtime` is importable, either because you are runn
 python -m teams_runtime init
 ```
 
-Workspace resolution defaults to:
+Workspace resolution is computed as:
 
-1. the current directory, if it already contains both `team_runtime.yaml` and `discord_agents_config.yaml`
+1. current directory if it already contains both `team_runtime.yaml` and `discord_agents_config.yaml`
 2. `./teams_generated`
 3. `./workspace/teams_generated`
 
-`init` rebuilds generated runtime content. If the target already exists, it preserves:
+`init` uses `<workspace-root>` as the resolved target and writes generated runtime content there. If the target already exists, it preserves:
 
 - `discord_agents_config.yaml`
 - archived sprint history under `shared_workspace/sprint_history/`
 
 ### 2. Configure Discord bots
 
-Edit `teams_generated/discord_agents_config.yaml` and replace every scaffold placeholder snowflake before starting listeners.
+Edit `<workspace-root>/discord_agents_config.yaml` and replace every scaffold placeholder snowflake before starting listeners.
 
 Minimal example:
 
@@ -138,7 +138,7 @@ Notes:
 
 ### 3. Configure runtime policy
 
-Edit `teams_generated/team_runtime.yaml`.
+Edit `<workspace-root>/team_runtime.yaml`.
 
 The only required field is:
 
@@ -202,8 +202,14 @@ export AGENT_DISCORD_TOKEN_CS_ADMIN=...
 ### 5. Start the runtime
 
 ```bash
-# default relay transport: internal direct handoff
+# default relay transport: internal (relay summary + persisted envelope)
 python -m teams_runtime start
+# internal relay persists full envelope at:
+# <workspace-root>/.teams_runtime/internal_relay/inbox/<role>/<relay_id>.json
+# then moves processed relays to:
+# <workspace-root>/.teams_runtime/internal_relay/archive/<role>/<relay_id>.json
+# and posts a compact summary to relay channel
+# internal mode includes summary posts to relay channel while persisting full payload in files
 
 # debug relay transport: Discord relay-channel envelopes
 python -m teams_runtime start --relay-transport discord
@@ -212,7 +218,9 @@ python -m teams_runtime start --relay-transport discord
 Foreground mode is also available:
 
 ```bash
+# internal relay default
 python -m teams_runtime run
+# explicit envelopes for debugging
 python -m teams_runtime run --relay-transport discord
 ```
 
@@ -262,10 +270,10 @@ python -m teams_runtime sprint status
 
 ## Workspace Layout
 
-Generated workspace files:
+Generated workspace (resolved `<workspace-root>`):
 
 ```text
-teams_generated/
+<workspace-root>/
 ├── discord_agents_config.yaml
 ├── team_runtime.yaml
 ├── communication_protocol.md
@@ -281,13 +289,35 @@ teams_generated/
 └── shared_workspace/
 ```
 
-Runtime state and artifacts are written under:
+`internal/` below is a container for generated internal workspaces:
+`internal/parser`, `internal/sourcer`, `internal/version_controller`.
+(`discord_agents_config.yaml`의 `internal_agents.sourcer`는 Discord presence/reporting 설정 샘플이며,
+`internal/` 하위 동시 생성되는 작업공간 구성을 의미하지 않습니다.)
+
+Role-session workspace (seeded per runtime session):
+
+```text
+workspace/                  # symlink to project root
+shared_workspace/           # runtime-owned symlink to shared space
+.teams_runtime/             # runtime-owned symlink for state and receipts
+communication_protocol.md   # seeded runtime context
+file_contracts.md          # seeded runtime context
+COMMIT_POLICY.md           # seeded runtime context
+workspace_context.md        # seeded runtime context
+```
+
+각 role 디렉터리(`orchestrator`, `planner`, `designer`, `architect`, `developer`, `qa`)에는
+세션 생성 시 기본 코디네이션 파일이 존재하며, 공통으로 `AGENTS.md`, `todo.md`, `history.md`,
+`journal.md`, `sources/`가 남습니다.
+
+Runtime state and generated artifacts are written under:
 
 - `.teams_runtime/backlog/`
 - `.teams_runtime/requests/`
 - `.teams_runtime/sprints/`
 - `.teams_runtime/role_sessions/`
-- `.teams_runtime/internal_relay/`
+- `.teams_runtime/internal_relay/inbox/<role>/`
+- `.teams_runtime/internal_relay/archive/<role>/` (processed relay archive)
 - `logs/agents/`
 - `logs/discord/`
 - `logs/operations/`
@@ -297,16 +327,20 @@ Runtime state and artifacts are written under:
 - `shared_workspace/sprints/<sprint_folder_name>/`
 - `shared_workspace/sprint_history/`
 
-Package documentation stays under [`docs/`](./docs/README.md) and is not copied into generated workspaces.
+Package docs stay under [`docs/`](./docs/README.md) and are not copied into runtime-generated workspaces.
 
 ## Relay Transport
 
 `teams_runtime` supports two relay modes between roles:
 
 - `internal`
-  direct in-process/runtime handoff, plus natural-language relay summaries in the relay channel
+  persisted in-runtime handoff with full envelope persistence at
+  `<workspace-root>/.teams_runtime/internal_relay/inbox/<role>/<relay_id>.json`,
+  then moves processed envelopes to
+  `<workspace-root>/.teams_runtime/internal_relay/archive/<role>/<relay_id>.json`,
+  and posts a relay summary text in relay channel
 - `discord`
-  explicit relay-channel envelopes with target mentions for debugging
+  explicit relay-channel envelopes with target mentions for debugging and replay inspection
 
 Select the mode with `--relay-transport` on `run`, `start`, or `restart`.
 
@@ -337,6 +371,10 @@ Maintainer/reference docs:
 ## Notes
 
 - Placeholder Discord IDs in the scaffold are rejected at runtime unless a test-only override is enabled.
-- Planner is the only role that persists planner-owned backlog changes.
+- Planner is the only role that persists planner-owned backlog changes (canonical payload: `backlog_items` / `backlog_item`).
+- Planner persists canonical payload (`backlog_items` / `backlog_item`) and `proposals.backlog_writes` receipts.
+  Orchestrator validates persisted payload/receipts and runtime state; it does not re-persist planner proposals.
+- `planned_backlog_updates` is compatibility alias for transition compatibility, not a new planning contract.
+- `start`, `run`, `restart` are command-line transport targets for `--relay-transport`; other commands keep defaults.
 - Sprint start cannot continue with zero actionable sprint backlog; the runtime blocks with `planning_incomplete` instead.
 - `status --sprint` still works as a compatibility alias for `sprint status`.
