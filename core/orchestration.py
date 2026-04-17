@@ -54,7 +54,13 @@ from teams_runtime.core.persistence import (
     utc_now_iso,
     write_json,
 )
-from teams_runtime.core.reports import ReportSection, box_text_message, build_progress_report, read_process_summary
+from teams_runtime.core.reports import (
+    ReportSection,
+    box_text_message,
+    build_progress_report,
+    read_process_summary,
+    render_report_sections,
+)
 from teams_runtime.core.sprints import (
     build_active_sprint_id,
     build_sprint_artifact_folder_name,
@@ -13757,6 +13763,83 @@ class TeamService:
         return fragments[:max_lines] + [f"... 외 {len(fragments) - max_lines}줄"]
 
     @staticmethod
+    def _append_report_section(
+        sections: list[ReportSection],
+        title: str,
+        lines: Iterable[str] | None,
+    ) -> None:
+        normalized_lines: list[str] = []
+        for item in lines or []:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            normalized_lines.append(text if text.startswith("- ") else f"- {text}")
+        if normalized_lines:
+            sections.append(ReportSection(title=title, lines=tuple(normalized_lines)))
+
+    @classmethod
+    def _relay_report_sections_from_lines(
+        cls,
+        lines: Iterable[str] | None,
+        *,
+        default_title: str = "핵심 전달",
+    ) -> list[ReportSection]:
+        prefix_to_title = (
+            ("- Why now:", "이관 이유"),
+            ("- What:", "핵심 전달"),
+            ("- Check now:", "지금 볼 것"),
+            ("- Constraints:", "유의사항"),
+            ("- Refs:", "참고 파일"),
+            ("- Context:", "추가 맥락"),
+            ("- 오류:", "오류"),
+            ("- 상태:", "상태"),
+        )
+        sections: list[ReportSection] = []
+        current_title = ""
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_title, current_lines
+            if current_title and current_lines:
+                cls._append_report_section(sections, current_title, current_lines)
+            current_title = ""
+            current_lines = []
+
+        for item in lines or []:
+            stripped = str(item or "").strip()
+            if not stripped:
+                continue
+            matched = False
+            for prefix, title in prefix_to_title:
+                if stripped.startswith(prefix):
+                    flush()
+                    current_title = title
+                    remainder = stripped[len(prefix):].strip()
+                    if remainder:
+                        current_lines.append(f"- {remainder}")
+                    matched = True
+                    break
+            if matched:
+                continue
+            if not current_title:
+                current_title = default_title
+            current_lines.append(stripped if stripped.startswith("- ") else f"- {stripped}")
+
+        flush()
+        return sections
+
+    @staticmethod
+    def _render_report_sections_message(
+        header: str,
+        sections: Iterable[ReportSection] | None,
+        *,
+        max_inner_width: int = 96,
+    ) -> str:
+        rendered_sections = render_report_sections(sections, max_inner_width=max_inner_width)
+        parts = [str(header or "").strip(), str(rendered_sections or "").strip()]
+        return "\n".join(part for part in parts if part).strip()
+
+    @staticmethod
     def _extract_semantic_leaf_lines(
         value: Any,
         *,
@@ -13819,13 +13902,13 @@ class TeamService:
                 continue
             if payload_name == "implementation_guidance":
                 for key, label in (
-                    ("evaluation_order", "evaluation order: "),
-                    ("state_transitions", "state transitions: "),
-                    ("triggered_conditions", "triggered conditions: "),
-                    ("suppressed_conditions", "suppressed conditions: "),
-                    ("fail_closed_conditions", "fail-closed: "),
-                    ("decision_rules", "decision rules: "),
-                    ("contracts", "contracts: "),
+                    ("evaluation_order", "평가 순서: "),
+                    ("state_transitions", "상태 전이: "),
+                    ("triggered_conditions", "발동 조건: "),
+                    ("suppressed_conditions", "억제 조건: "),
+                    ("fail_closed_conditions", "실패 시 차단: "),
+                    ("decision_rules", "판단 규칙: "),
+                    ("contracts", "구현 계약: "),
                 ):
                     what_details.extend(
                         self._extract_semantic_leaf_lines(payload.get(key), prefix=label, skip_keys=skip_keys)
@@ -14551,12 +14634,23 @@ class TeamService:
         kind = str(envelope.params.get("_teams_kind") or "").strip() or "unknown"
         sender = str(envelope.sender or "").strip() or "unknown"
         target = str(envelope.target or "").strip() or "unknown"
-        lines = [
-            f"{INTERNAL_RELAY_SUMMARY_MARKER} {sender} -> {target} ({kind})",
-            f"- request_id: {envelope.request_id or 'N/A'}",
-            *self._summarize_relay_body(envelope),
+        header = f"{INTERNAL_RELAY_SUMMARY_MARKER} {sender} -> {target} ({kind})"
+        sections = [
+            ReportSection(
+                title="전달 정보",
+                lines=(
+                    f"- 요청 ID: {envelope.request_id or 'N/A'}",
+                    f"- 보낸 역할: {sender}",
+                    f"- 받는 역할: {target}",
+                    f"- relay 종류: {kind}",
+                ),
+            ),
+            *self._relay_report_sections_from_lines(
+                self._summarize_relay_body(envelope),
+                default_title="핵심 전달",
+            ),
         ]
-        return "\n".join(lines)
+        return self._render_report_sections_message(header, sections)
 
     async def _send_internal_relay_summary(self, envelope: MessageEnvelope) -> None:
         relay_channel_id = str(self.discord_config.relay_channel_id or "").strip()
@@ -15428,17 +15522,16 @@ class TeamService:
             or str(delegation_context.get("workflow_phase") or "").strip()
             or str(delegation_context.get("workflow_step") or "").strip()
         )
-        lines = [
-            f"handoff | {source_role} -> {target_role} | {request_record.get('intent') or 'route'}",
-            f"- What: {task_text or 'N/A'}",
-        ]
+        header = f"handoff | {source_role} -> {target_role} | {request_record.get('intent') or 'route'}"
+        sections: list[ReportSection] = []
         routing_path = self._build_handoff_routing_path(
             request_record,
             source_role=source_role,
             target_role=target_role,
         )
+        meta_lines: list[str] = []
         if routing_path:
-            lines.append(f"- Routing path: {routing_path}")
+            meta_lines.append(f"- 전달 경로: {routing_path}")
 
         what_details = _dedupe_preserving_order(
             [
@@ -15447,15 +15540,11 @@ class TeamService:
                 if str(item).strip() and str(item).strip() != task_text
             ]
         )
-        if what_details and not has_workflow_stage:
-            lines.extend(f"  - {item}" for item in what_details[:2])
 
         what_summary = str(delegation_context.get("what_summary") or "").strip()
         how_summary = str(delegation_context.get("how_summary") or "").strip()
         why_summary = str(delegation_context.get("why_summary") or "").strip()
         why_this_role = str(delegation_context.get("why_this_role") or delegation_context.get("routing_reason") or "").strip()
-        if why_this_role and not has_workflow_stage:
-            lines.append(f"- Why this role: {why_this_role}")
         detail_context_points = [] if has_workflow_stage else what_details
 
         check_now_points = _dedupe_preserving_order(
@@ -15478,7 +15567,7 @@ class TeamService:
                 item
                 for item in check_now_points
                 if _constraint_point_signature(item) not in constraint_point_signatures
-            ]
+                ]
         if not check_now_points:
             check_now_points = what_details[:2]
             if constraint_point_signatures:
@@ -15487,12 +15576,6 @@ class TeamService:
                     for item in check_now_points
                     if _constraint_point_signature(item) not in constraint_point_signatures
                 ]
-        if check_now_points and not has_workflow_stage:
-            lines.append("- Check now:")
-            lines.extend(f"  - {item}" for item in check_now_points[:2])
-        if constraint_points:
-            lines.append("- Constraints:")
-            lines.extend(f"  - {item}" for item in constraint_points[:2])
 
         context_points: list[str] = []
         has_follow_up_sections = bool((check_now_points and not has_workflow_stage) or constraint_points)
@@ -15522,19 +15605,30 @@ class TeamService:
                 for point in context_candidates
                 if _collapse_whitespace(point).lower() not in suppressed_context
             ]
-        if context_points:
-            if not has_workflow_stage:
-                lines.append("- Context:")
-                lines.extend(f"  - {item}" for item in context_points[:2])
+        task_lines = [f"- {task_text or 'N/A'}"]
+        if what_details and not has_workflow_stage:
+            task_lines.extend(f"- {item}" for item in what_details[:2])
+        self._append_report_section(sections, "전달 정보", meta_lines)
+        self._append_report_section(sections, "핵심 전달", task_lines)
+        if why_this_role and not has_workflow_stage:
+            self._append_report_section(sections, "이관 이유", [f"- {why_this_role}"])
+        if check_now_points and not has_workflow_stage:
+            self._append_report_section(sections, "지금 볼 것", [f"- {item}" for item in check_now_points[:2]])
+        if constraint_points:
+            self._append_report_section(sections, "유의사항", [f"- {item}" for item in constraint_points[:2]])
+        if context_points and not has_workflow_stage:
+            self._append_report_section(sections, "추가 맥락", [f"- {item}" for item in context_points[:2]])
 
-        lines.append("- Refs:")
-        lines.append(f"  - request: {delegation_context.get('canonical_request') or 'N/A'}")
+        ref_lines = [f"- 요청 기록: {delegation_context.get('canonical_request') or 'N/A'}"]
         if delegation_context.get("snapshot_path"):
-            lines.append(f"  - snapshot: {delegation_context['snapshot_path']}")
+            ref_lines.append(f"- 스냅샷: {delegation_context['snapshot_path']}")
         if delegation_context.get("reference_artifacts"):
-            lines.append(f"  - artifacts: {', '.join(str(item) for item in delegation_context['reference_artifacts'])}")
-        lines.append("  - note: request record가 relay보다 우선합니다.")
-        return "\n".join(lines).strip()
+            ref_lines.append(
+                f"- 참고 산출물: {', '.join(str(item) for item in delegation_context['reference_artifacts'])}"
+            )
+        ref_lines.append("- 주의: request record가 relay보다 우선합니다.")
+        self._append_report_section(sections, "참고 파일", ref_lines)
+        return self._render_report_sections_message(header, sections)
 
     def _format_role_request_snapshot_markdown(
         self,

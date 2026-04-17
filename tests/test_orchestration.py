@@ -472,9 +472,11 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 channel_id, content = service.discord_client.sent_channels[0]
                 self.assertEqual(channel_id, service.discord_config.relay_channel_id)
                 self.assertIn(f"{INTERNAL_RELAY_SUMMARY_MARKER} orchestrator -> developer (delegate)", content)
+                self.assertIn("```text", content)
                 self.assertNotIn("[teams_runtime relay_summary]", content)
                 self.assertNotIn("relay_id", content)
-                self.assertIn("- What: delegate payload", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- delegate payload", content)
                 self.assertIn("delegate payload", content)
                 inbox_dir = service.paths.runtime_root / "internal_relay" / "inbox" / "developer"
                 relay_files = sorted(inbox_dir.glob("*.json"))
@@ -521,7 +523,11 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                     guild_id="guild-1",
                     author_id=trusted_author_id,
                     author_name="relay-summary",
-                    content=f"{INTERNAL_RELAY_SUMMARY_MARKER} orchestrator -> planner (delegate)\n- request_id: N/A\n- What: planner summary message",
+                    content=(
+                        f"{INTERNAL_RELAY_SUMMARY_MARKER} orchestrator -> planner (delegate)\n"
+                        "```text\n[전달 정보]\n- 요청 ID: N/A\n```\n\n"
+                        "```text\n[핵심 전달]\n- planner summary message\n```"
+                    ),
                     is_dm=False,
                     mentions_bot=False,
                     created_at=datetime.now(timezone.utc),
@@ -561,23 +567,26 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 content = service._build_internal_relay_summary_message(envelope)
 
                 self.assertIn(f"{INTERNAL_RELAY_SUMMARY_MARKER} architect -> developer (report)", content)
+                self.assertIn("```text", content)
                 self.assertNotIn("[teams_runtime relay_summary]", content)
                 self.assertNotIn("relay_id", content)
-                self.assertIn("- Why now: 다음 역할: qa", content)
-                self.assertIn("- What: 첫 번째 요약 줄입니다. 두 번째 요약 줄입니다. 세 번째 요약 줄입니다.", content)
-                self.assertIn("- Check now:", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- 다음 역할: qa", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 첫 번째 요약 줄입니다. 두 번째 요약 줄입니다. 세 번째 요약 줄입니다.", content)
+                self.assertIn("[지금 볼 것]", content)
                 self.assertIn("backlog 후보 2건", content)
                 self.assertIn("첫 번째 요약 줄입니다.", content)
-                self.assertNotIn("- 상태:", content)
+                self.assertNotIn("[상태]", content)
                 self.assertNotIn("- 아티팩트:", content)
                 self.assertNotIn("- 인사이트:", content)
-                self.assertNotIn("- Context:", content)
+                self.assertNotIn("[추가 맥락]", content)
                 self.assertNotIn("previous role:", content)
                 self.assertNotIn("latest summary:", content)
-                self.assertIn("- Refs:", content)
+                self.assertIn("[참고 파일]", content)
                 self.assertIn("workspace/a.py", content)
                 self.assertIn("workspace/b.py", content)
-                self.assertLess(content.index("- Why now: 다음 역할: qa"), content.index("- What: 첫 번째 요약 줄입니다. 두 번째 요약 줄입니다. 세 번째 요약 줄입니다."))
+                self.assertLess(content.index("[이관 이유]"), content.index("[핵심 전달]"))
 
     def test_internal_relay_summary_prefers_concrete_implementation_guidance_over_meta_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -640,20 +649,22 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
 
                 content = service._build_internal_relay_summary_message(envelope)
 
-                self.assertIn("- What: evaluation order: program trade acceleration을 먼저 계산한다.", content)
-                self.assertIn("- Check now:", content)
-                self.assertIn("state transitions: candidate -> triggered는 broker concentration과 market gate가 모두 통과해야 한다.", content)
-                self.assertIn("state transitions: watch -> candidate는 acceleration 임계치 충족 시에만 허용한다.", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 평가 순서: program trade acceleration을 먼저 계산한다.", content)
+                self.assertIn("[지금 볼 것]", content)
+                self.assertIn("상태 전이: candidate -> triggered는 broker concentration과 market gate가 모두 통과해야 한다.", content)
+                self.assertIn("상태 전이: watch -> candidate는 acceleration 임계치 충족 시에만 허용한다.", content)
                 self.assertNotIn("기술 계약으로 구체화했습니다.", content)
                 self.assertIn("상태 전이 테스트를 watch/candidate/triggered/suppressed별로 추가한다.", content)
-                self.assertIn("- Why now: 다음 역할: developer", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- 다음 역할: developer", content)
                 self.assertLess(
-                    content.index("- Why now: 다음 역할: developer"),
-                    content.index("- What: evaluation order: program trade acceleration을 먼저 계산한다."),
+                    content.index("[이관 이유]"),
+                    content.index("[핵심 전달]"),
                 )
-                self.assertIn("- Refs:", content)
+                self.assertIn("[참고 파일]", content)
                 self.assertIn("workspace/strategy_3.md", content)
-                self.assertNotIn("- Context:", content)
+                self.assertNotIn("[추가 맥락]", content)
 
     def test_internal_relay_summary_fallback_uses_scope_or_body_as_what(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -674,8 +685,9 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 content = service._build_internal_relay_summary_message(envelope)
 
                 self.assertIn(f"{INTERNAL_RELAY_SUMMARY_MARKER} planner -> developer (delegate)", content)
-                self.assertIn("- What: scope-only fallback message", content)
-                self.assertNotIn("- 상태:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- scope-only fallback message", content)
+                self.assertNotIn("[상태]", content)
 
     def test_internal_relay_summary_fallback_prefers_scope_over_meta_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -709,8 +721,9 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 with patch.object(service, "_build_role_result_semantic_context", return_value=semantic_context):
                     content = service._build_internal_relay_summary_message(envelope)
 
-                self.assertIn("- What: 핵심 구현 범위: concrete action", content)
-                self.assertNotIn("- What: 정리했습니다.", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 핵심 구현 범위: concrete action", content)
+                self.assertNotIn("- 정리했습니다.", content)
 
     def test_internal_relay_summary_shows_status_when_failed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -739,10 +752,13 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
 
                 content = service._build_internal_relay_summary_message(envelope)
 
-                self.assertIn("- What: 실패한 구현 결과를 정리했습니다.", content)
-                self.assertIn("- Why now: 다음 역할: developer", content)
-                self.assertIn("- 상태: failed", content)
-                self.assertIn("- 오류:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 실패한 구현 결과를 정리했습니다.", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- 다음 역할: developer", content)
+                self.assertIn("[상태]", content)
+                self.assertIn("- failed", content)
+                self.assertIn("[오류]", content)
                 self.assertIn("runtime error: timeout while saving artifacts", content)
                 self.assertNotIn("- 아티팩트:", content)
                 self.assertNotIn("- 인사이트:", content)
@@ -789,16 +805,18 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
 
                 content = service._build_internal_relay_summary_message(envelope)
 
-                self.assertIn("- What: 마일스톤을 workflow refined로 정리하고 backlog/todo 2건을 확정했습니다.", content)
-                self.assertIn("- Check now:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 마일스톤을 workflow refined로 정리하고 backlog/todo 2건을 확정했습니다.", content)
+                self.assertIn("[지금 볼 것]", content)
                 self.assertIn("backlog/todo: manual sprint start gate", content)
                 self.assertIn("backlog/todo: sprint folder artifact rendering", content)
-                self.assertIn("- Constraints:", content)
+                self.assertIn("[유의사항]", content)
                 self.assertIn("완료 기준: planning을 닫을 수 있게 2건 확보", content)
-                self.assertIn("- Why now: 다음 역할: designer", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- 다음 역할: designer", content)
                 self.assertLess(
-                    content.index("- Why now: 다음 역할: designer"),
-                    content.index("- What: 마일스톤을 workflow refined로 정리하고 backlog/todo 2건을 확정했습니다."),
+                    content.index("[이관 이유]"),
+                    content.index("[핵심 전달]"),
                 )
 
     def test_build_progress_report_prioritizes_next_action_before_evidence(self):
@@ -895,8 +913,9 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
 
                 content = service._build_internal_relay_summary_message(envelope)
 
-                self.assertIn("- What: info prioritization 관점 UX 판단 1건을 정리했습니다.", content)
-                self.assertIn("- Check now:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- info prioritization 관점 UX 판단 1건을 정리했습니다.", content)
+                self.assertIn("[지금 볼 것]", content)
                 self.assertIn("핵심 레이어: 현재 상태, 다음 액션", content)
 
     def test_orchestrator_records_relay_failure_without_raising_from_callback_path(self):
@@ -4062,8 +4081,8 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
                 self.assertIn(f"<@{developer_bot_id}>", relay_content)
                 self.assertIn("handoff | planner -> developer | route", relay_content)
-                self.assertIn("- Why this role:", relay_content)
-                self.assertIn("- Context:", relay_content)
+                self.assertIn("[이관 이유]", relay_content)
+                self.assertIn("[추가 맥락]", relay_content)
                 self.assertIn("다음 단계는 designer보다 구현 역할이 더 적합합니다.", relay_content)
                 self.assertNotIn("- score total:", relay_content)
 
@@ -4147,7 +4166,7 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertGreater(updated["routing_context"]["score_total"], 0)
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
                 self.assertIn(f"<@{developer_bot_id}>", relay_content)
-                self.assertIn("- Why this role:", relay_content)
+                self.assertIn("[이관 이유]", relay_content)
                 self.assertIn("planning은 끝났고 다음 단계는 실제 구현입니다.", relay_content)
                 self.assertNotIn("- score total:", relay_content)
 
@@ -4393,7 +4412,7 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertGreater(updated["routing_context"]["score_total"], 0)
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
                 self.assertIn(f"<@{planner_bot_id}>", relay_content)
-                self.assertIn("- Why this role:", relay_content)
+                self.assertIn("[이관 이유]", relay_content)
                 self.assertIn("planner가 scope와 acceptance criteria를 다시 정리해야 합니다.", relay_content)
 
     def test_orchestrator_rejects_legacy_approve_command(self):
@@ -4972,12 +4991,14 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | planner -> designer | route", content)
-                self.assertIn("- What: 버튼 레이블과 안내 문구를 함께 조정해줘", content)
-                self.assertIn("- Why this role: 다음 역할: designer", content)
-                self.assertIn("- Constraints:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 버튼 레이블과 안내 문구를 함께 조정해줘", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- 다음 역할: designer", content)
+                self.assertIn("[유의사항]", content)
                 self.assertIn("추가 입력: 현재 문구 목록", content)
                 self.assertIn("완료 기준: 버튼 레이블이 역할에 맞게 정리된다.", content)
-                self.assertIn("- Refs:", content)
+                self.assertIn("[참고 파일]", content)
                 self.assertNotIn("\"proposals\":", content)
                 snapshot_file = service.paths.role_request_snapshot_file("designer", "20260325-handoff1")
                 self.assertTrue(snapshot_file.exists())
@@ -5033,7 +5054,7 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 delegation_context = service._build_delegation_context(request_record, "designer")
                 body = service._build_delegate_body(request_record, delegation_context)
 
-                self.assertIn("- Constraints:", body)
+                self.assertIn("[유의사항]", body)
                 self.assertIn("추가 입력: 현재 문구 목록", body)
                 self.assertIn("완료 기준: 버튼 레이블이 역할에 맞게 정리된다.", body)
                 self.assertEqual(body.count("현재 문구 목록"), 1)
@@ -5119,10 +5140,11 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | designer -> planner | route", content)
-                self.assertIn("- Routing path: start -> planning/planner_advisory@planner", content)
-                self.assertIn("- Refs:", content)
-                self.assertNotIn("- Why this role:", content)
-                self.assertNotIn("- Check now:", content)
+                self.assertIn("[전달 정보]", content)
+                self.assertIn("- 전달 경로: start -> planning/planner_advisory@planner", content)
+                self.assertIn("[참고 파일]", content)
+                self.assertNotIn("[이관 이유]", content)
+                self.assertNotIn("[지금 볼 것]", content)
                 self.assertNotIn("판단 지점", content)
                 self.assertNotIn("UX 판단", content)
                 self.assertNotIn("지원 역할", content)
@@ -5225,11 +5247,13 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | planner -> architect | route", content)
-                self.assertIn("- What: designer support role planning", content)
-                self.assertIn("- Routing path: start -> planning/planner_finalize@architect", content)
-                self.assertIn("- Refs:", content)
-                self.assertNotIn("- Why this role:", content)
-                self.assertNotIn("- Check now:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- designer support role planning", content)
+                self.assertIn("[전달 정보]", content)
+                self.assertIn("- 전달 경로: start -> planning/planner_finalize@architect", content)
+                self.assertIn("[참고 파일]", content)
+                self.assertNotIn("[이관 이유]", content)
+                self.assertNotIn("[지금 볼 것]", content)
                 self.assertNotIn("판단 지점", content)
                 self.assertNotIn("UX 판단", content)
                 self.assertNotIn("지원 역할", content)
@@ -5293,15 +5317,16 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | planner -> designer | route", content)
-                self.assertIn("- What: workflow initial", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- workflow initial", content)
                 self.assertIn("마일스톤: workflow refined", content)
                 self.assertIn("backlog/todo: manual sprint start gate", content)
                 self.assertIn("backlog/todo: sprint folder artifact rendering", content)
-                self.assertIn("- Why this role: 다음 역할: designer", content)
-                self.assertIn("- Check now:", content)
-                self.assertIn("  - backlog/todo: manual sprint start gate", content)
-                self.assertIn("  - backlog/todo: sprint folder artifact rendering", content)
-                self.assertIn("- Check now:", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- 다음 역할: designer", content)
+                self.assertIn("[지금 볼 것]", content)
+                self.assertIn("- backlog/todo: manual sprint start gate", content)
+                self.assertIn("- backlog/todo: sprint folder artifact rendering", content)
 
     def test_delegate_request_omits_handoff_section_for_first_hop(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5334,11 +5359,14 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | orchestrator -> planner | route", content)
-                self.assertIn("- What: 새 backlog 항목 정리", content)
-                self.assertIn("- Routing path: orchestrator -> planner", content)
-                self.assertIn("- Why this role: planner 역할이 현재 단계의 다음 담당입니다.", content)
-                self.assertIn("- Refs:", content)
-                self.assertNotIn("- Context:", content)
+                self.assertIn("[핵심 전달]", content)
+                self.assertIn("- 새 backlog 항목 정리", content)
+                self.assertIn("[전달 정보]", content)
+                self.assertIn("- 전달 경로: orchestrator -> planner", content)
+                self.assertIn("[이관 이유]", content)
+                self.assertIn("- planner 역할이 현재 단계의 다음 담당입니다.", content)
+                self.assertIn("[참고 파일]", content)
+                self.assertNotIn("[추가 맥락]", content)
                 snapshot_file = service.paths.role_request_snapshot_file("planner", "20260325-firsthop1")
                 self.assertTrue(snapshot_file.exists())
                 snapshot_text = snapshot_file.read_text(encoding="utf-8")
@@ -15931,7 +15959,7 @@ class TestInternalRelaySurfaceContract(unittest.TestCase):
             payload = json.loads(relay_files[0].read_text(encoding="utf-8"))
 
             self.assertEqual(set(payload.keys()), {"relay_id", "transport", "created_at", "sender_role", "target_role", "kind", "envelope"})
-            self.assertEqual(payload.get("transport"), RELAY_TRANSPORT_INTERNAL)
+            self.assertEqual(payload.get("transport"), orchestration_module.RELAY_TRANSPORT_INTERNAL)
             self.assertEqual(payload.get("kind"), "report")
             self.assertIn("relay_id", payload)
             self.assertEqual(payload.get("target_role"), "developer")
@@ -16039,11 +16067,11 @@ class TestInternalRelaySurfaceContract(unittest.TestCase):
             self.assertIn("- reference_artifacts:", snapshot_content)
 
             body = service._build_delegate_body(request_record, delegation_context)
-            self.assertIn("- Refs:", body)
-            self.assertIn("- request:", body)
-            self.assertIn("- artifacts:", body)
-            self.assertIn("- note: request record가 relay보다 우선합니다.", body)
-            self.assertIn("- Why this role:", body)
+            self.assertIn("[참고 파일]", body)
+            self.assertIn("- 요청 기록:", body)
+            self.assertIn("- 참고 산출물:", body)
+            self.assertIn("- 주의: request record가 relay보다 우선합니다.", body)
+            self.assertIn("[전달 정보]", body)
 
     def test_internal_relay_surface_renderers_preserve_contract(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -16102,7 +16130,8 @@ class TestInternalRelaySurfaceContract(unittest.TestCase):
 
                 self.assertTrue(summary_content.startswith(f"{INTERNAL_RELAY_SUMMARY_MARKER} planner -> developer (report)"))
                 self.assertEqual(envelope_before, envelope_after)
-                self.assertIn("- request_id:", summary_content)
+                self.assertIn("[전달 정보]", summary_content)
+                self.assertIn("- 요청 ID:", summary_content)
                 synthetic = service._build_internal_relay_message_stub(envelope, relay_id="relay-contract-2")
                 self.assertEqual(synthetic.content, envelope_to_text(envelope))
 
