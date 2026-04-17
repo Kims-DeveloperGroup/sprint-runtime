@@ -126,13 +126,19 @@ def render_report_sections(
         title = str(section.title or "").strip()
         if not title:
             continue
-        rendered.append(
-            render_text_box(
-                title,
-                section.lines,
-                max_inner_width=max_inner_width,
+        rendered_lines = _normalize_section_lines(section.lines)
+        if not rendered_lines:
+            rendered_lines = ["- 없음"]
+        wrapped_lines: list[str] = []
+        for line in rendered_lines:
+            wrapped_lines.extend(
+                _wrap_box_line(
+                    _escape_fenced_block_content(line),
+                    max_width=max(16, int(max_inner_width or 88)),
+                )
             )
-        )
+        body = "\n".join([f"[{title}]", *wrapped_lines]).strip()
+        rendered.append(f"```text\n{body}\n```")
     return "\n\n".join(rendered)
 
 
