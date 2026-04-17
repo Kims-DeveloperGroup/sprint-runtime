@@ -820,6 +820,41 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
         self.assertIn("🔎 근거:", report)
         self.assertLess(report.index("➡️ 다음: planner backlog review"), report.index("🔎 근거:"))
 
+    def test_build_progress_report_renders_sections_as_fenced_text_blocks(self):
+        report = build_progress_report(
+            request="Sprint Closeout",
+            scope="현재 스프린트: 260416-Sprint-22:53",
+            status="완료",
+            list_summary="sprint runner",
+            detail_summary="closeout summary",
+            process_summary="없음",
+            log_summary="sample log",
+            end_reason="없음",
+            judgment="closeout summary",
+            next_action="대기",
+            sections=[
+                orchestration_module.ReportSection(
+                    title="한눈에 보기",
+                    lines=(
+                        "- TL;DR: README/.gitignore 계약 정렬은 전진했지만 final QA 재검증 없이 closeout됐습니다.",
+                        "- sprint_id: 260416-Sprint-22:53",
+                    ),
+                )
+            ],
+        )
+
+        self.assertIn("```text\n[한눈에 보기]", report)
+        self.assertIn("- TL;DR:", report)
+        self.assertNotIn("+---", report)
+        self.assertNotIn("| 한눈에 보기", report)
+
+    def test_summarize_boxed_report_excerpt_skips_fenced_section_headers(self):
+        excerpt = TeamService._summarize_boxed_report_excerpt(
+            "```text\n[한눈에 보기]\n- TL;DR: summary\n- sprint_id: sprint-1\n```\n\n```text\n[다음 액션]\n- 없음\n```"
+        )
+
+        self.assertEqual(excerpt, "- TL;DR: summary\n- sprint_id: sprint-1\n- 없음")
+
     def test_internal_relay_summary_surfaces_core_and_supporting_layers_from_design_feedback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -5084,7 +5119,7 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | designer -> planner | route", content)
-                self.assertIn("- Stage: planning / planner_advisory", content)
+                self.assertIn("- Routing path: start -> planning/planner_advisory@planner", content)
                 self.assertIn("- Refs:", content)
                 self.assertNotIn("- Why this role:", content)
                 self.assertNotIn("- Check now:", content)
@@ -5191,7 +5226,7 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | planner -> architect | route", content)
                 self.assertIn("- What: designer support role planning", content)
-                self.assertIn("- Stage: planning / planner_finalize", content)
+                self.assertIn("- Routing path: start -> planning/planner_finalize@architect", content)
                 self.assertIn("- Refs:", content)
                 self.assertNotIn("- Why this role:", content)
                 self.assertNotIn("- Check now:", content)
@@ -5300,6 +5335,7 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | orchestrator -> planner | route", content)
                 self.assertIn("- What: 새 backlog 항목 정리", content)
+                self.assertIn("- Routing path: orchestrator -> planner", content)
                 self.assertIn("- Why this role: planner 역할이 현재 단계의 다음 담당입니다.", content)
                 self.assertIn("- Refs:", content)
                 self.assertNotIn("- Context:", content)
@@ -5309,6 +5345,137 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertIn("what_summary: N/A", snapshot_text)
                 self.assertIn("latest_context: N/A", snapshot_text)
                 self.assertIn("Always trust `.teams_runtime/requests/20260325-firsthop1.json`", snapshot_text)
+
+    def test_internal_sprint_delegation_payload_persists_cumulative_routing_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="workflow initial",
+                    trigger="manual_start",
+                )
+                service._save_sprint_state(sprint_state)
+
+                first_request = {
+                    "request_id": "20260417-routing-path-1",
+                    "status": "delegated",
+                    "intent": "plan",
+                    "urgency": "normal",
+                    "scope": "initial milestone refinement",
+                    "body": "initial milestone refinement",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "sprint_internal",
+                        "sprint_id": sprint_state["sprint_id"],
+                        "sprint_phase": "initial",
+                        "initial_phase_step": orchestration_module.INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+                    },
+                    "current_role": "planner",
+                    "next_role": "planner",
+                    "owner_role": "orchestrator",
+                    "sprint_id": sprint_state["sprint_id"],
+                    "backlog_id": "",
+                    "todo_id": "",
+                    "created_at": "2026-04-17T00:00:00+09:00",
+                    "updated_at": "2026-04-17T00:00:00+09:00",
+                    "fingerprint": "routing-path-1",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                    "visited_roles": [],
+                }
+
+                first_payload = service._build_internal_sprint_delegation_payload(first_request, "planner")
+                self.assertEqual(
+                    first_payload["routing_path"],
+                    "start -> initial/milestone_refinement@planner",
+                )
+                self.assertEqual(
+                    first_payload["routing_path_nodes"],
+                    ["start", "initial/milestone_refinement@planner"],
+                )
+
+                service._record_internal_sprint_activity(
+                    first_request,
+                    event_type="role_delegated",
+                    role="orchestrator",
+                    status="delegated",
+                    summary="planner 역할로 위임했습니다.",
+                    payload=first_payload,
+                )
+
+                updated_sprint = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(
+                    updated_sprint["recent_activity"][-1]["routing_path"],
+                    "start -> initial/milestone_refinement@planner",
+                )
+                self.assertEqual(
+                    updated_sprint["recent_activity"][-1]["routing_path_nodes"],
+                    ["start", "initial/milestone_refinement@planner"],
+                )
+                sprint_events = service._load_sprint_event_entries(updated_sprint)
+                self.assertEqual(
+                    sprint_events[-1]["payload"]["routing_path"],
+                    "start -> initial/milestone_refinement@planner",
+                )
+
+                second_request = {
+                    "request_id": "20260417-routing-path-2",
+                    "status": "delegated",
+                    "intent": "route",
+                    "urgency": "normal",
+                    "scope": "architect guidance",
+                    "body": "architect guidance",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "sprint_internal",
+                        "sprint_id": sprint_state["sprint_id"],
+                        "backlog_id": "backlog-routing-path",
+                        "todo_id": "todo-routing-path",
+                        "workflow": {
+                            "contract_version": 1,
+                            "phase": "implementation",
+                            "step": "architect_guidance",
+                            "phase_owner": "architect",
+                            "phase_status": "active",
+                            "planning_pass_count": 0,
+                            "planning_pass_limit": 2,
+                            "planning_final_owner": "planner",
+                            "reopen_source_role": "",
+                            "reopen_category": "",
+                            "review_cycle_count": 0,
+                            "review_cycle_limit": orchestration_module.DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT,
+                        },
+                    },
+                    "current_role": "architect",
+                    "next_role": "architect",
+                    "owner_role": "orchestrator",
+                    "sprint_id": sprint_state["sprint_id"],
+                    "backlog_id": "backlog-routing-path",
+                    "todo_id": "todo-routing-path",
+                    "created_at": "2026-04-17T00:05:00+09:00",
+                    "updated_at": "2026-04-17T00:05:00+09:00",
+                    "fingerprint": "routing-path-2",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                    "visited_roles": [],
+                }
+
+                second_payload = service._build_internal_sprint_delegation_payload(second_request, "architect")
+                self.assertEqual(
+                    second_payload["routing_path"],
+                    "start -> initial/milestone_refinement@planner -> implementation/architect_guidance@architect",
+                )
+                self.assertEqual(
+                    second_payload["routing_path_nodes"],
+                    [
+                        "start",
+                        "initial/milestone_refinement@planner",
+                        "implementation/architect_guidance@architect",
+                    ],
+                )
 
     def test_internal_sprint_completed_developer_report_delegates_to_qa_via_relay(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -6642,6 +6809,108 @@ class TeamsRuntimeOrchestrationTests(unittest.TestCase):
                 self.assertEqual(updated["current_role"], "qa")
                 self.assertEqual(updated["params"]["workflow"]["phase"], "validation")
                 self.assertEqual(updated["params"]["workflow"]["step"], "qa_validation")
+
+    def test_internal_sprint_architect_review_routes_to_qa_even_at_review_cycle_limit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                request_record = {
+                    "request_id": "20260401-workflow-review-pass-limit-qa-1",
+                    "status": "delegated",
+                    "intent": "implement",
+                    "urgency": "normal",
+                    "scope": "workflow architect review qa handoff at limit",
+                    "body": "workflow architect review qa handoff at limit",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "sprint_internal",
+                        "workflow": {
+                            "contract_version": 1,
+                            "phase": "implementation",
+                            "step": "architect_review",
+                            "phase_owner": "architect",
+                            "phase_status": "active",
+                            "planning_pass_count": 1,
+                            "planning_pass_limit": 2,
+                            "planning_final_owner": "planner",
+                            "reopen_source_role": "",
+                            "reopen_category": "",
+                            "review_cycle_count": 3,
+                            "review_cycle_limit": 3,
+                        },
+                    },
+                    "current_role": "architect",
+                    "next_role": "architect",
+                    "owner_role": "orchestrator",
+                    "sprint_id": "2026-Sprint-Workflow",
+                    "backlog_id": "backlog-1",
+                    "todo_id": "todo-1",
+                    "created_at": "2026-04-01T00:00:00+00:00",
+                    "updated_at": "2026-04-01T00:00:00+00:00",
+                    "fingerprint": "workflow-architect-review-pass-limit-qa",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                    "visited_roles": ["planner", "architect", "developer", "architect", "developer", "architect"],
+                }
+                service._save_request(request_record)
+
+                asyncio.run(
+                    service._handle_role_report(
+                        DiscordMessage(
+                            message_id="relay-workflow-review-pass-limit-qa-1",
+                            channel_id="111111111111111111",
+                            guild_id="guild-1",
+                            author_id=service.discord_config.get_role("architect").bot_id,
+                            author_name="architect",
+                            content="relay",
+                            is_dm=False,
+                            mentions_bot=True,
+                            created_at=datetime.now(timezone.utc),
+                        ),
+                        MessageEnvelope(
+                            request_id=request_record["request_id"],
+                            sender="architect",
+                            target="orchestrator",
+                            intent="report",
+                            urgency="normal",
+                            scope=request_record["scope"],
+                            params={
+                                "_teams_kind": "report",
+                                "result": {
+                                    "request_id": request_record["request_id"],
+                                    "role": "architect",
+                                    "status": "completed",
+                                    "summary": "review limit 직전이지만 QA 검증으로 넘깁니다.",
+                                    "insights": [],
+                                    "proposals": {
+                                        "workflow_transition": {
+                                            "outcome": "advance",
+                                            "target_phase": "validation",
+                                            "target_step": "qa_validation",
+                                            "requested_role": "qa",
+                                            "reopen_category": "",
+                                            "reason": "추가 developer 수정 없이 QA가 최종 검증합니다.",
+                                            "unresolved_items": [],
+                                            "finalize_phase": False,
+                                        }
+                                    },
+                                    "artifacts": [],
+                                    "next_role": "",
+                                    "error": "",
+                                },
+                            },
+                        ),
+                    )
+                )
+
+                updated = service._load_request(request_record["request_id"])
+                self.assertEqual(updated["status"], "delegated")
+                self.assertEqual(updated["current_role"], "qa")
+                self.assertEqual(updated["params"]["workflow"]["phase"], "validation")
+                self.assertEqual(updated["params"]["workflow"]["step"], "qa_validation")
+                self.assertEqual(updated["params"]["workflow"]["review_cycle_count"], 3)
 
     def test_internal_sprint_qa_reopen_ux_routes_to_designer_advisory(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2260,6 +2260,11 @@ class TeamService:
             )
 
         if step == WORKFLOW_STEP_ARCHITECT_REVIEW:
+            if self._workflow_transition_requests_validation_handoff(transition):
+                return self._workflow_route_to_qa(
+                    workflow_state,
+                    reason=reason or "architect review를 통과해 QA 검증으로 넘깁니다.",
+                )
             if (
                 self._workflow_review_cycle_limit_reached(workflow_state)
                 and self._workflow_transition_requests_explicit_continuation(transition)
@@ -2282,11 +2287,6 @@ class TeamService:
                     current_role=current_role or "architect",
                     category=reopen_category,
                     reason=reason,
-                )
-            if self._workflow_transition_requests_validation_handoff(transition):
-                return self._workflow_route_to_qa(
-                    workflow_state,
-                    reason=reason or "architect review를 통과해 QA 검증으로 넘깁니다.",
                 )
             return self._workflow_route_to_developer_build(
                 workflow_state,
@@ -2364,6 +2364,117 @@ class TeamService:
         return normalized_result
 
     @staticmethod
+    def _normalize_routing_path_nodes(raw_nodes: Any) -> list[str]:
+        if not isinstance(raw_nodes, list):
+            return []
+        return [str(item).strip() for item in raw_nodes if str(item).strip()]
+
+    @staticmethod
+    def _format_routing_path_node(*, phase: str = "", step: str = "", role: str = "") -> str:
+        normalized_role = str(role or "").strip().lower() or "unknown"
+        normalized_phase = str(phase or "").strip().lower()
+        normalized_step = str(step or "").strip().lower()
+        if normalized_phase and normalized_step:
+            return f"{normalized_phase}/{normalized_step}@{normalized_role}"
+        if normalized_phase:
+            return f"{normalized_phase}@{normalized_role}"
+        if normalized_step:
+            return f"{normalized_step}@{normalized_role}"
+        return normalized_role
+
+    def _request_routing_stage_parts(self, request_record: dict[str, Any]) -> tuple[str, str]:
+        workflow_state = self._request_workflow_state(request_record)
+        workflow_phase = str(workflow_state.get("phase") or "").strip().lower()
+        workflow_step = str(workflow_state.get("step") or "").strip().lower()
+        if workflow_phase or workflow_step:
+            return workflow_phase, workflow_step
+        params = dict(request_record.get("params") or {})
+        sprint_phase = str(params.get("sprint_phase") or "").strip().lower()
+        sprint_step = str(params.get("initial_phase_step") or "").strip().lower()
+        return sprint_phase, sprint_step
+
+    def _current_request_routing_node(self, request_record: dict[str, Any], role: str) -> str:
+        phase, step = self._request_routing_stage_parts(request_record)
+        if phase or step:
+            return self._format_routing_path_node(phase=phase, step=step, role=role)
+        return str(role or "").strip().lower()
+
+    def _seed_sprint_routing_path_nodes(self, sprint_state: dict[str, Any] | None = None) -> list[str]:
+        nodes = ["start"]
+        iterations = list((sprint_state or {}).get("planning_iterations") or [])
+        for entry in iterations:
+            if not isinstance(entry, dict):
+                continue
+            node = self._format_routing_path_node(
+                phase=str(entry.get("phase") or "").strip().lower(),
+                step=str(entry.get("step") or "").strip().lower(),
+                role="planner",
+            )
+            if node and node != nodes[-1]:
+                nodes.append(node)
+        return nodes
+
+    def _latest_sprint_routing_path_nodes(self, sprint_state: dict[str, Any]) -> list[str]:
+        for activity in reversed(list(sprint_state.get("recent_activity") or [])):
+            if not isinstance(activity, dict):
+                continue
+            nodes = self._normalize_routing_path_nodes(activity.get("routing_path_nodes"))
+            if nodes:
+                return nodes
+        for event in reversed(self._load_sprint_event_entries(sprint_state)):
+            payload = dict(event.get("payload") or {}) if isinstance(event.get("payload"), dict) else {}
+            nodes = self._normalize_routing_path_nodes(payload.get("routing_path_nodes"))
+            if nodes:
+                return nodes
+        return []
+
+    def _build_sprint_routing_path_nodes(self, request_record: dict[str, Any], next_role: str) -> list[str]:
+        if not self._is_internal_sprint_request(request_record):
+            return []
+        params = dict(request_record.get("params") or {})
+        sprint_id = str(request_record.get("sprint_id") or params.get("sprint_id") or "").strip()
+        sprint_state = self._load_sprint_state(sprint_id) if sprint_id else {}
+        nodes = self._latest_sprint_routing_path_nodes(sprint_state) if sprint_state else []
+        if not nodes:
+            nodes = self._seed_sprint_routing_path_nodes(sprint_state)
+        current_node = self._current_request_routing_node(request_record, next_role)
+        if current_node and current_node != nodes[-1]:
+            nodes.append(current_node)
+        return nodes
+
+    def _build_handoff_routing_path(
+        self,
+        request_record: dict[str, Any],
+        *,
+        source_role: str,
+        target_role: str,
+    ) -> str:
+        if self._is_internal_sprint_request(request_record):
+            nodes = self._build_sprint_routing_path_nodes(request_record, target_role)
+            if nodes:
+                return " -> ".join(nodes)
+        normalized_source = str(source_role or "").strip() or "orchestrator"
+        normalized_target = str(target_role or "").strip() or "unknown"
+        return f"{normalized_source} -> {normalized_target}"
+
+    def _build_internal_sprint_delegation_payload(
+        self,
+        request_record: dict[str, Any],
+        next_role: str,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"next_role": next_role}
+        if not self._is_internal_sprint_request(request_record):
+            return payload
+        routing_path_nodes = self._build_sprint_routing_path_nodes(request_record, next_role)
+        if routing_path_nodes:
+            payload["routing_path_nodes"] = routing_path_nodes
+            payload["routing_path"] = " -> ".join(routing_path_nodes)
+        routing_context = dict(request_record.get("routing_context") or {})
+        if routing_context:
+            payload["routing_context"] = routing_context
+        return payload
+
+    @staticmethod
     def _summarize_internal_sprint_activity_details(payload: dict[str, Any] | None = None) -> str:
         if not isinstance(payload, dict):
             return ""
@@ -2417,6 +2528,12 @@ class TeamService:
             "summary": _truncate_text(summary, limit=220) or "없음",
             "details": details,
         }
+        routing_path = str((payload or {}).get("routing_path") or "").strip()
+        routing_path_nodes = self._normalize_routing_path_nodes((payload or {}).get("routing_path_nodes"))
+        if routing_path:
+            activity["routing_path"] = routing_path
+        if routing_path_nodes:
+            activity["routing_path_nodes"] = routing_path_nodes
         recent_activity = [dict(item) for item in (sprint_state.get("recent_activity") or []) if isinstance(item, dict)]
         recent_activity.append(activity)
         sprint_state["recent_activity"] = recent_activity[-RECENT_SPRINT_ACTIVITY_LIMIT:]
@@ -2431,6 +2548,10 @@ class TeamService:
         }
         if details:
             event_payload["details"] = details
+        if routing_path:
+            event_payload["routing_path"] = routing_path
+        if routing_path_nodes:
+            event_payload["routing_path_nodes"] = routing_path_nodes
         self._append_sprint_event(
             sprint_id,
             event_type=str(event_type or "").strip() or "activity",
@@ -4376,8 +4497,12 @@ class TeamService:
             stripped = raw_line.strip()
             if not stripped or stripped.startswith("```") or stripped.startswith(("┌", "└")):
                 continue
+            if stripped.startswith("+") and stripped.endswith("+"):
+                continue
             cleaned = stripped.strip("│").strip()
             if not cleaned:
+                continue
+            if cleaned.startswith("[") and cleaned.endswith("]"):
                 continue
             lines.append(cleaned)
             if len(lines) >= limit_lines:
@@ -10221,7 +10346,7 @@ class TeamService:
                 role="orchestrator",
                 status=str(request_record.get("status") or ""),
                 summary=f"{next_role} 역할로 위임했습니다.",
-                payload={"next_role": next_role},
+                payload=self._build_internal_sprint_delegation_payload(request_record, next_role),
             )
             await self._delegate_request(request_record, next_role)
         return await self._wait_for_internal_request_result(str(request_record.get("request_id") or ""))
@@ -12945,7 +13070,7 @@ class TeamService:
                 role="orchestrator",
                 status=str(request_record.get("status") or ""),
                 summary=f"{next_role} 역할로 다시 위임했습니다.",
-                payload={"next_role": next_role},
+                payload=self._build_internal_sprint_delegation_payload(request_record, next_role),
             )
             self._append_role_history(
                 "orchestrator",
@@ -15303,13 +15428,17 @@ class TeamService:
             or str(delegation_context.get("workflow_phase") or "").strip()
             or str(delegation_context.get("workflow_step") or "").strip()
         )
-        workflow_stage = str(delegation_context.get("workflow_stage") or "").strip()
         lines = [
             f"handoff | {source_role} -> {target_role} | {request_record.get('intent') or 'route'}",
             f"- What: {task_text or 'N/A'}",
         ]
-        if workflow_stage:
-            lines.append(f"- Stage: {workflow_stage}")
+        routing_path = self._build_handoff_routing_path(
+            request_record,
+            source_role=source_role,
+            target_role=target_role,
+        )
+        if routing_path:
+            lines.append(f"- Routing path: {routing_path}")
 
         what_details = _dedupe_preserving_order(
             [
