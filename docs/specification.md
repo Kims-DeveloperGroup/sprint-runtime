@@ -197,6 +197,30 @@ Workflow rules:
 - `qa` owns validation
 - `version_controller` owns closeout
 - roles do not directly choose the next role; orchestrator applies workflow policy from structured role output
+- current implemented pure-policy boundary:
+  - `workflows/orchestration/engine.py` owns normalized workflow state, phase/step mutation helpers, next-role decisions, terminal-routing decisions, and governed routing-selection scoring
+  - `workflows/roles/__init__.py` owns role capability metadata and agent utilization policy loading consumed by orchestration scoring
+  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery decisions
+  - `workflows/sprints/reporting.py` owns sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, terminal state update plus closeout-result state/payload assembly, report path text, history-archive refresh gating, history archive markdown/index/path preparation, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, and user-facing/live sprint report markdown assembly
+  - `workflows/orchestration/relay.py` owns relay-send status mutation, relay failure-payload shaping, internal relay path, enqueue/archive, inbox scanning/loading, envelope round-trip helpers, synthetic relay-message stubs, pure internal relay action resolution, relay-summary fragment wrapping, relay-section grouping, and section-message rendering
+  - `workflows/orchestration/notifications.py` owns startup report rendering, boxed-report excerpt summarization, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, low-level Discord chunking, runtime signature tagging, cross-process send locking, startup fallback recovery, requester-status message formatting, requester reply delivery, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, and Discord relay-envelope sending
+  - `workflows/orchestration/engine.py` owns planner/QA workflow report guardrails plus planner-owned artifact policy
+  - `workflows/roles/architect.py` owns architect-specific planning-specialist and implementation-review prompt rules
+  - `workflows/roles/developer.py` owns developer-specific implementation-step and revision-step prompt rules
+  - `workflows/roles/orchestrator.py` owns orchestrator-specific intake/control-action prompt rules
+  - `workflows/roles/planner.py` owns planner-specific prompt rules and planner proposal normalization
+  - `workflows/roles/research.py` owns research prepass decision prompts, research decision normalization, and external-research report parsing
+  - `runtime/research_runtime.py` owns session-scoped research execution and external deep-research orchestration
+  - `workflows/roles/qa.py` owns QA-specific validation-step prompt rules and reopen guidance
+  - `workflows/roles/__init__.py` owns runtime-side registration of role prompt modules and extra response fields
+  - `runtime/base_runtime.py` owns the shared role runtime contract, generic prompt framing, sandbox retry rules, and role payload normalization
+  - `runtime/codex_runner.py` owns Codex/Gemini subprocess execution, command shaping, and JSON response recovery
+  - `runtime/internal/intent_parser.py` owns the internal parser runtime, conservative status-intent inference, and parser payload normalization
+  - `runtime/internal/backlog_sourcing.py` owns the internal sourcer runtime, sourcer payload normalization, and sourcing-monitoring receipts
+  - `workflows/roles/designer.py` owns designer-specific advisory prompt rules and `design_feedback` contract guidance
+  - `runtime/session_manager.py` owns session lifecycle, archival, and session-workspace seeding
+  - `workflows/roles/version_controller.py` owns version-controller task/closeout commit prompt rules
+  - `core/orchestration.py` owns request-aware heuristics plus all persistence and side effects
 - scenario-based routing diagrams are maintained in [`architecture.md`](./architecture.md#4-standard-workflow-contract)
 
 ### Backlog state
@@ -373,6 +397,9 @@ Tracked fields include:
 - execution metadata
 - event history
 
+Canonical Python contract types now live in `teams_runtime/shared/models.py`.
+`teams_runtime/models.py` remains as a compatibility re-export during the migration.
+
 ### Request ownership
 
 - The `orchestrator` is the only request authority.
@@ -381,22 +408,43 @@ Tracked fields include:
 
 ## Session Model
 
-Each role has one active session per sprint.
+Each `runtime_identity` has one active session per configured sprint session scope.
+
+Runtime identity rules:
+
+- public service runtimes use the role name as identity, such as `planner` or `developer`
+- orchestrator-local helper runtimes use `<owner>.local.<target>`, such as `orchestrator.local.planner`
+- runtime identity is distinct from `role`; multiple runtime identities may exist for the same logical role family
+- helper APIs are `service_identity(role)`, `local_identity(owner_role, target_role)`, and `sanitize_identity(identity)`; the older `*_runtime_identity` helper names remain compatibility aliases during migration
 
 ### Session persistence
 
 Stored under:
 
-- `.teams_runtime/role_sessions/<role>.json`
+- `.teams_runtime/role_sessions/<sanitized_runtime_identity>.json`
 
 Archived under:
 
 - `.teams_runtime/archive/<old_sprint_id>/<role>/`
 
+Persisted session metadata includes:
+
+- `role`
+- `sprint_id`
+- `session_id`
+- `workspace_path`
+- `created_at`
+- `last_used_at`
+- `runtime_identity`
+
+The canonical Python session/result/request/backlog/sprint/workflow contract types also live in `teams_runtime/shared/models.py`.
+
 ### Session behavior
 
-- Same sprint: reuse the role session
-- New sprint: archive old session metadata and create a fresh role session on next role task
+- Same `runtime_identity` + same sprint scope: reuse the session
+- Different runtime identities must not share a session file or session workspace
+- New sprint scope: archive old session metadata for that runtime identity and create a fresh session on next task
+- Operator-facing CLI status remains role-oriented and reports the public service runtime identity only
 
 ### Session filesystem access
 
@@ -453,6 +501,16 @@ If `actions: {}` remains empty:
 
 - planner owns planning, backlog-management decisions, and planner-initiated backlog persistence
 - orchestrator owns sprint-state status mutations, workflow phase/step state, pass limits, reopen routing, and bounded execution routing
+- current implemented module split:
+  - `workflows/orchestration/engine.py` owns pure workflow state helpers, routing-policy helpers, governed routing-selection scoring, role-specific workflow report normalization, and planner-owned artifact filtering
+  - `workflows/roles/__init__.py` owns role capability metadata and agent utilization policy loading consumed by orchestration scoring
+  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery decisions
+  - `workflows/sprints/reporting.py` owns sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, terminal state update plus closeout-result state/payload assembly, report path text, history-archive refresh gating, history archive markdown/index/path preparation, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, and user-facing/live sprint report markdown assembly
+  - `workflows/orchestration/relay.py` owns pure relay-send status mutation, failure-payload shaping, internal relay file transport, inbox scanning/loading, envelope deserialization, synthetic relay-message stubs, pure internal relay action resolution, relay-summary rendering, and report-section assembly
+  - `workflows/orchestration/relay.py` owns request-aware relay delivery/event glue, internal relay consume/dispatch helpers, and internal-vs-Discord transport branching
+  - `workflows/orchestration/notifications.py` owns low-level Discord notification delivery, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, requester summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate-receipt trusted-relay suppression, generic Discord content send delegation, and startup notification send/fallback state glue
+  - `workflows/sprints/lifecycle.py` owns manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, sprint-relevant backlog selection, initial-phase validation policy, planning-iteration bookkeeping, and phase-ready policy
+  - `core/orchestration.py` composes those helpers with backlog/request inspection and remaining runtime side effects
 
 Sprint-state status mutations include:
 

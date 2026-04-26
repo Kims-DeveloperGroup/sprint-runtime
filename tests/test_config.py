@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 from teams_runtime.cli import (
     DEFAULT_WORKSPACE_DIRNAME,
     InternalAgentService,
+    cmd_config_research_set,
     cmd_config_role_set,
     cmd_start,
     cmd_sprint_restart,
@@ -28,11 +29,12 @@ from teams_runtime.core.agent_capabilities import load_agent_utilization_policy
 from teams_runtime.core.config import (
     load_discord_agents_config,
     load_team_runtime_config,
+    update_team_runtime_research_defaults,
     update_team_runtime_role_defaults,
     validate_runtime_discord_agents_config,
 )
 from teams_runtime.core.paths import RuntimePaths
-from teams_runtime.core.persistence import new_backlog_id, new_request_id, new_todo_id, read_json, write_json
+from teams_runtime.shared.persistence import new_backlog_id, new_request_id, new_todo_id, read_json, write_json
 from teams_runtime.core.sprints import (
     build_active_sprint_id,
     compute_next_slot_at,
@@ -68,6 +70,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             "111111111111111116": "123456789012345683",
             "111111111111111117": "123456789012345684",
             "111111111111111118": "123456789012345685",
+            "111111111111111119": "123456789012345686",
         }
         for old_value, new_value in replacements.items():
             content = content.replace(old_value, new_value)
@@ -230,6 +233,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(discord_config.relay_channel_id, "111111111111111111")
             self.assertEqual(discord_config.startup_channel_id, "111111111111111111")
             self.assertEqual(discord_config.report_channel_id, "111111111111111111")
+            self.assertEqual(discord_config.agents["research"].bot_id, "111111111111111119")
             self.assertEqual(discord_config.agents["developer"].bot_id, "111111111111111116")
             self.assertEqual(discord_config.agents["qa"].bot_id, "111111111111111117")
             self.assertEqual(discord_config.get_internal_agent("sourcer").token_env, "AGENT_DISCORD_TOKEN_CS_ADMIN")
@@ -244,8 +248,11 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.sprint_ingress_mode, "backlog_first")
             self.assertEqual(runtime_config.sprint_discovery_scope, "broad_scan")
             self.assertEqual(runtime_config.sprint_discovery_actions, ())
+            self.assertEqual(runtime_config.role_defaults["research"].reasoning, "medium")
             self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "xhigh")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
+            self.assertEqual(runtime_config.research_defaults.completion_timeout, 600.0)
+            self.assertEqual(runtime_config.research_defaults.callback_timeout, 1200.0)
             team_runtime_text = (workspace_root / "team_runtime.yaml").read_text(encoding="utf-8")
             communication_protocol = (workspace_root / "communication_protocol.md").read_text(encoding="utf-8")
             teams_runtime_skill = (
@@ -370,7 +377,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("\"teams_runtime\", \"list\"", teams_runtime_snapshot_script)
             self.assertIn("--include-ps", teams_runtime_snapshot_script)
             self.assertIn("--log-role", teams_runtime_snapshot_script)
-            self.assertIn("planner에 먼저 위임한다", orchestrator_prompt)
+            self.assertIn("research prepass로 먼저 넘긴 뒤 planner가 planning/backlog 결정을 맡게 한다", orchestrator_prompt)
             self.assertIn("기존 planner request를 재사용한다", orchestrator_prompt)
             self.assertIn("version_controller", orchestrator_prompt)
             self.assertIn("./.agents/skills/", orchestrator_prompt)
@@ -406,7 +413,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("user_intake: planner", orchestrator_agent_utilization_policy)
             self.assertIn("sourcer_review: planner", orchestrator_agent_utilization_policy)
             self.assertIn("planning_resume: planner", orchestrator_agent_utilization_policy)
-            self.assertIn("sprint_initial_default: planner", orchestrator_agent_utilization_policy)
+            self.assertIn("sprint_initial_default: research", orchestrator_agent_utilization_policy)
             self.assertIn("planner_reentry_requires_explicit_signal: true", orchestrator_agent_utilization_policy)
             self.assertIn("verification_result_terminal: true", orchestrator_agent_utilization_policy)
             self.assertIn("ignore_non_planner_backlog_proposals_for_routing: true", orchestrator_agent_utilization_policy)
@@ -456,7 +463,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("single independently reviewable implementation slice", planner_skill)
             self.assertIn("prior planner history or shared planning logs", planner_skill)
             self.assertIn("name: backlog_management", planner_management_skill)
-            self.assertIn("python -m teams_runtime.core.backlog_store merge", planner_management_skill)
+            self.assertIn("python -m teams_runtime.workflows.state.backlog_store merge", planner_management_skill)
             self.assertIn("name: backlog_decomposition", planner_backlog_skill)
             self.assertIn("a sprint milestone", planner_backlog_skill)
             self.assertIn("single sprint milestone's backlog breakdown", planner_backlog_skill)
@@ -565,7 +572,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(policy.user_intake_role, "planner")
             self.assertEqual(policy.sourcer_review_role, "planner")
             self.assertEqual(policy.planning_resume_role, "planner")
-            self.assertEqual(policy.sprint_initial_default_role, "planner")
+            self.assertEqual(policy.sprint_initial_default_role, "research")
             self.assertTrue(policy.planner_reentry_requires_explicit_signal)
             self.assertTrue(policy.verification_result_terminal)
             self.assertTrue(policy.ignore_non_planner_backlog_proposals_for_routing)
@@ -587,6 +594,21 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.sprint_start_mode, "manual_daily")
             self.assertEqual(runtime_config.sprint_cutoff_time, "21:30")
 
+    def test_load_team_runtime_config_rejects_malformed_research_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            content = config_path.read_text(encoding="utf-8")
+            content = content.replace(
+                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  profile_path: \"\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
+                "research_defaults: invalid\n",
+                1,
+            )
+            config_path.write_text(content, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "research_defaults must be a mapping"):
+                load_team_runtime_config(tmpdir)
+
     def test_update_team_runtime_role_defaults_updates_model_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -605,10 +627,10 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
 
             updated = update_team_runtime_role_defaults(tmpdir, "planner", reasoning="low")
 
-            self.assertEqual(updated.model, "gpt-5.4")
+            self.assertEqual(updated.model, "gpt-5.5")
             self.assertEqual(updated.reasoning, "low")
             runtime_config = load_team_runtime_config(tmpdir)
-            self.assertEqual(runtime_config.role_defaults["planner"].model, "gpt-5.4")
+            self.assertEqual(runtime_config.role_defaults["planner"].model, "gpt-5.5")
             self.assertEqual(runtime_config.role_defaults["planner"].reasoning, "low")
 
     def test_update_team_runtime_role_defaults_requires_at_least_one_field(self):
@@ -617,6 +639,35 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "At least one of model or reasoning"):
                 update_team_runtime_role_defaults(tmpdir, "planner")
+
+    def test_update_team_runtime_research_defaults_updates_selected_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+
+            updated = update_team_runtime_research_defaults(
+                tmpdir,
+                app="Gemini Research App",
+                files=["market.md", "api.md"],
+                completion_timeout=900,
+                cleanup=True,
+            )
+
+            self.assertEqual(updated.app, "Gemini Research App")
+            self.assertEqual(updated.files, ("market.md", "api.md"))
+            self.assertEqual(updated.completion_timeout, 900.0)
+            self.assertTrue(updated.cleanup)
+            runtime_config = load_team_runtime_config(tmpdir)
+            self.assertEqual(runtime_config.research_defaults.app, "Gemini Research App")
+            self.assertEqual(runtime_config.research_defaults.files, ("market.md", "api.md"))
+            self.assertEqual(runtime_config.research_defaults.completion_timeout, 900.0)
+            self.assertTrue(runtime_config.research_defaults.cleanup)
+
+    def test_update_team_runtime_research_defaults_requires_one_field(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+
+            with self.assertRaisesRegex(ValueError, "At least one research setting"):
+                update_team_runtime_research_defaults(tmpdir)
 
     def test_load_discord_agents_config_supports_internal_agents_and_report_channel(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -633,6 +684,12 @@ agents:
     description: orchestrator
     token_env: AGENT_DISCORD_TOKEN_ORCHESTRATOR
     bot_id: "123456789012345681"
+  research:
+    name: research
+    role: research
+    description: research
+    token_env: AGENT_DISCORD_TOKEN_RESEARCH
+    bot_id: "123456789012345688"
   planner:
     name: planner
     role: planner
@@ -782,6 +839,12 @@ agents:
     description: custom
     token_env: AGENT_DISCORD_TOKEN_ORCHESTRATOR
     bot_id: "222222222222222223"
+  research:
+    name: research
+    role: research
+    description: custom
+    token_env: AGENT_DISCORD_TOKEN_RESEARCH
+    bot_id: "222222222222222229"
   planner:
     name: planner
     role: planner
@@ -838,6 +901,12 @@ agents:
     description: custom
     token_env: AGENT_DISCORD_TOKEN_ORCHESTRATOR
     bot_id: "333333333333333334"
+  research:
+    name: research
+    role: research
+    description: custom
+    token_env: AGENT_DISCORD_TOKEN_RESEARCH
+    bot_id: "333333333333333340"
   planner:
     name: planner
     role: planner
@@ -902,6 +971,86 @@ agents:
                 "name: teams-runtime",
             )
             self.assertFalse((workspace_root / ".agents" / "skills" / "teams-runtime" / "stale.txt").exists())
+
+    def test_init_refreshes_prompt_assets_by_default_without_reinitializing_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+            scaffold_workspace(workspace_root)
+            expected_prompt = (Path(__file__).resolve().parent.parent / "templates" / "prompts" / "planner.md").read_text(
+                encoding="utf-8"
+            )
+            (workspace_root / "planner" / "AGENTS.md").write_text("old prompt", encoding="utf-8")
+            (workspace_root / "shared_workspace" / "current_sprint.md").write_text("active sprint state", encoding="utf-8")
+            (workspace_root / ".teams_runtime").mkdir(exist_ok=True)
+            (workspace_root / ".teams_runtime" / "state.json").write_text("{}", encoding="utf-8")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["init", "--workspace-root", str(workspace_root)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Refreshed", output.getvalue())
+            self.assertEqual((workspace_root / "planner" / "AGENTS.md").read_text(encoding="utf-8"), expected_prompt)
+            self.assertEqual(
+                (workspace_root / "shared_workspace" / "current_sprint.md").read_text(encoding="utf-8"),
+                "active sprint state",
+            )
+            self.assertTrue((workspace_root / ".teams_runtime" / "state.json").exists())
+
+    def test_init_reset_rebuilds_existing_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+            scaffold_workspace(workspace_root)
+            (workspace_root / "planner" / "AGENTS.md").write_text("old prompt", encoding="utf-8")
+            (workspace_root / "shared_workspace" / "current_sprint.md").write_text("active sprint state", encoding="utf-8")
+            (workspace_root / ".teams_runtime").mkdir(exist_ok=True)
+            (workspace_root / ".teams_runtime" / "state.json").write_text("{}", encoding="utf-8")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["init", "--workspace-root", str(workspace_root), "--reset"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Scaffolded", output.getvalue())
+            self.assertIn("# Current Sprint", (workspace_root / "shared_workspace" / "current_sprint.md").read_text(encoding="utf-8"))
+            self.assertFalse((workspace_root / ".teams_runtime" / "state.json").exists())
+
+    def test_init_reset_reloads_cwd_discord_agents_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir).resolve()
+            workspace_root = project_root / DEFAULT_WORKSPACE_DIRNAME
+            scaffold_workspace(workspace_root)
+            template_config = (workspace_root / "discord_agents_config.yaml").read_text(encoding="utf-8")
+            cwd_config = template_config.replace("111111111111111119", "444444444444444449")
+            stale_config = template_config.replace("111111111111111119", "555555555555555559")
+            (project_root / "discord_agents_config.yaml").write_text(cwd_config, encoding="utf-8")
+            (workspace_root / "discord_agents_config.yaml").write_text(stale_config, encoding="utf-8")
+
+            current = Path.cwd()
+            output = io.StringIO()
+            try:
+                os.chdir(project_root)
+                with redirect_stdout(output):
+                    exit_code = main(["init", "--reset"])
+            finally:
+                os.chdir(current)
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Scaffolded", output.getvalue())
+            self.assertEqual((workspace_root / "discord_agents_config.yaml").read_text(encoding="utf-8"), cwd_config)
+
+    def test_init_refresh_prompts_flag_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+            scaffold_workspace(workspace_root)
+            (workspace_root / "planner" / "AGENTS.md").write_text("old prompt", encoding="utf-8")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["init", "--workspace-root", str(workspace_root), "--refresh-prompts"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Refreshed", output.getvalue())
 
     def test_scaffold_workspace_preserves_sprint_history_and_rebuilds_index(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1026,6 +1175,32 @@ agents:
             self.assertIn("Updated", rendered)
             self.assertIn("role=developer model=gpt-5.5 reasoning=low", rendered)
             self.assertIn("python -m teams_runtime restart --agent developer", rendered)
+
+    def test_cmd_config_research_set_updates_runtime_yaml_without_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            output = io.StringIO()
+            with patch("teams_runtime.cli.cmd_restart") as restart_mock:
+                with redirect_stdout(output):
+                    exit_code = cmd_config_research_set(
+                        Path(tmpdir),
+                        app="Gemini Research App",
+                        files=["source-a", "source-b"],
+                        completion_timeout=900,
+                        cleanup=True,
+                    )
+
+            self.assertEqual(exit_code, 0)
+            restart_mock.assert_not_called()
+            runtime_config = load_team_runtime_config(tmpdir)
+            self.assertEqual(runtime_config.research_defaults.app, "Gemini Research App")
+            self.assertEqual(runtime_config.research_defaults.files, ("source-a", "source-b"))
+            self.assertEqual(runtime_config.research_defaults.completion_timeout, 900.0)
+            self.assertTrue(runtime_config.research_defaults.cleanup)
+            rendered = output.getvalue()
+            self.assertIn("Updated", rendered)
+            self.assertIn("research app=Gemini Research App", rendered)
+            self.assertIn("python -m teams_runtime restart --agent research", rendered)
 
     def test_cmd_start_supports_internal_parser_agent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1344,7 +1519,7 @@ agents:
             rendered = output.getvalue()
             self.assertIn("planner: status=running pid=42424", rendered)
             self.assertIn("sprint_id=260324-Sprint-09:00", rendered)
-            self.assertIn("model=gpt-5.4 reasoning=xhigh", rendered)
+            self.assertIn("model=gpt-5.5 reasoning=xhigh", rendered)
             self.assertNotIn("sprint_series_id", rendered)
 
     def test_main_list_prints_active_sprint_id_from_scheduler(self):
@@ -1365,7 +1540,7 @@ agents:
 
             self.assertEqual(exit_code, 0)
             rendered = output.getvalue()
-            self.assertIn("orchestrator: stopped pid=N/A model=gpt-5.4 reasoning=medium", rendered)
+            self.assertIn("orchestrator: stopped pid=N/A model=gpt-5.5 reasoning=medium", rendered)
             self.assertIn("developer: stopped pid=N/A model=gpt-5.3-codex-spark reasoning=xhigh", rendered)
             self.assertIn("active_sprint_id=260330-Sprint-20:26", rendered)
             self.assertNotIn("sprint_series_id", rendered)

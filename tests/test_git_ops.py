@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from teams_runtime.core.git_ops import (
+from teams_runtime.workflows.repository_ops import (
     _parse_status_paths,
     auto_commit_task_changes,
     build_version_control_helper_command,

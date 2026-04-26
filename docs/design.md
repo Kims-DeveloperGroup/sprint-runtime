@@ -121,16 +121,18 @@ Tradeoff:
 
 - adds one relay-mode switch to operational commands
 - requires maintaining internal relay inbox/archive paths
-### 8. Sprint-scoped role sessions
+### 8. Sprint-scoped runtime sessions
 
 Decision:
 
-- each role keeps one session for the configured sprint session scope and refreshes when `sprint.id` changes
+- each runtime identity keeps one session for the configured sprint session scope and refreshes when `sprint.id` changes
+- public service runtimes and orchestrator-local helper runtimes do not share session state even when they target the same logical role
 
 Why:
 
 - preserves useful working memory across related tasks
 - creates a clear reset boundary between sprint contexts
+- prevents helper invocations from polluting the service runtime's session history
 
 Tradeoff:
 
@@ -189,6 +191,16 @@ Update `architecture.md` when changing:
 - runtime storage layout
 - failure isolation behavior
 
+### When to update the architecture policy doc
+
+Update `architecture_policy.md` when changing:
+
+- module ownership
+- dependency direction
+- compatibility shim rules
+- runtime identity rules
+- documentation update obligations
+
 ### When to update the implementation doc
 
 Update `implementation.md` when changing:
@@ -205,6 +217,7 @@ Update `implementation.md` when changing:
 - Sequential orchestration is easier to reason about, but it limits throughput.
 - Bot-ID-based trust is explicit, but it requires manual config maintenance.
 - Sprint persistence improves continuity, but it can preserve outdated context if sprint hygiene is weak.
+- The package is migrating toward a clearer layered layout, but current ownership still lives in `core/orchestration.py` and `runtime/codex.py` until later phases land.
 
 ## Recommended Future Refinements
 

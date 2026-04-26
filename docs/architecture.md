@@ -42,8 +42,9 @@ Discord DM / Mention
                 |
                 v
       +----------------------+
-      | Role Session         |
-      | <role>/sessions/<id> |
+      | Runtime Session      |
+      | <runtime_identity>/  |
+      | sessions/<id>        |
       | + ./workspace link   |
       +----------------------+
                 |
@@ -80,10 +81,73 @@ Identity model:
 - `request_id`
   - one runtime request record
   - may identify either an intake/planner request or a sprint-internal execution request
+- `runtime_identity`
+  - one persisted session family
+  - distinguishes service runtimes from local helper runtimes even when they target the same logical role
 - `sprint_id`
   - one concrete sprint instance
 - `sprint.id`
   - configured session-scope id from config
+
+Runtime identity examples:
+
+- public service runtime
+  - `planner`
+- orchestrator-local helper runtime
+  - `orchestrator.local.planner`
+- internal helper runtime service
+  - `parser`
+
+Current shared contract boundary:
+
+- `teams_runtime/shared/models.py`
+  - canonical home for shared runtime dataclasses and typed request/backlog/sprint/workflow/result contracts
+- `teams_runtime/models.py`
+  - compatibility re-export kept for migration stability
+- `teams_runtime/workflows/orchestration/engine.py`
+  - canonical pure workflow constants, normalization, state-transition helpers, routing-policy decisions, planner/QA workflow report guardrails, and planner-owned artifact policy helpers
+- `teams_runtime/workflows/roles/__init__.py`
+  - canonical role prompt registry plus agent utilization capability metadata consumed by orchestration scoring
+- `teams_runtime/workflows/orchestration/relay.py`
+  - canonical relay-send status mutation, relay failure-payload shaping, internal relay path/enqueue/archive, inbox scanning/loading, envelope round-trip helpers, synthetic relay-message stubs, pure internal relay action resolution, relay-summary fragment wrapping, section grouping, and section-message rendering
+- `teams_runtime/workflows/orchestration/notifications.py`
+  - canonical startup report rendering, boxed-report excerpt summarization, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, low-level Discord chunking, runtime signature tagging, cross-process send locking, startup fallback recovery, requester-status message formatting, requester reply delivery, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, Discord relay-envelope sending, and requester-facing notification orchestration glue
+- `teams_runtime/workflows/orchestration/ingress.py`
+  - canonical requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery decisions
+- `teams_runtime/workflows/sprints/reporting.py`
+  - canonical sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, terminal state update plus closeout-result state/payload assembly, report path text, history-archive refresh gating, history archive markdown/index/path preparation, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, and user-facing/live sprint report markdown assembly used by closeout and operator status composition
+- `teams_runtime/core/internal_relay.py`, `teams_runtime/core/relay_delivery.py`, and `teams_runtime/core/relay_summary.py`
+  - compatibility aliases for relay helpers in `workflows/orchestration/relay.py`
+- `teams_runtime/workflows/roles/planner.py`
+  - current dedicated planner role module for planner prompt rules and proposal normalization
+- `teams_runtime/workflows/roles/research.py`
+  - current dedicated research role helper module for prepass decision prompts, decision normalization, and report parsing
+- `teams_runtime/runtime/research_runtime.py`
+  - current dedicated research runtime module for session-scoped research execution and external deep-research orchestration
+- `teams_runtime/workflows/roles/designer.py`
+  - current dedicated designer role module for advisory-only prompt rules and `design_feedback` contract guidance
+- `teams_runtime/workflows/roles/architect.py`
+  - current dedicated architect role module for planning-specialist and implementation-review prompt rules
+- `teams_runtime/workflows/roles/developer.py`
+  - current dedicated developer role module for implementation-step and revision-step prompt rules
+- `teams_runtime/workflows/roles/qa.py`
+  - current dedicated QA role module for validation-step prompt rules and reopen guidance
+- `teams_runtime/workflows/roles/version_controller.py`
+  - current dedicated version-controller role module for closeout/task commit prompt rules
+- `teams_runtime/runtime/base_runtime.py`
+  - current canonical shared role runtime module for session-scoped role execution, prompt framing, sandbox-retry policy, and payload normalization
+- `teams_runtime/runtime/codex_runner.py`
+  - current canonical runtime subprocess execution module for Codex/Gemini command building, invocation, and JSON output recovery
+- `teams_runtime/runtime/internal/intent_parser.py`
+  - current canonical internal parser runtime module for natural-language intake classification plus status-intent normalization helpers
+- `teams_runtime/runtime/internal/backlog_sourcing.py`
+  - current canonical internal backlog-sourcing runtime module for backlog candidate proposal prompts, normalization, and monitoring receipts
+- `teams_runtime/runtime/session_manager.py`
+  - current canonical runtime session lifecycle and session-workspace seeding module
+- `teams_runtime/workflows/roles/orchestrator.py`
+  - current dedicated orchestrator role module for intake/control-action prompt rules
+- `teams_runtime/workflows/roles/__init__.py`
+  - current role registry that maps role names to prompt modules and any extra response fields
 
 ## Main Flows
 
@@ -193,6 +257,16 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
   - execution and QA roles report a structured reopen category
   - orchestrator selects the next role from workflow policy
   - roles do not self-route
+- current implementation boundary:
+  - `workflows/orchestration/engine.py` owns pure workflow state/step mutation helpers, next-role and terminal-routing decisions, governed routing-selection scoring, planner/QA report-contract rewrites, and planner-owned artifact filtering
+  - `workflows/roles/__init__.py` owns role capability metadata and agent utilization policy loading consumed by orchestration scoring
+  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery decisions
+  - `workflows/sprints/reporting.py` owns sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, terminal state update plus closeout-result state/payload assembly, report path text, history-archive refresh gating, history archive markdown/index/path preparation, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, and user-facing/live sprint report markdown assembly
+  - `workflows/orchestration/relay.py` owns relay-send status mutation, relay failure-payload shaping, internal relay path/enqueue/archive/deserialization helpers, inbox scanning/loading, synthetic message stubs, pure action resolution, relay-summary fragment wrapping, and report-section rendering
+  - `workflows/orchestration/relay.py` now owns request-aware relay delivery/event glue, internal relay consume/dispatch helpers, and internal-vs-Discord transport branching
+  - `workflows/orchestration/notifications.py` now owns low-level Discord notification delivery, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, requester summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate-receipt trusted-relay suppression, generic Discord content send delegation, and startup notification send/fallback state glue
+  - `workflows/sprints/lifecycle.py` now owns manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, sprint-relevant backlog selection, initial-phase validation policy, planning-iteration bookkeeping, and phase-ready policy
+  - `core/orchestration.py` still owns planning-close heuristics plus the remaining persistence and side effects that compose those helpers
 
 #### Routing scenarios
 
@@ -381,7 +455,12 @@ Machine-readable state:
 - `.teams_runtime/sprints/<sprint_id>.json`
 - `.teams_runtime/sprints/<sprint_id>.events.jsonl`
 - `.teams_runtime/requests/<request_id>.json`
-- `.teams_runtime/role_sessions/<role>.json`
+- `.teams_runtime/role_sessions/<sanitized_runtime_identity>.json`
+- `.teams_runtime/archive/<old_sprint_id>/<role>/...`
+
+Public service runtimes still use role-name identities, so operator-visible session files remain familiar, such as `planner.json`. Local helper runtimes use additional identity-scoped files such as `orchestrator.local.planner.json`.
+
+Runtime identity helpers are exposed as `service_identity`, `local_identity`, and `sanitize_identity`; `service_runtime_identity`, `local_runtime_identity`, and `sanitize_runtime_identity` remain compatibility aliases while imports migrate.
 
 Human-readable state:
 
@@ -425,6 +504,12 @@ Human-readable state:
   - reopens only through structured workflow output interpreted by orchestrator
 
 ## Workspace Contract
+
+Session-isolation detail:
+
+- public role services keep their own runtime identities such as `planner` and `developer`
+- orchestrator-local helper invocations use distinct identities such as `orchestrator.local.planner`, `orchestrator.local.parser`, and `orchestrator.local.sourcer`
+- helper runtimes do not share session files or workspaces with the public service runtime for that role family
 
 Each role session has:
 

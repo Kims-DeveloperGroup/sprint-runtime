@@ -16,7 +16,7 @@ from teams_runtime.core.parsing import (
 )
 from teams_runtime.core.paths import RuntimePaths
 from teams_runtime.models import ActionConfig, MessageEnvelope, RoleRuntimeConfig, TeamRuntimeConfig
-from teams_runtime.runtime.codex import (
+from teams_runtime.runtime.internal.intent_parser import (
     IntentParserRuntime,
     infer_status_inquiry_payload,
     normalize_intent_payload,

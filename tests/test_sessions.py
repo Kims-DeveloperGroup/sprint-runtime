@@ -7,19 +7,56 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from teams_runtime.core.config import load_team_runtime_config
 from teams_runtime.core.reports import read_process_summary
 from teams_runtime.core.paths import RuntimePaths
 from teams_runtime.core.template import scaffold_workspace
 from teams_runtime.models import MessageEnvelope, RoleRuntimeConfig
-from teams_runtime.runtime.codex import BacklogSourcingRuntime
-from teams_runtime.runtime.codex import CodexRunner
-from teams_runtime.runtime.codex import RoleSessionManager
-from teams_runtime.runtime.codex import RoleAgentRuntime
-from teams_runtime.runtime.codex import normalize_role_payload
-from teams_runtime.runtime.codex import extract_json_object
+from teams_runtime.runtime.base_runtime import RoleAgentRuntime, normalize_role_payload
+from teams_runtime.runtime.session_manager import RoleSessionManager
+from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
+from teams_runtime.runtime.internal.backlog_sourcing import BacklogSourcingRuntime
+from teams_runtime.runtime.identities import local_identity
+from teams_runtime.runtime.identities import local_runtime_identity
+from teams_runtime.runtime.identities import sanitize_identity
+from teams_runtime.runtime.identities import sanitize_runtime_identity
+from teams_runtime.runtime.identities import service_identity
+from teams_runtime.runtime.identities import service_runtime_identity
+from teams_runtime.runtime.research_runtime import ResearchAgentRuntime
 
 
 class TeamsRuntimeSessionTests(unittest.TestCase):
+    def test_runtime_identity_plan_helpers_match_compatibility_names(self):
+        self.assertEqual(service_identity(" planner "), "planner")
+        self.assertEqual(service_identity(""), "unknown")
+        self.assertEqual(service_identity("planner"), service_runtime_identity("planner"))
+        self.assertEqual(local_identity("orchestrator", "planner"), "orchestrator.local.planner")
+        self.assertEqual(
+            local_identity("orchestrator", "planner"),
+            local_runtime_identity("orchestrator", "planner"),
+        )
+        self.assertEqual(sanitize_identity("orchestrator local/planner"), "orchestrator_local_planner")
+        self.assertEqual(
+            sanitize_identity("orchestrator local/planner"),
+            sanitize_runtime_identity("orchestrator local/planner"),
+        )
+
+    def test_session_state_file_uses_sanitized_runtime_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+
+            runtime_identity = "orchestrator local/planner"
+            state_file = paths.session_state_file(
+                "planner",
+                runtime_identity=runtime_identity,
+            )
+
+            self.assertEqual(
+                state_file.name,
+                f"{sanitize_runtime_identity(runtime_identity)}.json",
+            )
+
     def test_role_session_reuses_within_sprint_and_refreshes_across_sprints(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -40,6 +77,53 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             archived_dir = paths.archived_session_dir("sprint-a", "developer")
             self.assertTrue(archived_dir.exists())
             self.assertTrue(any(archived_dir.glob("*.json")))
+
+    def test_role_session_manager_rotate_session_replaces_workspace_within_same_sprint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            manager = RoleSessionManager(paths, "planner", "sprint-a")
+
+            state = manager.ensure_session()
+            manager.finalize_session_id(state, "session-stale")
+            rotated = manager.rotate_session(state)
+
+            self.assertEqual(rotated.sprint_id, "sprint-a")
+            self.assertNotEqual(rotated.workspace_path, state.workspace_path)
+            self.assertEqual(rotated.session_id, "")
+            self.assertTrue(Path(rotated.workspace_path).is_dir())
+            archived_dir = paths.archived_session_dir("sprint-a", "planner")
+            self.assertTrue(archived_dir.exists())
+            self.assertTrue(any(archived_dir.glob("*.json")))
+
+    def test_role_session_manager_isolates_local_runtime_identity_from_service_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            service_identity = service_runtime_identity("planner")
+            local_identity = local_runtime_identity("orchestrator", "planner")
+
+            service_manager = RoleSessionManager(
+                paths,
+                "planner",
+                "sprint-a",
+                runtime_identity=service_identity,
+            )
+            local_manager = RoleSessionManager(
+                paths,
+                "planner",
+                "sprint-a",
+                runtime_identity=local_identity,
+            )
+
+            service_state = service_manager.ensure_session()
+            local_state = local_manager.ensure_session()
+
+            self.assertNotEqual(service_state.workspace_path, local_state.workspace_path)
+            self.assertEqual(service_state.runtime_identity, service_identity)
+            self.assertEqual(local_state.runtime_identity, local_identity)
+            self.assertTrue(paths.session_state_file("planner", runtime_identity=service_identity).exists())
+            self.assertTrue(paths.session_state_file("planner", runtime_identity=local_identity).exists())
 
     def test_session_workspace_contains_role_and_shared_links(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -82,6 +166,32 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             self.assertTrue((workspace / "workspace").exists())
             self.assertTrue((workspace / "shared_workspace").exists())
 
+    def test_internal_parser_local_runtime_identity_isolated_from_service_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            service_manager = RoleSessionManager(
+                paths,
+                "parser",
+                "sprint-a",
+                agent_root=paths.internal_agent_root("parser"),
+                runtime_identity=service_runtime_identity("parser"),
+            )
+            local_manager = RoleSessionManager(
+                paths,
+                "parser",
+                "sprint-a",
+                agent_root=paths.internal_agent_root("parser"),
+                runtime_identity=local_runtime_identity("orchestrator", "parser"),
+            )
+
+            service_state = service_manager.ensure_session()
+            local_state = local_manager.ensure_session()
+
+            self.assertNotEqual(service_state.workspace_path, local_state.workspace_path)
+            self.assertEqual(service_state.runtime_identity, "parser")
+            self.assertEqual(local_state.runtime_identity, "orchestrator.local.parser")
+
     def test_internal_sourcer_session_uses_internal_workspace_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -100,6 +210,32 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             self.assertTrue((workspace / "GEMINI.md").exists())
             self.assertTrue((workspace / "workspace").exists())
             self.assertTrue((workspace / "shared_workspace").exists())
+
+    def test_internal_sourcer_local_runtime_identity_isolated_from_service_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            service_manager = RoleSessionManager(
+                paths,
+                "sourcer",
+                "sprint-a",
+                agent_root=paths.internal_agent_root("sourcer"),
+                runtime_identity=service_runtime_identity("sourcer"),
+            )
+            local_manager = RoleSessionManager(
+                paths,
+                "sourcer",
+                "sprint-a",
+                agent_root=paths.internal_agent_root("sourcer"),
+                runtime_identity=local_runtime_identity("orchestrator", "sourcer"),
+            )
+
+            service_state = service_manager.ensure_session()
+            local_state = local_manager.ensure_session()
+
+            self.assertNotEqual(service_state.workspace_path, local_state.workspace_path)
+            self.assertEqual(service_state.runtime_identity, "sourcer")
+            self.assertEqual(local_state.runtime_identity, "orchestrator.local.sourcer")
 
     def test_internal_version_controller_session_exposes_local_skill(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -275,6 +411,305 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             self.assertEqual(payload["request_id"], "new-request")
             self.assertEqual(payload["role"], "planner")
 
+    def test_role_prompt_uses_noncopyable_status_placeholder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="developer",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="developer",
+                intent="implement",
+                urgency="normal",
+                scope="scope",
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": "scope",
+                "body": "",
+                "artifacts": [],
+            }
+
+            prompt = runtime._build_prompt(envelope, request_record)
+
+            self.assertIn('"status": "<required: completed, blocked, or failed>"', prompt)
+            self.assertIn("must be exactly one of these strings", prompt)
+            self.assertNotIn('"status": "completed|blocked|failed"', prompt)
+
+    def test_role_runtime_retries_invalid_status_with_fresh_session(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="developer",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            state = runtime._session_manager_for_sprint("sprint-a").ensure_session()
+            runtime._session_manager_for_sprint("sprint-a").finalize_session_id(state, "session-stale")
+
+            class _FakeRunner:
+                def __init__(self):
+                    self.calls: list[dict[str, object]] = []
+
+                def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
+                    self.calls.append(
+                        {
+                            "workspace": str(workspace),
+                            "prompt": prompt,
+                            "session_id": session_id,
+                            "bypass_sandbox": bypass_sandbox,
+                        }
+                    )
+                    if len(self.calls) == 1:
+                        return (
+                            '{"request_id":"request-1","role":"developer","status":"completed|blocked|failed","summary":"short Korean summary","insights":["private role insight for journal.md"],"proposals":{},"artifacts":[],"error":""}',
+                            "session-stale",
+                        )
+                    return (
+                        '{"request_id":"request-1","role":"developer","status":"completed","summary":"fixed","insights":[],"proposals":{},"artifacts":[],"error":""}',
+                        "session-fixed",
+                    )
+
+            fake_runner = _FakeRunner()
+            runtime.codex_runner = fake_runner
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="developer",
+                intent="implement",
+                urgency="normal",
+                scope="scope",
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": "scope",
+                "body": "",
+                "artifacts": [],
+            }
+
+            payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["summary"], "fixed")
+            self.assertEqual(len(fake_runner.calls), 2)
+            self.assertEqual(fake_runner.calls[0]["session_id"], "session-stale")
+            self.assertIsNone(fake_runner.calls[1]["session_id"])
+            self.assertIn("strict role-result schema", str(fake_runner.calls[1]["prompt"]))
+
+    def test_role_runtime_retries_stale_session_with_fresh_workspace_and_handoff_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="planner",
+                sprint_id="260423-Sprint-21:00",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            state = runtime._session_manager_for_sprint("260423-Sprint-21:00").ensure_session()
+            runtime._session_manager_for_sprint("260423-Sprint-21:00").finalize_session_id(state, "session-stale")
+
+            sprint_state = {
+                "sprint_id": "260423-Sprint-21:00",
+                "status": "running",
+                "trigger": "backlog_ready",
+                "sprint_folder_name": "260423-Sprint-21-00",
+                "todos": [
+                    {
+                        "todo_id": "todo-completed",
+                        "title": "핵심 위계 계약 정리",
+                        "owner_role": "planner",
+                        "status": "completed",
+                        "request_id": "request-1",
+                        "summary": "plan/spec/current_sprint에 hierarchy contract를 반영했습니다.",
+                        "artifacts": ["./shared_workspace/sprints/260423-Sprint-21-00/spec.md"],
+                    },
+                    {
+                        "todo_id": "todo-open",
+                        "title": "planner finalize 재실행",
+                        "owner_role": "planner",
+                        "status": "queued",
+                        "request_id": "request-1",
+                        "summary": "fresh session에서 planner finalize를 이어야 합니다.",
+                    },
+                ],
+            }
+            paths.sprint_file("260423-Sprint-21:00").write_text(
+                json.dumps(sprint_state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            milestone_file = paths.sprint_artifact_file("260423-Sprint-21-00", "milestone.md")
+            milestone_file.parent.mkdir(parents=True, exist_ok=True)
+            milestone_file.write_text(
+                "\n".join(
+                    [
+                        "# Sprint Milestone",
+                        "",
+                        "- requested_milestone_title: 알림 읽기 순서 확정",
+                        "- revised_milestone_title: 첫 화면 핵심 데이터 위계 확정",
+                        "",
+                        "## Latest Derived Framing",
+                        "",
+                        "title -> top_summary -> body_detail 순서를 유지하고 planner finalize를 마무리합니다.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            class _FakeRunner:
+                def __init__(self):
+                    self.calls: list[dict[str, object]] = []
+
+                def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
+                    self.calls.append(
+                        {
+                            "workspace": str(workspace),
+                            "prompt": prompt,
+                            "session_id": session_id,
+                            "bypass_sandbox": bypass_sandbox,
+                        }
+                    )
+                    if len(self.calls) == 1:
+                        raise RuntimeError(
+                            "Error: thread/resume: thread/resume failed: no rollout found for thread id 019dbaa0"
+                        )
+                    return (
+                        json.dumps(
+                            {
+                                "request_id": "request-1",
+                                "role": "planner",
+                                "status": "completed",
+                                "summary": "fresh session에서 planner finalize를 재개했습니다.",
+                                "insights": [],
+                                "proposals": {},
+                                "artifacts": ["./shared_workspace/sprints/260423-Sprint-21-00/spec.md"],
+                                "error": "",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "session-fresh",
+                    )
+
+            fake_runner = _FakeRunner()
+            runtime.codex_runner = fake_runner
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="planner",
+                intent="plan",
+                urgency="normal",
+                scope="시황 알림 첫 화면 hierarchy contract를 finalize합니다",
+                body="planner finalize를 이어서 수행하세요.",
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "sprint_id": "260423-Sprint-21:00",
+                "backlog_id": "backlog-1",
+                "todo_id": "todo-open",
+                "current_role": "planner",
+                "next_role": "planner",
+                "params": {
+                    "workflow": {
+                        "phase": "planning",
+                        "step": "planner_finalize",
+                        "phase_owner": "planner",
+                        "phase_status": "finalizing",
+                    }
+                },
+                "events": [
+                    {
+                        "type": "role_report",
+                        "actor": "research",
+                        "summary": "외부 research 없이 planner가 local evidence로 이어갈 수 있습니다.",
+                        "payload": {
+                            "status": "completed",
+                            "summary": "외부 research 없이 planner가 local evidence로 이어갈 수 있습니다.",
+                            "artifacts": [],
+                        },
+                    },
+                    {
+                        "type": "role_report",
+                        "actor": "planner",
+                        "summary": "plan/spec/current_sprint를 갱신했고 finalize만 남았습니다.",
+                        "payload": {
+                            "status": "completed",
+                            "summary": "plan/spec/current_sprint를 갱신했고 finalize만 남았습니다.",
+                            "artifacts": [
+                                "./shared_workspace/sprints/260423-Sprint-21-00/plan.md",
+                                "./shared_workspace/sprints/260423-Sprint-21-00/spec.md",
+                            ],
+                        },
+                    },
+                    {
+                        "type": "role_report",
+                        "actor": "architect",
+                        "summary": "developer/qa를 거쳐 planner finalize로 복귀할 준비가 되었습니다.",
+                        "payload": {
+                            "status": "completed",
+                            "summary": "developer/qa를 거쳐 planner finalize로 복귀할 준비가 되었습니다.",
+                            "artifacts": [],
+                        },
+                    },
+                ],
+                "result": {
+                    "status": "blocked",
+                    "summary": "planner 문서 계약이 닫히지 않았습니다.",
+                    "proposals": {
+                        "workflow_transition": {
+                            "outcome": "reopen",
+                            "target_phase": "planning",
+                            "target_step": "planner_finalize",
+                            "requested_role": "planner",
+                            "reason": "planner 문서와 artifact 반영이 닫히지 않았습니다.",
+                            "unresolved_items": [
+                                "planner finalize 결과에 planner-owned artifact 경로를 남겨야 합니다.",
+                                "current_sprint/todo/spec 반영 여부를 재확인해야 합니다.",
+                            ],
+                            "finalize_phase": False,
+                        }
+                    },
+                },
+            }
+
+            payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(len(fake_runner.calls), 2)
+            self.assertEqual(fake_runner.calls[0]["session_id"], "session-stale")
+            self.assertIsNone(fake_runner.calls[1]["session_id"])
+            self.assertNotEqual(fake_runner.calls[0]["workspace"], fake_runner.calls[1]["workspace"])
+            self.assertEqual(payload["session_id"], "session-fresh")
+            self.assertEqual(payload["session_workspace"], fake_runner.calls[1]["workspace"])
+            retry_prompt = str(fake_runner.calls[1]["prompt"])
+            self.assertIn("Sprint Handoff Snapshot", retry_prompt)
+            self.assertIn("requested_milestone: 알림 읽기 순서 확정", retry_prompt)
+            self.assertIn("active_milestone: 첫 화면 핵심 데이터 위계 확정", retry_prompt)
+            self.assertIn("latest_derived_framing: title -> top_summary -> body_detail 순서를 유지하고 planner finalize를 마무리합니다.", retry_prompt)
+            self.assertIn("Sprint Todos Completed", retry_prompt)
+            self.assertIn("핵심 위계 계약 정리", retry_prompt)
+            self.assertIn("Sprint Todos Incomplete", retry_prompt)
+            self.assertIn("planner finalize 재실행", retry_prompt)
+            self.assertIn("Role Continuity", retry_prompt)
+            self.assertIn("continuing_role: planner", retry_prompt)
+            self.assertIn("latest_same_role_report: [completed] plan/spec/current_sprint를 갱신했고 finalize만 남았습니다.", retry_prompt)
+            self.assertIn("Current Task", retry_prompt)
+            self.assertIn("workflow_step: planner_finalize", retry_prompt)
+            self.assertIn("unresolved_items:", retry_prompt)
+            self.assertIn("Required Next Action", retry_prompt)
+            self.assertIn("same `planner` role", retry_prompt)
+
     def test_role_runtime_logs_task_start_and_result(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -320,6 +755,276 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             self.assertIn("task_result request_id=request-1", joined)
             self.assertIn("todo_id=todo-1", joined)
             self.assertEqual(payload["status"], "completed")
+
+    def test_research_runtime_skips_external_research_for_repo_local_request(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:00",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-local",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="teams_runtime research role을 추가합니다",
+                body="teams_runtime workflow와 planner handoff를 수정합니다",
+            )
+            request_record = {
+                "request_id": "request-local",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:00",
+            }
+
+            decision_output = json.dumps(
+                {
+                    "needed": False,
+                    "subject": "",
+                    "research_query": "",
+                    "reason_code": "not_needed_no_subject",
+                    "planner_guidance": "planner는 repo/local sprint context만으로 planning을 이어가면 됩니다.",
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-1")) as decision_mock, patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync"
+            ) as deep_research_mock:
+                payload = runtime.run_task(envelope, request_record)
+
+            decision_mock.assert_called_once()
+            deep_research_mock.assert_not_called()
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(
+                payload["proposals"]["research_signal"],
+                {
+                    "needed": False,
+                    "subject": "",
+                    "research_query": "",
+                    "reason_code": "not_needed_no_subject",
+                },
+            )
+            self.assertEqual(payload["proposals"]["research_report"]["headline"], "외부 research 불필요")
+            self.assertEqual(payload["artifacts"], [])
+
+    def test_research_runtime_retries_combined_reason_code_with_fresh_session(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:05",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            state = runtime._session_manager_for_sprint("260418-Sprint-10:05").ensure_session()
+            runtime._session_manager_for_sprint("260418-Sprint-10:05").finalize_session_id(state, "research-stale")
+            envelope = MessageEnvelope(
+                request_id="request-retry",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="teams_runtime local implementation check",
+                body="Check whether external grounding is needed.",
+            )
+            request_record = {
+                "request_id": "request-retry",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:05",
+            }
+            invalid_output = json.dumps(
+                {
+                    "needed": False,
+                    "subject": "Local implementation evidence",
+                    "research_query": "Check local implementation evidence.",
+                    "reason_code": "needed_external_grounding|not_needed_local_evidence",
+                    "planner_guidance": "planner는 local evidence를 확인하면 됩니다.",
+                },
+                ensure_ascii=False,
+            )
+            valid_output = json.dumps(
+                {
+                    "needed": False,
+                    "subject": "Local implementation evidence",
+                    "research_query": "Check local implementation evidence.",
+                    "reason_code": "not_needed_local_evidence",
+                    "planner_guidance": "planner는 local evidence를 확인하면 됩니다.",
+                },
+                ensure_ascii=False,
+            )
+
+            with patch.object(
+                runtime.codex_runner,
+                "run",
+                side_effect=[(invalid_output, "research-stale"), (valid_output, "research-fixed")],
+            ) as decision_mock, patch("teams_runtime.runtime.research_runtime.run_deep_research_sync") as deep_research_mock:
+                payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(decision_mock.call_count, 2)
+            self.assertEqual(decision_mock.call_args_list[0].args[2], "research-stale")
+            self.assertIsNone(decision_mock.call_args_list[1].args[2])
+            self.assertIn("strict research decision schema", decision_mock.call_args_list[1].args[1])
+            deep_research_mock.assert_not_called()
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["proposals"]["research_signal"]["reason_code"], "not_needed_local_evidence")
+
+    def test_research_runtime_runs_deep_research_and_writes_request_scoped_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:30",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-external",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="latest OpenAI versus Gemini API pricing comparison with sources",
+                body="Need current source-backed comparison before planner decides provider direction.",
+            )
+            request_record = {
+                "request_id": "request-external",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:30",
+            }
+            report_text = """# Executive Summary
+Current API pricing differs enough that planner should preserve provider-specific cost assumptions.
+
+# Planner Guidance
+Prefer a provider-neutral abstraction until pricing volatility stabilizes.
+
+# Backing Sources
+- title: OpenAI API Pricing
+  url: https://openai.com/api/pricing
+  published_at: 2026-04-01
+  relevance: Confirms current OpenAI list pricing.
+  summary: Lists current flagship API pricing tiers.
+- title: Gemini API Pricing
+  url: https://ai.google.dev/gemini-api/docs/pricing
+  published_at: 2026-04-02
+  relevance: Confirms current Gemini list pricing.
+  summary: Lists current Gemini model pricing tiers.
+
+# Open Questions
+- Should planner optimize for latency or pure token cost first?
+"""
+
+            decision_output = json.dumps(
+                {
+                    "needed": True,
+                    "subject": "Current OpenAI versus Gemini API pricing comparison",
+                    "research_query": "Compare current OpenAI and Gemini API pricing with official sources and note planner-impacting differences.",
+                    "reason_code": "needed_external_grounding",
+                    "planner_guidance": "planner는 외부 가격 근거가 정리되기 전까지 provider cost assumptions를 고정하지 마세요.",
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-2")) as decision_mock, patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync",
+                return_value=SimpleNamespace(response_text=report_text),
+            ) as deep_research_mock:
+                payload = runtime.run_task(envelope, request_record)
+
+            decision_mock.assert_called_once()
+            deep_research_mock.assert_called_once()
+            self.assertIn(
+                "Compare current OpenAI and Gemini API pricing with official sources",
+                deep_research_mock.call_args.args[0],
+            )
+            artifact = paths.sprint_research_file("260418-Sprint-10:30", "request-external")
+            self.assertTrue(artifact.exists())
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["artifacts"], ["shared_workspace/sprints/260418-Sprint-10:30/research/request-external.md"])
+            self.assertEqual(
+                payload["proposals"]["research_signal"],
+                {
+                    "needed": True,
+                    "subject": "Current OpenAI versus Gemini API pricing comparison",
+                    "research_query": "Compare current OpenAI and Gemini API pricing with official sources and note planner-impacting differences.",
+                    "reason_code": "needed_external_grounding",
+                },
+            )
+            self.assertEqual(len(payload["proposals"]["research_report"]["backing_sources"]), 2)
+
+    def test_research_runtime_blocks_when_decision_output_is_invalid(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:45",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-invalid-decision",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="Need current API pricing validation before planner commits to provider assumptions",
+                body="Researcher should decide if external grounding is needed.",
+            )
+            request_record = {
+                "request_id": "request-invalid-decision",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:45",
+            }
+            invalid_output = json.dumps(
+                {
+                    "needed": True,
+                    "subject": "",
+                    "research_query": "",
+                    "reason_code": "needed_external_grounding",
+                    "planner_guidance": "외부 근거가 필요합니다.",
+                },
+                ensure_ascii=False,
+            )
+
+            with patch.object(runtime.codex_runner, "run", return_value=(invalid_output, "research-session-3")) as decision_mock, patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync"
+            ) as deep_research_mock:
+                payload = runtime.run_task(envelope, request_record)
+
+            decision_mock.assert_called_once()
+            deep_research_mock.assert_not_called()
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(
+                payload["proposals"]["research_signal"],
+                {
+                    "needed": False,
+                    "subject": "",
+                    "research_query": "",
+                    "reason_code": "blocked_decision_failed",
+                },
+            )
+            self.assertIn("Research decision must provide subject", payload["error"])
 
     def test_role_runtime_uses_request_sprint_scope_for_workspace_reuse_and_refresh(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -407,6 +1112,80 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             self.assertEqual(state_after_third.sprint_id, "260403-Sprint-10:30")
             self.assertEqual(runtime.codex_runner.calls[2]["session_id"], None)
             self.assertNotEqual(first_payload["session_workspace"], third_payload["session_workspace"])
+
+    def test_role_runtime_local_identity_does_not_overwrite_service_session(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            service_runtime = RoleAgentRuntime(
+                paths=paths,
+                role="planner",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+                session_identity=service_runtime_identity("planner"),
+            )
+            local_runtime = RoleAgentRuntime(
+                paths=paths,
+                role="planner",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+                session_identity=local_runtime_identity("orchestrator", "planner"),
+            )
+
+            class _TaggedRunner:
+                def __init__(self, session_id: str):
+                    self.session_id = session_id
+
+                def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
+                    return (
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "summary": "ok",
+                                "error": "",
+                                "proposals": {},
+                                "artifacts": [],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        self.session_id,
+                    )
+
+            service_runtime.codex_runner = _TaggedRunner("planner-service-session")
+            local_runtime.codex_runner = _TaggedRunner("planner-local-session")
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="planner",
+                intent="plan",
+                urgency="normal",
+                scope="scope",
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": "scope",
+                "body": "",
+                "artifacts": [],
+                "sprint_id": "sprint-a",
+            }
+
+            service_payload = service_runtime.run_task(envelope, dict(request_record))
+            local_payload = local_runtime.run_task(envelope, dict(request_record))
+
+            service_state = service_runtime.session_manager.load()
+            local_state = local_runtime.session_manager.load()
+
+            self.assertIsNotNone(service_state)
+            self.assertIsNotNone(local_state)
+            self.assertEqual(service_state.session_id, "planner-service-session")
+            self.assertEqual(local_state.session_id, "planner-local-session")
+            self.assertNotEqual(service_payload["session_workspace"], local_payload["session_workspace"])
+            self.assertTrue(
+                paths.session_state_file(
+                    "planner",
+                    runtime_identity=local_runtime_identity("orchestrator", "planner"),
+                ).exists()
+            )
 
     def test_role_runtime_prompt_mentions_project_workspace_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -648,7 +1427,7 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             runner = CodexRunner(RoleRuntimeConfig())
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout='{"summary":"fresh-output"}', stderr=""),
             ):
                 output, resolved_session_id = runner.run(workspace, "prompt", "session-123")
@@ -701,7 +1480,7 @@ index 111..222 100644
                     stderr="ERROR: Error running remote compact task: usage limit",
                 )
 
-            with patch("teams_runtime.runtime.codex.subprocess.run", side_effect=_fake_run):
+            with patch("teams_runtime.runtime.codex_runner.subprocess.run", side_effect=_fake_run):
                 output, resolved_session_id = runner.run(workspace, "prompt", "session-123")
 
             self.assertIn('"status": "blocked"', output)
@@ -724,7 +1503,7 @@ context compacted
                 output_path.write_text(mixed_output, encoding="utf-8")
                 return SimpleNamespace(returncode=1, stdout="", stderr="usage limit reached")
 
-            with patch("teams_runtime.runtime.codex.subprocess.run", side_effect=_fake_run):
+            with patch("teams_runtime.runtime.codex_runner.subprocess.run", side_effect=_fake_run):
                 output, resolved_session_id = runner.run(workspace, "prompt", "session-123")
 
             payload = extract_json_object(output)
@@ -739,7 +1518,7 @@ context compacted
             runner = CodexRunner(RoleRuntimeConfig())
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(
                     returncode=1,
                     stdout="",
@@ -770,7 +1549,7 @@ context compacted
             )
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=1, stdout=mock_stdout, stderr=""),
             ):
                 output, resolved_session_id = runner.run(workspace, "prompt", None)
@@ -795,7 +1574,7 @@ context compacted
             })
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout=mock_stdout, stderr=""),
             ) as mock_run:
                 output, resolved_session_id = runner.run(Path(state.workspace_path), "my prompt", "session-123", bypass_sandbox=True)
@@ -839,7 +1618,7 @@ context compacted
                 "sessionId": "session-camel-123"
             })
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout=mock_stdout_camel, stderr=""),
             ):
                 output, resolved_session_id = runner.run(Path(state.workspace_path), "prompt", None)
@@ -851,7 +1630,7 @@ context compacted
                 "error": {"message": "Resource exhausted"}
             })
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=1, stdout=mock_stdout_error, stderr=""),
             ):
                 with self.assertRaisesRegex(RuntimeError, "Resource exhausted"):
@@ -867,7 +1646,7 @@ context compacted
             runner = CodexRunner(RoleRuntimeConfig())
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout='{"summary":"ok"}', stderr=""),
             ) as mock_run:
                 runner.run(Path(state.workspace_path), "prompt", None)
@@ -893,7 +1672,7 @@ context compacted
             runner = CodexRunner(RoleRuntimeConfig())
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout='{"summary":"ok"}', stderr=""),
             ) as mock_run:
                 runner.run(Path(state.workspace_path), "prompt", "session-123")
@@ -919,7 +1698,7 @@ context compacted
             large_prompt = "planner-context-" * 4096
 
             with patch(
-                "teams_runtime.runtime.codex.subprocess.run",
+                "teams_runtime.runtime.codex_runner.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout='{"summary":"ok"}', stderr=""),
             ) as mock_run:
                 runner.run(Path(state.workspace_path), large_prompt, None)
@@ -1680,6 +2459,28 @@ context compacted
 
         self.assertEqual(payload["status"], "failed")
         self.assertIn("invalid status=done", payload["error"])
+
+    def test_normalize_role_payload_rejects_missing_placeholder_and_case_variant_status(self):
+        missing = normalize_role_payload({"summary": "ok"})
+        placeholder = normalize_role_payload(
+            {
+                "status": "completed|blocked|failed",
+                "summary": "short Korean summary",
+            }
+        )
+        case_variant = normalize_role_payload(
+            {
+                "status": "Completed",
+                "summary": "ok",
+            }
+        )
+
+        self.assertEqual(missing["status"], "failed")
+        self.assertIn("missing status", missing["error"])
+        self.assertEqual(placeholder["status"], "failed")
+        self.assertIn("invalid status=completed|blocked|failed", placeholder["error"])
+        self.assertEqual(case_variant["status"], "failed")
+        self.assertIn("invalid status=Completed", case_variant["error"])
 
     def test_normalize_role_payload_normalizes_planner_backlog_aliases_and_receipts(self):
         payload = normalize_role_payload(

@@ -4,10 +4,16 @@ This guide covers the day-to-day commands and the runtime behavior you are most 
 
 ## Core Commands
 
-Create a workspace:
+Create a workspace, or refresh copied prompts and packaged runtime skills when the target is already a workspace:
 
 ```bash
 python -m teams_runtime init
+```
+
+Force a generated-file rebuild when you intentionally want to reset runtime state and shared workspace files:
+
+```bash
+python -m teams_runtime init --reset
 ```
 
 Start all roles in the background:
@@ -386,7 +392,7 @@ Useful runtime directories:
 - `.teams_runtime/requests/`
   - per-request JSON state
 - `.teams_runtime/role_sessions/`
-  - active session metadata per role
+  - active session metadata per runtime identity
 - `.teams_runtime/archive/`
   - archived old sprint session metadata
 - `.teams_runtime/agents/`
@@ -440,6 +446,8 @@ Mention routing is bot-ID based, not name based.
 ### A role keeps old context after sprint change
 
 This is expected until that role receives its next task.
+
+Public service runtimes and orchestrator-local helper runtimes roll over independently. It is normal for `.teams_runtime/role_sessions/` to contain both a service file such as `planner.json` and a helper file such as `orchestrator.local.planner.json`.
 
 Use:
 

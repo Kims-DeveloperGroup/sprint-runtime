@@ -164,7 +164,7 @@ Override the Codex model or reasoning level per role.
 You can edit `teams_generated/team_runtime.yaml` directly or update it through the CLI:
 
 ```bash
-python -m teams_runtime config role set --agent planner --model gpt-5.4 --reasoning medium
+python -m teams_runtime config role set --agent planner --model gpt-5.5 --reasoning medium
 python -m teams_runtime config role set --agent developer --model gemini-2.5-pro
 ```
 
@@ -173,10 +173,10 @@ Example:
 ```yaml
 role_defaults:
   planner:
-    model: "gpt-5.4"
+    model: "gpt-5.5"
     reasoning: "medium"
   developer:
-    model: "gpt-5.4"
+    model: "gpt-5.5"
     reasoning: "high"
 ```
 
@@ -229,7 +229,9 @@ That means:
 - `sprint.id`
   - identifies the configured session-scope context
   - used to decide session reuse versus refresh
-  - stored in `.teams_runtime/role_sessions/<role>.json`
+  - stored in `.teams_runtime/role_sessions/<sanitized_runtime_identity>.json`
+
+Public service runtimes still use role-name identities such as `planner`, so their session files remain `planner.json`-style files. Orchestrator-local helper runtimes use separate files such as `orchestrator.local.planner.json`.
 
 Many `backlog_id` and `request_id` values may exist while one configured sprint session scope remains active.
 
@@ -247,7 +249,7 @@ python -m teams_runtime restart
 What happens next:
 
 - the new sprint ID is read by restarted services
-- each role refreshes its session lazily on its next task
+- each runtime identity refreshes its session lazily on its next task
 - the old session metadata is archived under `.teams_runtime/archive/`
 
 ## Recommended First Configuration

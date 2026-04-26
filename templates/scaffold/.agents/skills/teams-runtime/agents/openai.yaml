@@ -1,0 +1,4 @@
+interface:
+  display_name: "teams_runtime Operator"
+  short_description: "Operate and debug generated teams_runtime workspaces"
+  default_prompt: "Use $teams-runtime to operate or investigate this generated teams_runtime workspace."

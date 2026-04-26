@@ -17,14 +17,17 @@ Package-local documentation for the standalone `teams_runtime` module lives here
   - product and runtime contract for the standalone module
 - `architecture.md`
   - topology, role workflow, communication flow, and component boundaries
+- `architecture_policy.md`
+  - current module structure, target migration structure, dependency rules, and architecture-preservation policy
 - `design.md`
   - major design decisions, defaults, and tradeoffs
 - `implementation.md`
-  - code layout, runtime behavior, storage layout, and maintainer checklist
+  - current code layout, runtime behavior, storage layout, and migration status
 
 ## Source Of Truth
 
 - Package code: `teams_runtime/`
+- Canonical shared contracts: `teams_runtime/shared/models.py`
 - Package-local tests: `teams_runtime/tests/`
 - Workspace template scaffold: `teams_runtime/core/template.py`
 - Python dependencies: `teams_runtime/requirements.txt`
@@ -36,3 +39,4 @@ Package-local documentation for the standalone `teams_runtime` module lives here
 - Role relay transport defaults to `internal`; use `--relay-transport discord` when debugging relay envelopes on Discord.
 - The top-level `teams/` folder in this repository is not a runtime dependency of `teams_runtime`.
 - These docs stay package-local and are not copied into generated workspaces.
+- `architecture.md` and `implementation.md` describe the current implementation; `architecture_policy.md` also tracks the target refactor structure and the rules for getting there.

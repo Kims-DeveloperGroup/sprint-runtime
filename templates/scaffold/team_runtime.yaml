@@ -1,0 +1,52 @@
+sprint:
+  id: "2026-Sprint-01"
+  interval_minutes: 180
+  timezone: "Asia/Seoul"
+  mode: "hybrid"
+  start_mode: "auto"
+  cutoff_time: "22:00"
+  overlap_policy: "no_overlap"
+  ingress_mode: "backlog_first"
+  discovery_scope: "broad_scan"
+  discovery_actions: []
+
+ingress:
+  dm: true
+  mentions: true
+
+allowed_guild_ids: []
+
+role_defaults:
+  orchestrator:
+    model: "gpt-5.5"
+    reasoning: "medium"
+  research:
+    model: "gpt-5.5"
+    reasoning: "medium"
+  planner:
+    model: "gpt-5.5"
+    reasoning: "xhigh"
+  designer:
+    model: "gpt-5.5"
+    reasoning: "medium"
+  architect:
+    model: "gpt-5.5"
+    reasoning: "high"
+  developer:
+    model: "gpt-5.3-codex-spark"
+    reasoning: "xhigh"
+  qa:
+    model: "gpt-5.5"
+    reasoning: "medium"
+
+research_defaults:
+  app: ""
+  notebook: ""
+  files: []
+  mode: ""
+  profile_path: ""
+  completion_timeout: 600
+  callback_timeout: 1200
+  cleanup: false
+
+actions: {}

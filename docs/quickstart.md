@@ -22,7 +22,15 @@ From your project root:
 python -m teams_runtime init
 ```
 
-If the target workspace already contains generated `teams_runtime` files, `init` clears them and rebuilds the workspace from scratch. When `discord_agents_config.yaml` already exists, that file is preserved and reused. Archived sprint history under `shared_workspace/sprint_history/` is also preserved.
+If the target workspace already contains generated `teams_runtime` config, `init` refreshes copied role prompts and packaged runtime skills by default without resetting `.teams_runtime/` or `shared_workspace/`.
+
+To rebuild generated files from scratch, use:
+
+```bash
+python -m teams_runtime init --reset
+```
+
+`--reset` preserves `discord_agents_config.yaml` and archived sprint history under `shared_workspace/sprint_history/`, but it resets runtime state and shared workspace files.
 
 Default behavior:
 
@@ -111,7 +119,7 @@ Edit `teams_generated/team_runtime.yaml`.
 To update a role's runtime model or reasoning through the CLI:
 
 ```bash
-python -m teams_runtime config role set --agent developer --model gpt-5.4 --reasoning high
+python -m teams_runtime config role set --agent developer --model gpt-5.5 --reasoning high
 ```
 
 If the role is already running, restart that role after saving the config.
@@ -243,6 +251,7 @@ The runtime writes state under:
 - `teams_generated/.teams_runtime/backlog/`
 - `teams_generated/.teams_runtime/sprints/`
 - `teams_generated/.teams_runtime/role_sessions/`
+  - one active metadata file per runtime identity
 - `teams_generated/.teams_runtime/agents/`
 
 The runtime writes logs under:

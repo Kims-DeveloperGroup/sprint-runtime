@@ -32,6 +32,27 @@ Normal user requests do not go straight to implementation.
 
 Planning and implementation are intentionally separated. Planner-owned surfaces such as `shared_workspace/backlog.md`, `completed_backlog.md`, and `current_sprint.md` stay under planning ownership; execution roles do not redefine those files as implementation output.
 
+## Package Layout Status
+
+- `cli.py` remains the legacy import-stable entrypoint facade and test-compatible patch surface.
+- `adapters/cli/commands.py` now owns argparse parser registration, top-level command dispatch, and shared CLI command implementation plumbing.
+- `adapters/discord/*` now owns Discord client and background lifecycle behavior; `discord/*` remains as compatibility aliases.
+- `shared/formatting.py` now owns report/progress formatting helpers, backlog item construction, backlog markdown rendering, and current-sprint markdown rendering; `core/reports.py` remains as a compatibility facade, and `core/sprints.py` re-exports the moved formatting helpers for compatibility.
+- `shared/config.py` now owns runtime and Discord config loading/updating; `core/config.py` remains as a compatibility facade.
+- `shared/paths.py` now owns the `RuntimePaths` workspace/path contract; `core/paths.py` remains as a compatibility facade.
+- `shared/persistence.py` now owns shared JSON/JSONL persistence helpers; `core/persistence.py` remains as a compatibility facade.
+- `workflows/state/*.py` now owns backlog/request/sprint persistence, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, backlog/review fingerprinting, sourcer and blocked-backlog review candidate normalization/rendering, fallback sourcer candidates, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, and backlog status-report context helpers; `core/*_store.py` remains as compatibility facades.
+- `workflows/orchestration/team_service.py` now owns `TeamService`; `core/orchestration.py` remains as a compatibility alias.
+- `workflows/orchestration/engine.py` now owns pure workflow state, routing decisions, governed routing-selection scoring, and role report guardrails; `core/workflow_engine.py` remains as a compatibility facade.
+- `workflows/roles/__init__.py` now owns the role prompt registry and agent utilization capability metadata; `core/agent_capabilities.py` remains as a compatibility facade.
+- `workflows/repository_ops.py` now owns registered action execution and sprint git/version-control helpers; `core/actions.py` and `core/git_ops.py` remain as compatibility facades.
+- `workflows/orchestration/ingress.py` now owns requester-route extraction, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augment glue, request-resume mutation, planning-envelope source detection, forwarded-request requester metadata packaging, relay-intake milestone gating, reply-route recovery, manual sprint ingress detection, kickoff payload parsing, duplicate requester-reply payload rendering, and planning-verification artifact selection / blocked-request matching helpers; `core/request_reply.py` remains as a compatibility alias.
+- `workflows/orchestration/relay.py` now owns relay delivery status/event glue, internal relay file queue helpers, relay summary rendering, internal relay consume/dispatch helpers, and transport branching between internal relay persistence versus Discord relay-channel delivery; `core/internal_relay.py`, `core/relay_delivery.py`, and `core/relay_summary.py` remain as compatibility aliases.
+- `workflows/orchestration/notifications.py` now owns Discord notification delivery, chunking, startup/fallback reports, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, requester summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate-receipt trusted-relay suppression, generic Discord content send delegation, and startup notification send/fallback state glue; `core/notifications.py` remains as a compatibility alias.
+- `workflows/sprints/lifecycle.py` now owns sprint IDs, scheduler slots, artifact-folder naming, sprint folder/attachment filename policy, todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata, sprint-relevant backlog selection, initial-phase validation policy, sprint planning request record assembly, planning-iteration bookkeeping, and phase-ready policy; `core/sprints.py` remains as a compatibility facade.
+- Most remaining monolith behavior still executes in `workflows/orchestration/team_service.py` and legacy runtime facades, while the target packages continue moving from re-export seams to owning modules.
+- `core/template.py` now reads scaffold markdown assets from `templates/scaffold/*`; public role and version-controller prompts are file-backed through `templates/prompts/*`, while parser/sourcer internal prompts remain under `templates/prompts/internal/*` with in-module fallback.
+
 ## Requirements
 
 - Python 3.10+
@@ -65,7 +86,9 @@ Workspace resolution is computed as:
 2. `./teams_generated`
 3. `./workspace/teams_generated`
 
-`init` uses `<workspace-root>` as the resolved target and writes generated runtime content there. If the target already exists, it preserves:
+`init` uses `<workspace-root>` as the resolved target. If the target is already a generated workspace, `init` refreshes copied prompts and packaged runtime skills without resetting `.teams_runtime/` or `shared_workspace/`.
+
+Use `--reset` when you intentionally want to rebuild generated runtime content. Reset mode preserves:
 
 - `discord_agents_config.yaml`
 - archived sprint history under `shared_workspace/sprint_history/`
@@ -170,7 +193,7 @@ allowed_guild_ids: []
 
 role_defaults:
   planner:
-    model: "gpt-5.4"
+    model: "gpt-5.5"
     reasoning: "xhigh"
   developer:
     model: "gpt-5.3-codex-spark"
@@ -184,7 +207,7 @@ actions: {}
 You can also update role defaults through the CLI:
 
 ```bash
-python -m teams_runtime config role set --agent developer --model gpt-5.4 --reasoning high
+python -m teams_runtime config role set --agent developer --model gpt-5.5 --reasoning high
 ```
 
 ### 4. Export bot tokens
@@ -264,7 +287,7 @@ python -m teams_runtime status
 python -m teams_runtime status --request-id 20260323-abcd1234
 python -m teams_runtime start --agent orchestrator
 python -m teams_runtime status --agent developer
-python -m teams_runtime config role set --agent planner --model gpt-5.4 --reasoning medium
+python -m teams_runtime config role set --agent planner --model gpt-5.5 --reasoning medium
 python -m teams_runtime sprint status
 ```
 
@@ -316,6 +339,8 @@ Runtime state and generated artifacts are written under:
 - `.teams_runtime/requests/`
 - `.teams_runtime/sprints/`
 - `.teams_runtime/role_sessions/`
+  - one active metadata file per runtime identity; public service runtimes still use role-name files such as `planner.json`
+  - runtime identity helpers are `service_identity`, `local_identity`, and `sanitize_identity`; `*_runtime_identity` names remain compatibility aliases
 - `.teams_runtime/internal_relay/inbox/<role>/`
 - `.teams_runtime/internal_relay/archive/<role>/` (processed relay archive)
 - `logs/agents/`
@@ -365,6 +390,7 @@ Maintainer/reference docs:
 - [Docs Index](./docs/README.md)
 - [Specification](./docs/specification.md)
 - [Architecture](./docs/architecture.md)
+- [Architecture Policy](./docs/architecture_policy.md)
 - [Design](./docs/design.md)
 - [Implementation Notes](./docs/implementation.md)
 
@@ -375,6 +401,30 @@ Maintainer/reference docs:
 - Planner persists canonical payload (`backlog_items` / `backlog_item`) and `proposals.backlog_writes` receipts.
   Orchestrator validates persisted payload/receipts and runtime state; it does not re-persist planner proposals.
 - `planned_backlog_updates` is compatibility alias for transition compatibility, not a new planning contract.
+- Canonical shared runtime contracts now live in `teams_runtime/shared/models.py`; `teams_runtime/models.py` remains as a compatibility facade during migration.
+- Canonical pure workflow state helpers, routing-policy decisions, governed routing-selection scoring, planner/QA workflow report guardrails, and planner-owned artifact filtering now live in `teams_runtime/workflows/orchestration/engine.py`; the related `teams_runtime/core/workflow_*.py` files remain compatibility facades.
+- Canonical role capability metadata and agent utilization policy loading now live in `teams_runtime/workflows/roles/__init__.py`; `teams_runtime/core/agent_capabilities.py` remains a compatibility facade.
+- Canonical requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery now live in `teams_runtime/workflows/orchestration/ingress.py`; `teams_runtime/core/request_reply.py` remains a compatibility alias.
+- Canonical sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, closeout request-id/path utility policy, terminal state update plus closeout-result state/payload assembly, report path text, artifact preview/status-label/line-limit helpers, planner initial-phase activity report key/section/body assembly, report-body field parsing/derived closeout refresh, history-archive refresh gating, history archive markdown/index/path preparation and write/refresh side effects, history index parsing/rendering, sprint artifact path mapping plus index/kickoff/milestone/plan/spec/todo-backlog/iteration-log rendering, kickoff preview/body rendering, role-report contract/validation-trace rendering, Spec/TODO report section/body formatting, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, sprint report delivery body/artifact/progress-report/context assembly, terminal report section composition, and user-facing/live sprint report markdown assembly now live in `teams_runtime/workflows/sprints/reporting.py`.
+- Canonical relay-send status mutation, relay failure-payload shaping, internal relay path/enqueue/archive, inbox scanning/loading, envelope round-trip helpers, synthetic relay-message stubs, pure action resolution, relay-summary fragment wrapping, relay-section grouping, and section-message rendering now live in `teams_runtime/workflows/orchestration/relay.py`.
+- Canonical startup report rendering, boxed-report excerpt summarization, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, low-level Discord chunking, runtime signature tagging, cross-process send locking, startup fallback recovery, requester-status message formatting, requester reply delivery, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, Discord relay-envelope sending, and orchestration notification glue now live in `teams_runtime/workflows/orchestration/notifications.py`; `teams_runtime/core/notifications.py` remains a compatibility alias.
+- `teams_runtime/core/internal_relay.py`, `teams_runtime/core/relay_delivery.py`, and `teams_runtime/core/relay_summary.py` remain compatibility aliases for relay helpers during import migration.
+- Sprint ID, scheduler slot, artifact-folder naming, sprint folder/attachment filename policy, todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata, sprint-relevant backlog selection, initial-phase validation policy, sprint planning request record assembly, planning-iteration bookkeeping, and phase-ready policy now live in `teams_runtime/workflows/sprints/lifecycle.py`; `teams_runtime/core/sprints.py` remains compatibility-only.
+- Planner-specific runtime prompt rules and proposal normalization now live in `teams_runtime/workflows/roles/planner.py`.
+- Research-specific prepass prompt/rule parsing helpers now live in `teams_runtime/workflows/roles/research.py`.
+- Canonical research runtime orchestration and external deep-research execution now live in `teams_runtime/runtime/research_runtime.py`.
+- Designer-specific runtime prompt rules now live in `teams_runtime/workflows/roles/designer.py`.
+- Architect-specific runtime prompt rules now live in `teams_runtime/workflows/roles/architect.py`.
+- Developer-specific runtime prompt rules now live in `teams_runtime/workflows/roles/developer.py`.
+- QA-specific runtime prompt rules now live in `teams_runtime/workflows/roles/qa.py`.
+- Version-controller runtime prompt rules now live in `teams_runtime/workflows/roles/version_controller.py`.
+- Canonical shared role runtime execution and payload normalization now live in `teams_runtime/runtime/base_runtime.py`.
+- Canonical runtime subprocess execution and JSON output recovery now live in `teams_runtime/runtime/codex_runner.py`.
+- Internal parser/runtime intent classification now lives in `teams_runtime/runtime/internal/intent_parser.py`.
+- Internal backlog sourcing runtime now lives in `teams_runtime/runtime/internal/backlog_sourcing.py`.
+- Canonical runtime session lifecycle and workspace seeding now live in `teams_runtime/runtime/session_manager.py`.
+- Orchestrator runtime prompt rules now live in `teams_runtime/workflows/roles/orchestrator.py`.
+- Runtime-side registration of role prompt modules now lives in `teams_runtime/workflows/roles/__init__.py`.
 - `start`, `run`, `restart` are command-line transport targets for `--relay-transport`; other commands keep defaults.
 - Sprint start cannot continue with zero actionable sprint backlog; the runtime blocks with `planning_incomplete` instead.
 - `status --sprint` still works as a compatibility alias for `sprint status`.

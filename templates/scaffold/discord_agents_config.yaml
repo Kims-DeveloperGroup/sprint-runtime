@@ -1,0 +1,55 @@
+# Replace every placeholder Discord snowflake before starting runtime listeners.
+# Runtime start/status commands reject these scaffold IDs unless explicitly overridden for tests.
+relay_channel_id: "111111111111111111"
+startup_channel_id: "111111111111111111"
+report_channel_id: "111111111111111111"
+agents:
+  orchestrator:
+    name: orchestrator
+    role: orchestrator
+    description: Central orchestrator that routes and monitors requests
+    token_env: AGENT_DISCORD_TOKEN_ORCHESTRATOR
+    bot_id: "111111111111111112"
+  research:
+    name: research
+    role: research
+    description: Pre-planning research agent that decides whether external grounding is needed
+    token_env: AGENT_DISCORD_TOKEN_RESEARCH
+    bot_id: "111111111111111119"
+  planner:
+    name: planner
+    role: planner
+    description: Planning and PRD agent
+    token_env: AGENT_DISCORD_TOKEN_PLANNER
+    bot_id: "111111111111111113"
+  designer:
+    name: designer
+    role: designer
+    description: UX and response-style agent
+    token_env: AGENT_DISCORD_TOKEN_DESIGNER
+    bot_id: "111111111111111114"
+  architect:
+    name: architect
+    role: architect
+    description: Architecture, technical specification, and code review agent
+    token_env: AGENT_DISCORD_TOKEN_ARCHITECT
+    bot_id: "111111111111111115"
+  developer:
+    name: developer
+    role: developer
+    description: Implementation and operations agent
+    token_env: AGENT_DISCORD_TOKEN_DEVELOPER
+    bot_id: "111111111111111116"
+  qa:
+    name: qa
+    role: qa
+    description: Quality assurance and regression-review agent
+    token_env: AGENT_DISCORD_TOKEN_QA
+    bot_id: "111111111111111117"
+internal_agents:
+  sourcer:
+    name: CS_ADMIN
+    role: sourcer
+    description: Internal backlog sourcing activity reporter
+    token_env: AGENT_DISCORD_TOKEN_CS_ADMIN
+    bot_id: "111111111111111118"

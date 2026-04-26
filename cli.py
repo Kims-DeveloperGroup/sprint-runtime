@@ -7,29 +7,45 @@ import os
 from collections.abc import Awaitable
 from pathlib import Path
 
-from teams_runtime.core.config import (
-    load_team_runtime_config,
-    update_team_runtime_role_defaults,
-    validate_runtime_discord_agents_config,
-)
-from teams_runtime.core.orchestration import (
-    RELAY_TRANSPORT_DISCORD,
-    RELAY_TRANSPORT_INTERNAL,
-    TeamService,
-)
-from teams_runtime.core.paths import RuntimePaths
-from teams_runtime.core.persistence import iter_json_records, read_json, utc_now_iso, write_json
-from teams_runtime.core.sprints import build_sprint_artifact_folder_name
-from teams_runtime.core.template import scaffold_workspace
-from teams_runtime.discord.lifecycle import (
+from teams_runtime.adapters.cli.commands import build_parser as build_cli_parser
+from teams_runtime.adapters.cli.commands import cmd_config_research_set_impl
+from teams_runtime.adapters.cli.commands import cmd_config_role_set_impl
+from teams_runtime.adapters.cli.commands import cmd_init_impl
+from teams_runtime.adapters.cli.commands import cmd_list_impl
+from teams_runtime.adapters.cli.commands import cmd_restart_impl
+from teams_runtime.adapters.cli.commands import cmd_sprint_restart_impl
+from teams_runtime.adapters.cli.commands import cmd_sprint_start_impl
+from teams_runtime.adapters.cli.commands import cmd_sprint_status_impl
+from teams_runtime.adapters.cli.commands import cmd_sprint_stop_impl
+from teams_runtime.adapters.cli.commands import cmd_start_impl
+from teams_runtime.adapters.cli.commands import cmd_status_impl
+from teams_runtime.adapters.cli.commands import cmd_stop_impl
+from teams_runtime.adapters.cli.commands import dispatch_main
+from teams_runtime.adapters.cli.commands import run_services_impl
+from teams_runtime.adapters.discord.client import DiscordClient, DiscordListenError, classify_discord_exception
+from teams_runtime.adapters.discord.lifecycle import (
     role_service_status,
     run_foreground_role_service,
     start_background_role_service,
     stop_background_role_service,
 )
-from teams_runtime.discord.client import DiscordClient, DiscordListenError, classify_discord_exception
-from teams_runtime.models import ALL_RUNTIME_AGENTS, INTERNAL_TEAM_AGENTS, TEAM_ROLES
-from teams_runtime.runtime.codex import RoleSessionManager
+from teams_runtime.shared.config import (
+    load_team_runtime_config,
+    update_team_runtime_research_defaults,
+    update_team_runtime_role_defaults,
+    validate_runtime_discord_agents_config,
+)
+from teams_runtime.shared.paths import RuntimePaths
+from teams_runtime.shared.persistence import iter_json_records, read_json, utc_now_iso, write_json
+from teams_runtime.workflows.orchestration.team_service import (
+    RELAY_TRANSPORT_DISCORD,
+    RELAY_TRANSPORT_INTERNAL,
+    TeamService,
+)
+from teams_runtime.workflows.sprints.lifecycle import build_sprint_artifact_folder_name
+from teams_runtime.core.template import refresh_workspace_prompt_assets, scaffold_workspace
+from teams_runtime.shared.models import ALL_RUNTIME_AGENTS, INTERNAL_TEAM_AGENTS, TEAM_ROLES
+from teams_runtime.runtime.session_manager import RoleSessionManager
 
 
 logging.basicConfig(
@@ -209,11 +225,17 @@ def build_agent_service(
     workspace_root: Path,
     role: str,
     *,
+    enable_discord_client: bool = True,
     relay_transport: str = DEFAULT_RELAY_TRANSPORT,
 ) -> TeamService | InternalAgentService:
     if role in INTERNAL_TEAM_AGENTS:
         return InternalAgentService(workspace_root, role)
-    return TeamService(workspace_root, role, relay_transport=relay_transport)
+    return TeamService(
+        workspace_root,
+        role,
+        enable_discord_client=enable_discord_client,
+        relay_transport=relay_transport,
+    )
 
 
 def is_workspace_root(path: str | Path) -> bool:
@@ -236,89 +258,14 @@ def resolve_workspace_root(raw: str | None) -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Standalone multi-bot teams runtime.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    init_parser = subparsers.add_parser("init", help="Scaffold a portable workspace.")
-    init_parser.add_argument(
-        "--workspace-root",
-        default=None,
-        help=_workspace_root_help_text(),
+    return build_cli_parser(
+        all_runtime_agents=ALL_RUNTIME_AGENTS,
+        team_roles=TEAM_ROLES,
+        relay_transport_internal=RELAY_TRANSPORT_INTERNAL,
+        relay_transport_discord=RELAY_TRANSPORT_DISCORD,
+        default_relay_transport=DEFAULT_RELAY_TRANSPORT,
+        workspace_root_help_text=_workspace_root_help_text(),
     )
-
-    for command in ("run", "start", "status", "stop", "restart"):
-        command_parser = subparsers.add_parser(command)
-        command_parser.add_argument(
-            "--workspace-root",
-            default=None,
-            help=_workspace_root_help_text(),
-        )
-        command_parser.add_argument("--agent", choices=ALL_RUNTIME_AGENTS, help="Optional single agent target.")
-        if command in {"run", "start", "restart"}:
-            command_parser.add_argument(
-                "--relay-transport",
-                choices=(RELAY_TRANSPORT_INTERNAL, RELAY_TRANSPORT_DISCORD),
-                default=DEFAULT_RELAY_TRANSPORT,
-                help="Relay transport between team roles. Defaults to internal for runtime operations.",
-            )
-        if command == "status":
-            command_parser.add_argument("--request-id", help="Optional request identifier.")
-            command_parser.add_argument("--sprint", action="store_true", help="Show active or latest sprint summary.")
-            command_parser.add_argument("--backlog", action="store_true", help="Show backlog summary.")
-
-    list_parser = subparsers.add_parser("list")
-    list_parser.add_argument(
-        "--workspace-root",
-        default=None,
-        help=_workspace_root_help_text(),
-    )
-    list_parser.add_argument("--request-id", help="Optional request identifier to print.")
-
-    config_parser = subparsers.add_parser("config")
-    config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
-    role_parser = config_subparsers.add_parser("role")
-    role_subparsers = role_parser.add_subparsers(dest="role_command", required=True)
-    role_set_parser = role_subparsers.add_parser("set")
-    role_set_parser.add_argument(
-        "--workspace-root",
-        default=None,
-        help=_workspace_root_help_text(),
-    )
-    role_set_parser.add_argument("--agent", choices=TEAM_ROLES, required=True, help="Target team role.")
-    role_set_parser.add_argument("--model", help="Optional model override to save in team_runtime.yaml.")
-    role_set_parser.add_argument("--reasoning", help="Optional reasoning level to save in team_runtime.yaml.")
-
-    sprint_parser = subparsers.add_parser("sprint")
-    sprint_subparsers = sprint_parser.add_subparsers(dest="sprint_command", required=True)
-    for sprint_command in ("start", "stop", "restart", "status"):
-        sprint_command_parser = sprint_subparsers.add_parser(sprint_command)
-        sprint_command_parser.add_argument(
-            "--workspace-root",
-            default=None,
-            help=_workspace_root_help_text(),
-        )
-        if sprint_command == "start":
-            sprint_command_parser.add_argument("--milestone", required=True, help="Sprint milestone title.")
-            sprint_command_parser.add_argument("--brief", help="Optional preserved kickoff brief for the sprint.")
-            sprint_command_parser.add_argument(
-                "--requirement",
-                action="append",
-                default=[],
-                help="Optional kickoff requirement. Repeat to add more than one.",
-            )
-            sprint_command_parser.add_argument(
-                "--artifact",
-                action="append",
-                default=[],
-                help="Optional kickoff reference artifact path. Repeat to add more than one.",
-            )
-            sprint_command_parser.add_argument(
-                "--source-request-id",
-                default="",
-                help="Optional originating request_id for runtime-driven sprint starts.",
-            )
-
-    return parser
 
 
 async def run_services(
@@ -327,31 +274,33 @@ async def run_services(
     *,
     relay_transport: str = DEFAULT_RELAY_TRANSPORT,
 ) -> None:
-    paths = RuntimePaths.from_root(workspace_root)
-    paths.ensure_runtime_dirs()
-    if _requires_runtime_discord_validation(role):
-        validate_runtime_discord_agents_config(paths.workspace_root)
-    roles = [role] if role else list(ALL_RUNTIME_AGENTS)
-    services = [
-        build_agent_service(
-            paths.workspace_root,
-            item,
-            relay_transport=relay_transport,
-        )
-        for item in roles
-    ]
-    await asyncio.gather(
-        *[
-            run_foreground_role_service(paths, service.role, service.run)
-            for service in services
-        ]
+    await run_services_impl(
+        workspace_root,
+        role,
+        relay_transport=relay_transport,
+        runtime_paths_cls=RuntimePaths,
+        validate_runtime_discord_agents_config=validate_runtime_discord_agents_config,
+        requires_runtime_discord_validation=_requires_runtime_discord_validation,
+        all_runtime_agents=ALL_RUNTIME_AGENTS,
+        build_agent_service=build_agent_service,
+        run_foreground_role_service=run_foreground_role_service,
     )
 
 
-def cmd_init(workspace_root: Path) -> int:
-    created = scaffold_workspace(workspace_root)
-    print(f"Scaffolded {len(created)} workspace files at {workspace_root}")
-    return 0
+def cmd_init(workspace_root: Path, *, refresh_prompts: bool = False, reset: bool = False) -> int:
+    cwd_config = Path.cwd().resolve() / "discord_agents_config.yaml"
+    discord_config_source = cwd_config if reset and cwd_config.is_file() else None
+
+    def scaffold_workspace_for_init(root: Path) -> list[Path]:
+        return scaffold_workspace(root, discord_agents_config_source=discord_config_source)
+
+    return cmd_init_impl(
+        workspace_root,
+        scaffold_workspace=scaffold_workspace_for_init,
+        refresh_workspace_prompts=refresh_workspace_prompt_assets,
+        refresh_prompts=refresh_prompts,
+        reset=reset,
+    )
 
 
 def cmd_start(
@@ -360,56 +309,17 @@ def cmd_start(
     *,
     relay_transport: str = DEFAULT_RELAY_TRANSPORT,
 ) -> int:
-    paths = RuntimePaths.from_root(workspace_root)
-    if _requires_runtime_discord_validation(role):
-        validate_runtime_discord_agents_config(paths.workspace_root)
-    roles = [role] if role else list(ALL_RUNTIME_AGENTS)
-    for item in roles:
-        build_agent_service(paths.workspace_root, item, relay_transport=relay_transport)
-    for item in roles:
-        pid = start_background_role_service(paths, item, relay_transport=relay_transport)
-        print(f"Started {item} service in background (PID {pid}).")
-    return 0
-
-
-def _format_session_sprint_scope(session_state: dict[str, object]) -> str:
-    sprint_id = str(session_state.get("sprint_id") or session_state.get("active_sprint_id") or "").strip()
-    return f"sprint_id={sprint_id or 'N/A'}"
-
-
-def _format_scheduler_sprint_scope(scheduler_state: dict[str, object]) -> str:
-    active_sprint_id = str(scheduler_state.get("active_sprint_id") or "").strip()
-    return f"active_sprint_id={active_sprint_id or 'N/A'}"
-
-
-def _load_cli_sprint_status(paths: RuntimePaths) -> tuple[dict[str, object], bool, dict[str, object]]:
-    scheduler = read_json(paths.sprint_scheduler_file)
-    sprint_id = str(scheduler.get("active_sprint_id") or "").strip()
-    sprint_record = read_json(paths.sprint_file(sprint_id)) if sprint_id else {}
-    is_active = bool(sprint_record)
-    if not sprint_record:
-        sprint_files = sorted(paths.sprints_dir.glob("*.json"))
-        if sprint_files:
-            sprint_record = read_json(sprint_files[-1])
-    return sprint_record, is_active, scheduler
-
-
-def _render_cli_sprint_status(sprint_record: dict[str, object], *, is_active: bool, scheduler: dict[str, object]) -> str:
-    lines = [
-        "## Sprint Summary",
-        f"- view: {'active' if is_active else 'latest'}",
-        f"- sprint_id: {sprint_record.get('sprint_id') or ''}",
-        f"- sprint_name: {sprint_record.get('sprint_name') or sprint_record.get('sprint_display_name') or 'N/A'}",
-        f"- phase: {sprint_record.get('phase') or 'N/A'}",
-        f"- milestone_title: {sprint_record.get('milestone_title') or 'N/A'}",
-        f"- status: {sprint_record.get('status') or ''}",
-        f"- trigger: {sprint_record.get('trigger') or ''}",
-        f"- started_at: {sprint_record.get('started_at') or ''}",
-        f"- ended_at: {sprint_record.get('ended_at') or 'N/A'}",
-        f"- closeout_status: {sprint_record.get('closeout_status') or 'N/A'}",
-        f"- next_slot_at: {scheduler.get('next_slot_at') or 'N/A'}",
-    ]
-    return "\n".join(lines)
+    return cmd_start_impl(
+        workspace_root,
+        role,
+        relay_transport=relay_transport,
+        runtime_paths_cls=RuntimePaths,
+        requires_runtime_discord_validation=_requires_runtime_discord_validation,
+        validate_runtime_discord_agents_config=validate_runtime_discord_agents_config,
+        all_runtime_agents=ALL_RUNTIME_AGENTS,
+        build_agent_service=build_agent_service,
+        start_background_role_service=start_background_role_service,
+    )
 
 
 def cmd_status(
@@ -420,65 +330,30 @@ def cmd_status(
     sprint: bool = False,
     backlog: bool = False,
 ) -> int:
-    paths = RuntimePaths.from_root(workspace_root)
-    runtime_config = load_team_runtime_config(paths.workspace_root)
-    if request_id:
-        return cmd_list(workspace_root, request_id)
-    if sprint:
-        sprint_record, is_active, scheduler = _load_cli_sprint_status(paths)
-        if not sprint_record:
-            print("No sprint record found.")
-            return 1
-        print(_render_cli_sprint_status(sprint_record, is_active=is_active, scheduler=scheduler))
-        return 0
-    if backlog:
-        items = list(iter_json_records(paths.backlog_dir))
-        pending_count = sum(1 for item in items if str(item.get("status") or "") == "pending")
-        selected_count = sum(1 for item in items if str(item.get("status") or "") == "selected")
-        blocked_count = sum(1 for item in items if str(item.get("status") or "") == "blocked")
-        done_count = sum(1 for item in items if str(item.get("status") or "") == "done")
-        carried_count = sum(1 for item in items if str(item.get("status") or "") == "carried_over")
-        print(
-            f"backlog_pending={pending_count} backlog_selected={selected_count} "
-            f"backlog_blocked={blocked_count} "
-            f"backlog_done={done_count} backlog_carried_over={carried_count}"
-        )
-        return 0
-    roles = [role] if role else list(ALL_RUNTIME_AGENTS)
-    for item in roles:
-        running, pid = role_service_status(paths, item)
-        session_state = {}
-        try:
-            session_state = read_json(paths.session_state_file(item))
-        except Exception:
-            session_state = {}
-        status = "running" if running else "stopped"
-        reload_state = read_json(paths.agent_state_file(item))
-        listener_status = str(reload_state.get("listener_status") or "").strip()
-        listener_error = str(reload_state.get("listener_error_category") or "").strip()
-        listener_summary = f" listener={listener_status or 'n/a'}"
-        if listener_error and listener_status != "connected":
-            listener_summary += f" listener_error={listener_error}"
-        model_summary = _format_role_runtime_summary(runtime_config, item)
-        print(
-            f"{item}: status={status} pid={pid or 'N/A'} "
-            f"{_format_session_sprint_scope(session_state)} "
-            f"session={session_state.get('session_id') or 'N/A'} "
-            f"{model_summary} {listener_summary}"
-        )
-    return 0
+    return cmd_status_impl(
+        workspace_root,
+        role,
+        request_id=request_id,
+        sprint=sprint,
+        backlog=backlog,
+        runtime_paths_cls=RuntimePaths,
+        load_team_runtime_config=load_team_runtime_config,
+        read_json=read_json,
+        iter_json_records=iter_json_records,
+        role_service_status=role_service_status,
+        all_runtime_agents=ALL_RUNTIME_AGENTS,
+        list_command=cmd_list,
+    )
 
 
 def cmd_stop(workspace_root: Path, role: str | None) -> int:
-    paths = RuntimePaths.from_root(workspace_root)
-    roles = [role] if role else list(ALL_RUNTIME_AGENTS)
-    exit_code = 0
-    for item in roles:
-        stopped, message = stop_background_role_service(paths, item)
-        print(message)
-        if not stopped and "not running" not in message.lower() and "stale pid" not in message.lower():
-            exit_code = 1
-    return exit_code
+    return cmd_stop_impl(
+        workspace_root,
+        role,
+        runtime_paths_cls=RuntimePaths,
+        all_runtime_agents=ALL_RUNTIME_AGENTS,
+        stop_background_role_service=stop_background_role_service,
+    )
 
 
 def cmd_restart(
@@ -487,64 +362,26 @@ def cmd_restart(
     *,
     relay_transport: str = DEFAULT_RELAY_TRANSPORT,
 ) -> int:
-    stop_code = cmd_stop(workspace_root, role)
-    start_code = cmd_start(workspace_root, role, relay_transport=relay_transport)
-    return 1 if stop_code or start_code else 0
+    return cmd_restart_impl(
+        workspace_root,
+        role,
+        relay_transport=relay_transport,
+        stop_command=cmd_stop,
+        start_command=cmd_start,
+    )
 
 
 def cmd_list(workspace_root: Path, request_id: str | None) -> int:
-    paths = RuntimePaths.from_root(workspace_root)
-    runtime_config = load_team_runtime_config(paths.workspace_root)
-    if request_id:
-        record = read_json(paths.request_file(request_id))
-        if not record:
-            print(f"request_id {request_id} not found.")
-            return 1
-        print(record)
-        return 0
-
-    for role in ALL_RUNTIME_AGENTS:
-        running, pid = role_service_status(paths, role)
-        reload_state = read_json(paths.agent_state_file(role))
-        listener_status = str(reload_state.get("listener_status") or "").strip()
-        listener_error = str(reload_state.get("listener_error_category") or "").strip()
-        listener_summary = f" listener={listener_status or 'n/a'}"
-        if listener_error and listener_status != "connected":
-            listener_summary += f" listener_error={listener_error}"
-        model_summary = _format_role_runtime_summary(runtime_config, role)
-        print(
-            f"{role}: {'running' if running else 'stopped'} pid={pid or 'N/A'} "
-            f"{model_summary} {listener_summary}"
-        )
-    backlog_items = list(iter_json_records(paths.backlog_dir))
-    pending_count = sum(1 for item in backlog_items if str(item.get("status") or "") == "pending")
-    selected_count = sum(1 for item in backlog_items if str(item.get("status") or "") == "selected")
-    blocked_count = sum(1 for item in backlog_items if str(item.get("status") or "") == "blocked")
-    print(
-        f"backlog_pending={pending_count} backlog_selected={selected_count} "
-        f"backlog_blocked={blocked_count} backlog_total={pending_count + selected_count + blocked_count}"
+    return cmd_list_impl(
+        workspace_root,
+        request_id,
+        runtime_paths_cls=RuntimePaths,
+        load_team_runtime_config=load_team_runtime_config,
+        read_json=read_json,
+        iter_json_records=iter_json_records,
+        role_service_status=role_service_status,
+        all_runtime_agents=ALL_RUNTIME_AGENTS,
     )
-    scheduler = read_json(paths.sprint_scheduler_file)
-    if scheduler:
-        print(
-            f"{_format_scheduler_sprint_scope(scheduler)} "
-            f"next_slot_at={scheduler.get('next_slot_at') or 'N/A'}"
-        )
-    for record in iter_json_records(paths.requests_dir):
-        print(
-            f"request_id={record.get('request_id')} status={record.get('status')} "
-            f"current_role={record.get('current_role')}"
-        )
-    return 0
-
-
-def _format_role_runtime_summary(runtime_config, role: str) -> str:
-    role_runtime = runtime_config.role_defaults.get(role)
-    if role_runtime is None:
-        return "model=N/A reasoning=N/A"
-    model = str(role_runtime.model or "").strip() or "N/A"
-    reasoning = "None" if "gemini" in model.lower() else str(role_runtime.reasoning or "").strip() or "medium"
-    return f"model={model} reasoning={reasoning}"
 
 
 def cmd_config_role_set(
@@ -554,30 +391,41 @@ def cmd_config_role_set(
     model: str | None = None,
     reasoning: str | None = None,
 ) -> int:
-    updated = update_team_runtime_role_defaults(
+    return cmd_config_role_set_impl(
         workspace_root,
         role,
         model=model,
         reasoning=reasoning,
+        update_team_runtime_role_defaults=update_team_runtime_role_defaults,
+        runtime_paths_cls=RuntimePaths,
     )
-    effective_reasoning = "None" if "gemini" in updated.model.lower() else updated.reasoning
-    config_path = RuntimePaths.from_root(workspace_root).workspace_root / "team_runtime.yaml"
-    print(f"Updated {config_path}")
-    print(f"role={role} model={updated.model} reasoning={effective_reasoning}")
-    print(f"Restart the role to apply changes: python -m teams_runtime restart --agent {role}")
-    return 0
 
 
-def _build_cli_kickoff_request_text(milestone: str, brief: str, requirements: list[str]) -> str:
-    lines = ["start sprint", f"milestone: {str(milestone or '').strip()}"]
-    normalized_brief = str(brief or "").strip()
-    normalized_requirements = [str(item).strip() for item in (requirements or []) if str(item).strip()]
-    if normalized_brief:
-        lines.extend(["brief:", normalized_brief])
-    if normalized_requirements:
-        lines.append("requirements:")
-        lines.extend(f"- {item}" for item in normalized_requirements)
-    return "\n".join(lines).strip()
+def cmd_config_research_set(
+    workspace_root: Path,
+    *,
+    app: str | None = None,
+    notebook: str | None = None,
+    files: list[str] | None = None,
+    mode: str | None = None,
+    profile_path: str | None = None,
+    completion_timeout: float | None = None,
+    callback_timeout: float | None = None,
+    cleanup: bool | None = None,
+) -> int:
+    return cmd_config_research_set_impl(
+        workspace_root,
+        app=app,
+        notebook=notebook,
+        files=files,
+        mode=mode,
+        profile_path=profile_path,
+        completion_timeout=completion_timeout,
+        callback_timeout=callback_timeout,
+        cleanup=cleanup,
+        update_team_runtime_research_defaults=update_team_runtime_research_defaults,
+        runtime_paths_cls=RuntimePaths,
+    )
 
 
 def cmd_sprint_start(
@@ -589,109 +437,61 @@ def cmd_sprint_start(
     artifacts: list[str] | None = None,
     source_request_id: str = "",
 ) -> int:
-    service = TeamService(workspace_root, "orchestrator", enable_discord_client=False)
-    normalized_requirements = [str(item).strip() for item in (requirements or []) if str(item).strip()]
-    normalized_artifacts = [str(item).strip() for item in (artifacts or []) if str(item).strip()]
-    message = asyncio.run(
-        service.start_sprint_lifecycle(
-            milestone,
-            trigger="manual_start",
-            resume_mode="await",
-            kickoff_brief=str(brief or "").strip(),
-            kickoff_requirements=normalized_requirements,
-            kickoff_request_text=_build_cli_kickoff_request_text(milestone, brief, normalized_requirements),
-            kickoff_source_request_id=str(source_request_id or "").strip(),
-            kickoff_reference_artifacts=normalized_artifacts,
-        )
+    return cmd_sprint_start_impl(
+        workspace_root,
+        milestone,
+        brief=brief,
+        requirements=requirements,
+        artifacts=artifacts,
+        source_request_id=source_request_id,
+        team_service_cls=TeamService,
     )
-    print(message)
-    return 0
 
 
 def cmd_sprint_stop(workspace_root: Path) -> int:
-    service = TeamService(workspace_root, "orchestrator", enable_discord_client=False)
-    message = asyncio.run(service.stop_sprint_lifecycle(resume_mode="await"))
-    print(message)
-    return 0
+    return cmd_sprint_stop_impl(
+        workspace_root,
+        team_service_cls=TeamService,
+    )
 
 
 def cmd_sprint_restart(workspace_root: Path) -> int:
-    service = TeamService(workspace_root, "orchestrator", enable_discord_client=False)
-    message = asyncio.run(service.restart_sprint_lifecycle(resume_mode="await"))
-    print(message)
-    return 0
+    return cmd_sprint_restart_impl(
+        workspace_root,
+        team_service_cls=TeamService,
+    )
 
 
 def cmd_sprint_status(workspace_root: Path) -> int:
-    return cmd_status(workspace_root, None, sprint=True)
+    return cmd_sprint_status_impl(
+        workspace_root,
+        status_command=cmd_status,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     workspace_root = resolve_workspace_root(getattr(args, "workspace_root", None))
-
-    if args.command == "init":
-        return cmd_init(workspace_root)
-    if args.command == "run":
-        asyncio.run(
-            run_services(
-                workspace_root,
-                args.agent,
-                relay_transport=str(getattr(args, "relay_transport", DEFAULT_RELAY_TRANSPORT)),
-            )
-        )
-        return 0
-    if args.command == "start":
-        return cmd_start(
-            workspace_root,
-            args.agent,
-            relay_transport=str(getattr(args, "relay_transport", DEFAULT_RELAY_TRANSPORT)),
-        )
-    if args.command == "status":
-        return cmd_status(
-            workspace_root,
-            args.agent,
-            getattr(args, "request_id", None),
-            sprint=bool(getattr(args, "sprint", False)),
-            backlog=bool(getattr(args, "backlog", False)),
-        )
-    if args.command == "stop":
-        return cmd_stop(workspace_root, args.agent)
-    if args.command == "restart":
-        return cmd_restart(
-            workspace_root,
-            args.agent,
-            relay_transport=str(getattr(args, "relay_transport", DEFAULT_RELAY_TRANSPORT)),
-        )
-    if args.command == "list":
-        return cmd_list(workspace_root, args.request_id)
-    if args.command == "config":
-        if args.config_command == "role" and args.role_command == "set":
-            return cmd_config_role_set(
-                workspace_root,
-                args.agent,
-                model=getattr(args, "model", None),
-                reasoning=getattr(args, "reasoning", None),
-            )
-    if args.command == "sprint":
-        if args.sprint_command == "start":
-            return cmd_sprint_start(
-                workspace_root,
-                args.milestone,
-                brief=str(getattr(args, "brief", "") or ""),
-                requirements=list(getattr(args, "requirement", []) or []),
-                artifacts=list(getattr(args, "artifact", []) or []),
-                source_request_id=str(getattr(args, "source_request_id", "") or ""),
-            )
-        if args.sprint_command == "stop":
-            return cmd_sprint_stop(workspace_root)
-        if args.sprint_command == "restart":
-            return cmd_sprint_restart(workspace_root)
-        if args.sprint_command == "status":
-            return cmd_sprint_status(workspace_root)
-    parser.error(f"Unsupported command: {args.command}")
-    return 2
+    return dispatch_main(
+        args,
+        workspace_root=workspace_root,
+        parser=parser,
+        run_services=run_services,
+        cmd_init=cmd_init,
+        cmd_start=cmd_start,
+        cmd_status=cmd_status,
+        cmd_stop=cmd_stop,
+        cmd_restart=cmd_restart,
+        cmd_list=cmd_list,
+        cmd_config_role_set=cmd_config_role_set,
+        cmd_config_research_set=cmd_config_research_set,
+        cmd_sprint_start=cmd_sprint_start,
+        cmd_sprint_stop=cmd_sprint_stop,
+        cmd_sprint_restart=cmd_sprint_restart,
+        cmd_sprint_status=cmd_sprint_status,
+        default_relay_transport=DEFAULT_RELAY_TRANSPORT,
+    )
 
 
 if __name__ == "__main__":
