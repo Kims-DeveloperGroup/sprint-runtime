@@ -44,7 +44,7 @@ research_defaults:
   notebook: ""
   files: []
   mode: ""
-  profile_path: ""
+  profile_path: "./chrome_profile"
   completion_timeout: 600
   callback_timeout: 1200
   cleanup: false

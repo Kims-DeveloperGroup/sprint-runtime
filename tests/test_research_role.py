@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from teams_runtime.workflows.roles.research import (
@@ -7,11 +8,11 @@ from teams_runtime.workflows.roles.research import (
     RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
     RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE,
     build_research_decision_prompt,
-    build_research_decision_retry_prompt,
+    build_research_prompt,
     default_research_planner_guidance,
     default_research_signal,
-    is_research_reason_code_schema_error,
     normalize_research_decision,
+    normalize_research_subject_definition,
     parse_research_report,
     research_reason_code_summary,
     research_skip_summary,
@@ -41,8 +42,72 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
                     "subject": "Current provider pricing",
                     "research_query": "",
                     "reason_code": RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
+                    "research_subject_definition": {
+                        "planning_decision": "provider cost assumption",
+                        "knowledge_gap": "current provider pricing",
+                        "external_boundary": "official pricing changes outside repo",
+                        "planner_impact": "planner should keep provider assumptions configurable",
+                        "candidate_subject": "Current provider pricing",
+                        "research_query": "",
+                        "source_requirements": ["official pricing pages"],
+                        "rejected_subjects": ["repo implementation details"],
+                        "no_subject_rationale": "",
+                    },
                     "planner_guidance": "외부 근거가 필요합니다.",
                 }
+            )
+
+    def test_normalize_research_decision_returns_subject_definition(self):
+        payload = normalize_research_decision(
+            {
+                "needed": True,
+                "subject": "Current provider pricing",
+                "research_query": "Compare current provider pricing from official pages.",
+                "reason_code": RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
+                "research_subject_definition": {
+                    "planning_decision": "provider cost assumption",
+                    "knowledge_gap": "current provider pricing",
+                    "external_boundary": "official pricing changes outside repo",
+                    "planner_impact": "planner should keep provider assumptions configurable",
+                    "candidate_subject": "Current provider pricing",
+                    "research_query": "Compare current provider pricing from official pages.",
+                    "source_requirements": ["official pricing pages"],
+                    "rejected_subjects": ["repo implementation details"],
+                    "no_subject_rationale": "",
+                },
+                "planner_guidance": "외부 근거가 필요합니다.",
+            }
+        )
+
+        self.assertEqual(payload["signal"]["subject"], "Current provider pricing")
+        self.assertEqual(
+            payload["research_subject_definition"]["planning_decision"],
+            "provider cost assumption",
+        )
+
+    def test_normalize_research_subject_definition_rejects_copied_milestone(self):
+        with self.assertRaisesRegex(ValueError, "must not simply copy"):
+            normalize_research_subject_definition(
+                {
+                    "needed": True,
+                    "subject": "Improve runtime planning",
+                    "research_query": "Research runtime planning.",
+                    "research_subject_definition": {
+                        "planning_decision": "milestone framing",
+                        "knowledge_gap": "current workflow planning practice",
+                        "external_boundary": "external workflow research guidance",
+                        "planner_impact": "planner should refine the milestone",
+                        "candidate_subject": "Improve runtime planning",
+                        "research_query": "Research runtime planning.",
+                        "source_requirements": ["workflow planning sources"],
+                    },
+                },
+                reason_code=RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
+                needed=True,
+                request_record={
+                    "scope": "Improve runtime planning",
+                    "params": {"requested_milestone_title": "Improve runtime planning"},
+                },
             )
 
     def test_build_research_decision_prompt_mentions_targeting_and_reason_code_rules(self):
@@ -76,26 +141,73 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
         self.assertIn("needed_external_grounding", prompt)
         self.assertIn("not_needed_local_evidence", prompt)
         self.assertIn("not_needed_no_subject", prompt)
+        self.assertIn("research_subject_definition", prompt)
+        self.assertIn("planning_decision", prompt)
+        self.assertIn("external_boundary", prompt)
         self.assertIn("Local sources already checked:", prompt)
-        self.assertIn('"reason_code": "<required:', prompt)
-        self.assertNotIn('"reason_code": "needed_external_grounding|not_needed_local_evidence|not_needed_no_subject"', prompt)
 
-    def test_research_decision_retry_prompt_restates_reason_code_enum(self):
-        retry_prompt = build_research_decision_retry_prompt(
-            "original prompt",
-            "Unsupported research reason_code: needed_external_grounding|not_needed_local_evidence",
+    def test_build_research_prompt_uses_curated_structured_json(self):
+        envelope = MessageEnvelope(
+            request_id="request-structured",
+            sender="orchestrator",
+            target="research",
+            intent="route",
+            urgency="normal",
+            scope="latest provider pricing",
+            body="Need current provider pricing before planner locks cost assumptions.",
         )
+        request_record = {
+            "request_id": "request-structured",
+            "scope": envelope.scope,
+            "body": envelope.body,
+            "params": {
+                "requested_milestone_title": "Choose provider",
+                "milestone_title": "Choose provider",
+                "kickoff_requirements": ["Keep cost assumptions explicit"],
+            },
+        }
 
-        self.assertTrue(
-            is_research_reason_code_schema_error(
-                "Unsupported research reason_code: needed_external_grounding|not_needed_local_evidence"
-            )
+        prompt = build_research_prompt(
+            envelope,
+            request_record,
+            signal={
+                "needed": True,
+                "subject": "Current provider pricing",
+                "research_query": "Compare current provider pricing from official pages.",
+                "reason_code": RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
+            },
+            subject_definition={
+                "planning_decision": "provider cost assumption",
+                "knowledge_gap": "current provider pricing",
+                "external_boundary": "official pricing changes outside repo",
+                "planner_impact": "planner should keep provider assumptions configurable",
+                "candidate_subject": "Current provider pricing",
+                "research_query": "Compare current provider pricing from official pages.",
+                "source_requirements": ["official pricing pages"],
+                "rejected_subjects": ["repo implementation details"],
+                "no_subject_rationale": "",
+            },
+            local_sources_checked=["request.scope", "shared_workspace/current_sprint.md"],
+            artifact_hint="shared_workspace/sprints/sprint-a/research/request-structured.md",
         )
-        self.assertIn("strict research decision schema", retry_prompt)
-        self.assertIn("needed_external_grounding", retry_prompt)
-        self.assertIn("not_needed_local_evidence", retry_prompt)
-        self.assertIn("not_needed_no_subject", retry_prompt)
-        self.assertIn("Do not return placeholders", retry_prompt)
+        prompt_payload = json.loads(prompt)
+
+        self.assertEqual(
+            sorted(prompt_payload.keys()),
+            [
+                "defined_subject",
+                "expected_report",
+                "local_context_checked",
+                "planner_impact",
+                "research_mission",
+                "source_requirements",
+                "sprint_context",
+            ],
+        )
+        self.assertEqual(prompt_payload["defined_subject"]["subject"], "Current provider pricing")
+        self.assertIn("official pricing pages", prompt_payload["source_requirements"])
+        self.assertNotIn('"request_id"', prompt)
+        self.assertNotIn('"Incoming envelope"', prompt)
 
     def test_parse_research_report_extracts_sections_and_sources(self):
         report = """# Executive Summary
@@ -103,6 +215,21 @@ Provider pricing differs enough that planner should preserve neutral abstraction
 
 # Planner Guidance
 Keep pricing assumptions soft until provider choice is finalized.
+
+# Milestone Refinement Hints
+- Refine provider selection into provider-neutral cost-boundary planning.
+
+# Problem Framing Hints
+- Provider pricing volatility is a planning constraint, not just an implementation detail.
+
+# Spec Implications
+- Keep provider pricing assumptions configurable in the spec.
+
+# Todo Definition Hints
+- Split provider abstraction and pricing verification into separate backlog slices.
+
+# Backing Reasoning
+- Official pricing pages directly affect planner's cost assumptions.
 
 # Backing Sources
 - title: OpenAI API Pricing
@@ -127,6 +254,14 @@ Keep pricing assumptions soft until provider choice is finalized.
             "Provider pricing differs enough that planner should preserve neutral abstractions.",
         )
         self.assertIn("Keep pricing assumptions soft", parsed["planner_guidance"])
+        self.assertEqual(
+            parsed["milestone_refinement_hints"],
+            ["Refine provider selection into provider-neutral cost-boundary planning."],
+        )
+        self.assertEqual(
+            parsed["backing_reasoning"],
+            ["Official pricing pages directly affect planner's cost assumptions."],
+        )
         self.assertEqual(len(parsed["backing_sources"]), 2)
         self.assertEqual(parsed["backing_sources"][0]["title"], "OpenAI API Pricing")
         self.assertEqual(

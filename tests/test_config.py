@@ -251,6 +251,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.role_defaults["research"].reasoning, "medium")
             self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "xhigh")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
+            self.assertEqual(runtime_config.research_defaults.profile_path, "./chrome_profile")
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 600.0)
             self.assertEqual(runtime_config.research_defaults.callback_timeout, 1200.0)
             team_runtime_text = (workspace_root / "team_runtime.yaml").read_text(encoding="utf-8")
@@ -319,6 +320,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
                 / "SKILL.md"
             ).read_text(encoding="utf-8")
             planner_prompt = (workspace_root / "planner" / "AGENTS.md").read_text(encoding="utf-8")
+            research_prompt = (workspace_root / "research" / "AGENTS.md").read_text(encoding="utf-8")
             architect_prompt = (workspace_root / "architect" / "AGENTS.md").read_text(encoding="utf-8")
             developer_prompt = (workspace_root / "developer" / "AGENTS.md").read_text(encoding="utf-8")
             planner_skill = (
@@ -427,6 +429,13 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("./.agents/skills/", planner_prompt)
             self.assertIn("사용 가능한 skill", planner_prompt)
             self.assertIn("backlog 관리", planner_prompt)
+            self.assertIn("source-backed research prepass", planner_prompt)
+            self.assertIn("proposals.sprint_plan_update.revised_milestone_title", planner_prompt)
+            self.assertIn("origin.research_refs", planner_prompt)
+            self.assertIn("research_subject_definition", research_prompt)
+            self.assertIn("candidate_subject", research_prompt)
+            self.assertIn("milestone_refinement_hints", research_prompt)
+            self.assertIn("backing_reasoning", research_prompt)
             self.assertIn("planner가 직접 `.teams_runtime/backlog/*.json`", planner_prompt)
             self.assertIn("shared_workspace/sprints/<sprint_folder_name>/", planner_prompt)
             self.assertIn("Current request.artifacts`는 planning reference input으로 취급한다", planner_prompt)
@@ -461,6 +470,8 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("Do not bulk-read `shared_workspace/sprint_history/`", planner_skill)
             self.assertIn("Do not directly edit `shared_workspace/backlog.md`", planner_skill)
             self.assertIn("single independently reviewable implementation slice", planner_skill)
+            self.assertIn("source-backed research", planner_skill)
+            self.assertIn("origin.research_refs", planner_skill)
             self.assertIn("prior planner history or shared planning logs", planner_skill)
             self.assertIn("name: backlog_management", planner_management_skill)
             self.assertIn("python -m teams_runtime.workflows.state.backlog_store merge", planner_management_skill)
@@ -469,6 +480,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("single sprint milestone's backlog breakdown", planner_backlog_skill)
             self.assertIn("single independently reviewable implementation slice", planner_backlog_skill)
             self.assertIn("multiple subsystems, contracts, phases, deliverables", planner_backlog_skill)
+            self.assertIn("origin.research_refs", planner_backlog_skill)
             self.assertIn("Do not force the decomposition into three items", planner_backlog_skill)
             self.assertIn("name: sprint_planning", planner_sprint_skill)
             self.assertIn("immutable kickoff brief", planner_sprint_skill)
@@ -476,6 +488,8 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("already-closed decisions", planner_sprint_skill)
             self.assertIn("keep the current request, active sprint docs, and kickoff context authoritative", planner_sprint_skill)
             self.assertIn("sprint's single `milestone_title`", planner_sprint_skill)
+            self.assertIn("proposals.sprint_plan_update.revised_milestone_title", planner_sprint_skill)
+            self.assertIn("origin.research_refs", planner_sprint_skill)
             self.assertIn("sprint inclusion must be milestone-relevant", planner_sprint_skill)
             self.assertIn("Do not default to three promoted items", planner_sprint_skill)
             self.assertIn("single independently reviewable implementation slice", planner_sprint_skill)
@@ -600,7 +614,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             config_path = Path(tmpdir) / "team_runtime.yaml"
             content = config_path.read_text(encoding="utf-8")
             content = content.replace(
-                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  profile_path: \"\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
+                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  profile_path: \"./chrome_profile\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
                 "research_defaults: invalid\n",
                 1,
             )

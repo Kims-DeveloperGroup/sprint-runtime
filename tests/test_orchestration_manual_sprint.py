@@ -99,6 +99,33 @@ class TeamsRuntimeOrchestrationManualSprintTests(OrchestrationTestCase):
                 self.assertIn("milestone_title: sprint workflow initial phase 개선", current_sprint_text)
                 self.assertEqual(sprint_state["execution_mode"], "manual")
 
+    def test_manual_sprint_first_initial_step_routes_to_research_prepass(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+
+                asyncio.run(
+                    service.start_sprint_lifecycle(
+                        "research-first manual kickoff",
+                        trigger="manual_start",
+                        resume_mode="skip",
+                    )
+                )
+
+                sprint_state = service._load_active_sprint_state()
+                request_record = service._build_sprint_planning_request_record(
+                    sprint_state,
+                    phase="initial",
+                    iteration=1,
+                    step=orchestration_module.INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+                )
+                workflow = dict(request_record.get("params", {}).get("workflow") or {})
+
+                self.assertEqual(request_record["next_role"], "research")
+                self.assertEqual(workflow.get("phase_owner"), "research")
+                self.assertEqual(workflow.get("step"), "research_initial")
+
     def test_manual_sprint_start_preserves_kickoff_brief_and_requirements(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

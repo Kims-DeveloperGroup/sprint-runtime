@@ -409,7 +409,9 @@ from teams_runtime.workflows.sprints.lifecycle import (
     run_autonomous_sprint as run_autonomous_sprint_helper,
     save_sprint_state_with_sync as save_sprint_state_with_sync_helper,
     select_restart_checkpoint_todo as select_restart_checkpoint_todo_helper,
+    should_start_sprint_research_prepass as should_start_sprint_research_prepass_helper,
     sort_sprint_todos as sort_sprint_todos_helper,
+    sprint_research_prepass_artifacts as sprint_research_prepass_artifacts_helper,
     sprint_uses_manual_flow as sprint_uses_manual_flow_helper,
     sync_internal_sprint_artifacts_from_role_report as sync_internal_sprint_artifacts_from_role_report_helper,
     sync_manual_sprint_queue as sync_manual_sprint_queue_helper,
@@ -1221,17 +1223,18 @@ class TeamService:
         )
 
     def _request_workflow_state(self, request_record: RequestRecord) -> WorkflowState:
-        if self._is_sprint_planning_request(request_record):
-            return {}
         params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
         raw = params.get("workflow")
+        if isinstance(raw, dict):
+            return normalize_workflow_state(raw)
+        if self._is_sprint_planning_request(request_record):
+            return {}
         if not isinstance(raw, dict):
             if self._is_internal_sprint_request(request_record):
                 inferred = self._infer_legacy_internal_workflow_state(request_record)
                 if inferred:
                     return inferred
             return {}
-        return normalize_workflow_state(raw)
 
     def _infer_legacy_internal_workflow_state(self, request_record: dict[str, Any]) -> dict[str, Any]:
         return infer_legacy_internal_workflow_state(request_record)
@@ -1589,6 +1592,8 @@ class TeamService:
         if not workflow_state:
             return None
         current_role = str(result.get("role") or sender_role or request_record.get("current_role") or "").strip().lower()
+        if self._is_sprint_planning_request(request_record) and current_role == "planner":
+            return None
         transition = self._workflow_transition(result)
         reason = self._workflow_reason(result, transition, "workflow step을 계속 진행합니다.")
         should_close_in_planning = self._workflow_should_close_in_planning(
@@ -3036,6 +3041,49 @@ class TeamService:
     def _sprint_artifact_paths(self, sprint_state: dict[str, Any]) -> dict[str, Path]:
         return sprint_artifact_paths_helper(self.paths, sprint_state)
 
+    @staticmethod
+    def _should_start_sprint_research_prepass(
+        sprint_state: dict[str, Any],
+        *,
+        phase: str,
+        iteration: int,
+        step: str,
+    ) -> bool:
+        return should_start_sprint_research_prepass_helper(
+            sprint_state,
+            phase=phase,
+            iteration=iteration,
+            step=step,
+        )
+
+    @staticmethod
+    def _sprint_research_prepass_artifacts(sprint_state: dict[str, Any]) -> list[str]:
+        return sprint_research_prepass_artifacts_helper(sprint_state)
+
+    def _merge_persisted_sprint_research_prepass(self, sprint_state: dict[str, Any]) -> bool:
+        sprint_id = str(sprint_state.get("sprint_id") or "").strip()
+        if not sprint_id:
+            return False
+        persisted = self._load_sprint_state(sprint_id)
+        prepass = dict(persisted.get("research_prepass") or {}) if persisted else {}
+        if not prepass:
+            return False
+        changed = False
+        if dict(sprint_state.get("research_prepass") or {}) != prepass:
+            sprint_state["research_prepass"] = prepass
+            changed = True
+        merged_references = _dedupe_preserving_order(
+            [
+                *[str(item).strip() for item in (sprint_state.get("reference_artifacts") or []) if str(item).strip()],
+                *[str(item).strip() for item in (persisted.get("reference_artifacts") or []) if str(item).strip()],
+                *self._sprint_research_prepass_artifacts({"research_prepass": prepass}),
+            ]
+        )
+        if merged_references != [str(item).strip() for item in (sprint_state.get("reference_artifacts") or []) if str(item).strip()]:
+            sprint_state["reference_artifacts"] = merged_references
+            changed = True
+        return changed
+
     def _render_sprint_kickoff_markdown(self, sprint_state: dict[str, Any]) -> str:
         source_request_id = str(sprint_state.get("kickoff_source_request_id") or "").strip()
         source_request_path = (
@@ -3993,12 +4041,25 @@ class TeamService:
     ) -> dict[str, Any]:
         artifact_paths = self._sprint_artifact_paths(sprint_state)
         normalized_step = str(step or "").strip().lower()
+        self._merge_persisted_sprint_research_prepass(sprint_state)
         existing_request = self._find_open_sprint_planning_request(
             sprint_id=str(sprint_state.get("sprint_id") or ""),
             phase=phase,
             step=normalized_step,
         )
         if existing_request:
+            if self._should_start_sprint_research_prepass(
+                sprint_state,
+                phase=phase,
+                iteration=iteration,
+                step=normalized_step,
+            ):
+                params = dict(existing_request.get("params") or {})
+                if not isinstance(params.get("workflow"), dict):
+                    params["workflow"] = self._research_first_workflow_state()
+                    existing_request["params"] = params
+                    existing_request["next_role"] = "research"
+                    self._save_request(existing_request)
             return existing_request
         step_title = self._initial_phase_step_title(normalized_step) if normalized_step else ""
         artifacts = _dedupe_preserving_order(
@@ -4017,6 +4078,12 @@ class TeamService:
                     for item in (sprint_state.get("kickoff_reference_artifacts") or [])
                     if str(item).strip()
                 ],
+                *[
+                    str(item).strip()
+                    for item in (sprint_state.get("reference_artifacts") or [])
+                    if str(item).strip()
+                ],
+                *self._sprint_research_prepass_artifacts(sprint_state),
             ]
         )
         record = build_sprint_planning_request_record_helper(
@@ -4030,6 +4097,16 @@ class TeamService:
             updated_at=utc_now_iso(),
             git_baseline=capture_git_baseline(self.paths.project_workspace_root),
         )
+        if self._should_start_sprint_research_prepass(
+            sprint_state,
+            phase=phase,
+            iteration=iteration,
+            step=normalized_step,
+        ):
+            params = dict(record.get("params") or {})
+            params["workflow"] = self._research_first_workflow_state()
+            record["params"] = params
+            record["next_role"] = "research"
         append_request_event(
             record,
             event_type="created",
@@ -4065,12 +4142,14 @@ class TeamService:
         *,
         request_record: dict[str, Any],
         sync_summary: dict[str, Any],
+        result: dict[str, Any] | None = None,
     ) -> str:
         return validate_initial_phase_step_result_helper(
             sprint_state,
             request_record=request_record,
             sync_summary=sync_summary,
             relevant_items=self._collect_sprint_relevant_backlog_items(sprint_state),
+            result=result,
         )
 
     def _record_sprint_planning_iteration(

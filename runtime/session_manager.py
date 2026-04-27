@@ -69,13 +69,6 @@ class RoleSessionManager:
             self.archive(current)
         return self.create()
 
-    def rotate_session(self, state: RoleSessionState | None = None) -> RoleSessionState:
-        self.paths.ensure_runtime_dirs()
-        current = state or self.load()
-        if current is not None:
-            self.archive(current)
-        return self.create()
-
     def save(self, state: RoleSessionState) -> None:
         self.paths.role_sessions_dir.mkdir(parents=True, exist_ok=True)
         state.runtime_identity = self.runtime_identity

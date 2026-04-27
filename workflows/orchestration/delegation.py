@@ -1695,6 +1695,16 @@ def derive_routing_decision_after_report(
     *,
     sender_role: str,
 ) -> dict[str, Any]:
+    current_role = str(result.get("role") or sender_role or request_record.get("current_role") or "").strip().lower()
+    if (
+        service._is_sprint_planning_request(request_record)
+        and current_role == "planner"
+        and str(result.get("status") or "").strip().lower() in {"completed", "committed"}
+    ):
+        return {
+            "next_role": "",
+            "routing_context": {},
+        }
     workflow_decision = service._derive_workflow_routing_decision(
         request_record,
         result,
@@ -1703,16 +1713,6 @@ def derive_routing_decision_after_report(
     if workflow_decision is not None:
         return workflow_decision
     if service._is_sourcer_review_request(request_record):
-        return {
-            "next_role": "",
-            "routing_context": {},
-        }
-    current_role = str(result.get("role") or sender_role or request_record.get("current_role") or "").strip()
-    if (
-        service._is_sprint_planning_request(request_record)
-        and current_role == "planner"
-        and str(result.get("status") or "").strip().lower() in {"completed", "committed"}
-    ):
         return {
             "next_role": "",
             "routing_context": {},
@@ -2123,26 +2123,26 @@ async def apply_role_result(
 
 
 async def process_delegated_request(service: Any, envelope: MessageEnvelope, request_record: dict[str, Any]) -> None:
+    initial_phase_activity_summary = f"{service.role} 역할이 요청 처리를 시작했습니다."
+    if service._is_initial_phase_planner_request(request_record):
+        if service.role == "research":
+            initial_phase_activity_summary = "planner refinement 전 research prepass를 시작했습니다."
+        elif service.role == "planner":
+            initial_phase_activity_summary = (
+                f"{service._initial_phase_step_title(service._initial_phase_step(request_record))}을 시작했습니다."
+            )
     service._record_internal_sprint_activity(
         request_record,
         event_type="role_started",
         role=service.role,
         status="running",
-        summary=(
-            f"{service._initial_phase_step_title(service._initial_phase_step(request_record))}을 시작했습니다."
-            if service._is_initial_phase_planner_request(request_record)
-            else f"{service.role} 역할이 요청 처리를 시작했습니다."
-        ),
+        summary=initial_phase_activity_summary,
     )
     await service._maybe_report_planner_initial_phase_activity(
         request_record,
         event_type="role_started",
         status="running",
-        summary=(
-            f"{service._initial_phase_step_title(service._initial_phase_step(request_record))}을 시작했습니다."
-            if service._is_initial_phase_planner_request(request_record)
-            else f"{service.role} 역할이 요청 처리를 시작했습니다."
-        ),
+        summary=initial_phase_activity_summary,
     )
     try:
         result = await asyncio.to_thread(service.role_runtime.run_task, envelope, request_record)

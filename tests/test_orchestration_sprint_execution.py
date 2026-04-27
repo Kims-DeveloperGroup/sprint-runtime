@@ -1,7 +1,187 @@
-from orchestration_test_utils import *
+from teams_runtime.tests.orchestration_test_utils import *
+
+
+def _no_subject_definition(rationale="The sprint handoff is repo-local and does not need external research."):
+    return {
+        "planning_decision": "",
+        "knowledge_gap": "",
+        "external_boundary": "",
+        "planner_impact": "",
+        "candidate_subject": "",
+        "research_query": "",
+        "source_requirements": [],
+        "rejected_subjects": ["repo-local implementation context"],
+        "no_subject_rationale": rationale,
+    }
 
 
 class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
+    def test_sprint_initial_planning_runs_research_prepass_once_before_planner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="source-backed planner kickoff",
+                    trigger="test",
+                )
+                service._save_sprint_state(sprint_state)
+                request_record = service._build_sprint_planning_request_record(
+                    sprint_state,
+                    phase="initial",
+                    iteration=1,
+                    step="milestone_refinement",
+                )
+                workflow = dict(request_record.get("params", {}).get("workflow") or {})
+                self.assertEqual(request_record["next_role"], "research")
+                self.assertEqual(workflow.get("phase_owner"), "research")
+                self.assertEqual(workflow.get("step"), "research_initial")
+
+                delegated_steps: list[tuple[str, str]] = []
+                research_artifact = (
+                    f"shared_workspace/sprints/{sprint_state['sprint_id']}/research/{request_record['request_id']}.md"
+                )
+
+                async def fake_delegate(delegated_request, next_role):
+                    workflow = dict(delegated_request.get("params", {}).get("workflow") or {})
+                    delegated_steps.append((next_role, str(workflow.get("step") or "")))
+                    if next_role == "research":
+                        result = {
+                            "request_id": delegated_request["request_id"],
+                            "role": "research",
+                            "status": "completed",
+                            "summary": "planner가 참고할 source-backed research prepass를 정리했습니다.",
+                            "insights": [],
+                            "proposals": {
+                                "research_signal": {
+                                    "needed": True,
+                                    "subject": "Current source-backed sprint planning assumptions",
+                                    "research_query": "Collect current sources that constrain sprint planning assumptions.",
+                                    "reason_code": "needed_external_grounding",
+                                },
+                                "research_subject_definition": {
+                                    "planning_decision": "sprint milestone refinement and todo traceability",
+                                    "knowledge_gap": "whether workflow ordering needs explicit source traceability",
+                                    "external_boundary": "workflow planning guidance outside local sprint docs",
+                                    "planner_impact": "planner should refine the milestone around research-first evidence flow",
+                                    "candidate_subject": "Current source-backed sprint planning assumptions",
+                                    "research_query": "Collect current sources that constrain sprint planning assumptions.",
+                                    "source_requirements": ["workflow planning sources"],
+                                    "rejected_subjects": ["repo-only implementation details"],
+                                    "no_subject_rationale": "",
+                                },
+                                "research_report": {
+                                    "report_artifact": research_artifact,
+                                    "headline": "외부 근거가 sprint planning assumptions에 영향을 줍니다.",
+                                    "planner_guidance": "planner는 source-backed constraints를 milestone/spec 결정에 반영해야 합니다.",
+                                    "research_subject_definition": {
+                                        "planning_decision": "sprint milestone refinement and todo traceability",
+                                        "knowledge_gap": "whether workflow ordering needs explicit source traceability",
+                                        "external_boundary": "workflow planning guidance outside local sprint docs",
+                                        "planner_impact": "planner should refine the milestone around research-first evidence flow",
+                                        "candidate_subject": "Current source-backed sprint planning assumptions",
+                                        "research_query": "Collect current sources that constrain sprint planning assumptions.",
+                                        "source_requirements": ["workflow planning sources"],
+                                        "rejected_subjects": ["repo-only implementation details"],
+                                        "no_subject_rationale": "",
+                                    },
+                                    "milestone_refinement_hints": [
+                                        "추상 kickoff를 source-backed workflow ordering contract로 구체화해야 합니다."
+                                    ],
+                                    "problem_framing_hints": [
+                                        "planner가 먼저 정의해야 할 문제는 역할 순서와 evidence traceability입니다."
+                                    ],
+                                    "spec_implications": [
+                                        "spec에는 research-first planning handoff contract가 드러나야 합니다."
+                                    ],
+                                    "todo_definition_hints": [
+                                        "research persistence, planner context, validation을 분리된 slices로 정의합니다."
+                                    ],
+                                    "backing_reasoning": [
+                                        "Runtime workflow source가 planner handoff 순서를 제약합니다."
+                                    ],
+                                    "backing_sources": [
+                                        {
+                                            "title": "Runtime Workflow Source",
+                                            "url": "https://example.com/runtime-workflow",
+                                            "published_at": "2026-04-25",
+                                            "relevance": "Constrains planning assumptions.",
+                                            "summary": "Explains workflow ordering.",
+                                        }
+                                    ],
+                                    "open_questions": [],
+                                    "effective_config": {},
+                                },
+                            },
+                            "artifacts": [research_artifact],
+                            "next_role": "",
+                            "approval_needed": False,
+                            "error": "",
+                        }
+                    elif next_role == "planner":
+                        self.assertEqual(delegated_request["result"]["role"], "research")
+                        result = {
+                            "request_id": delegated_request["request_id"],
+                            "role": "planner",
+                            "status": "completed",
+                            "summary": "research prepass를 반영해 milestone refinement를 완료했습니다.",
+                            "insights": [],
+                            "proposals": {
+                                "sprint_plan_update": {
+                                    "revised_milestone_title": "source-backed sprint planning workflow contract",
+                                    "refinement_rationale": "research source가 planner보다 먼저 확정돼야 하는 evidence traceability를 보여줍니다.",
+                                    "problem_framing": "추상 kickoff를 research-first workflow contract와 planner traceability 문제로 발전시킵니다.",
+                                    "research_refs": ["Runtime Workflow Source | https://example.com/runtime-workflow"],
+                                    "summary": "source-backed planning assumptions를 반영했습니다.",
+                                }
+                            },
+                            "artifacts": ["shared_workspace/current_sprint.md"],
+                            "next_role": "",
+                            "approval_needed": False,
+                            "error": "",
+                        }
+                    else:
+                        raise AssertionError(f"unexpected delegation: {next_role}")
+                    await service._apply_role_result(delegated_request, result, sender_role=next_role)
+                    return True
+
+                with patch.object(service, "_delegate_request", side_effect=fake_delegate):
+                    result = asyncio.run(
+                        service._run_internal_request_chain(
+                            sprint_id=sprint_state["sprint_id"],
+                            request_record=request_record,
+                            initial_role="planner",
+                        )
+                    )
+
+                self.assertEqual(result["role"], "planner")
+                self.assertEqual(delegated_steps, [("research", "research_initial"), ("planner", "planner_draft")])
+                updated_request = service._load_request(request_record["request_id"])
+                self.assertEqual(updated_request["status"], "completed")
+                self.assertEqual(updated_request["current_role"], "orchestrator")
+
+                updated_sprint = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated_sprint["research_prepass"]["request_id"], request_record["request_id"])
+                self.assertEqual(updated_sprint["research_prepass"]["backing_sources"][0]["url"], "https://example.com/runtime-workflow")
+                self.assertIn("milestone_refinement_hints", updated_sprint["research_prepass"])
+                self.assertEqual(
+                    updated_sprint["research_prepass"]["research_subject_definition"]["planning_decision"],
+                    "sprint milestone refinement and todo traceability",
+                )
+                self.assertIn(research_artifact, updated_sprint["reference_artifacts"])
+
+                next_planning_request = service._build_sprint_planning_request_record(
+                    updated_sprint,
+                    phase="initial",
+                    iteration=1,
+                    step="artifact_sync",
+                )
+                self.assertEqual(next_planning_request["next_role"], "planner")
+                self.assertNotIn("workflow", next_planning_request["params"])
+                self.assertIn("research_prepass:", next_planning_request["body"])
+                self.assertIn("research_subject_definition:", next_planning_request["body"])
+                self.assertIn(research_artifact, next_planning_request["artifacts"])
+
     def test_execute_sprint_todo_marks_same_backlog_blocked_without_creating_new_item(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -1736,10 +1916,12 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                                     "research_query": "",
                                     "reason_code": "not_needed_no_subject",
                                 },
+                                "research_subject_definition": _no_subject_definition(),
                                 "research_report": {
                                     "report_artifact": "",
                                     "headline": "외부 research 불필요",
                                     "planner_guidance": "planner가 local implementation context만으로 다음 단계를 정리할 수 있습니다.",
+                                    "research_subject_definition": _no_subject_definition(),
                                     "backing_sources": [],
                                     "open_questions": [],
                                     "effective_config": {},
@@ -2031,10 +2213,12 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                                     "research_query": "",
                                     "reason_code": "not_needed_no_subject",
                                 },
+                                "research_subject_definition": _no_subject_definition(),
                                 "research_report": {
                                     "report_artifact": "",
                                     "headline": "외부 research 불필요",
                                     "planner_guidance": "planner가 local implementation context만으로 다음 단계를 정리할 수 있습니다.",
+                                    "research_subject_definition": _no_subject_definition(),
                                     "backing_sources": [],
                                     "open_questions": [],
                                     "effective_config": {},
@@ -2328,10 +2512,12 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                                     "research_query": "",
                                     "reason_code": "not_needed_no_subject",
                                 },
+                                "research_subject_definition": _no_subject_definition(),
                                 "research_report": {
                                     "report_artifact": "",
                                     "headline": "외부 research 불필요",
                                     "planner_guidance": "repo/local sprint evidence만으로 planning을 이어갈 수 있습니다.",
+                                    "research_subject_definition": _no_subject_definition(),
                                     "backing_sources": [],
                                     "open_questions": [],
                                     "effective_config": {},
@@ -2598,10 +2784,12 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                                     "research_query": "",
                                     "reason_code": "not_needed_no_subject",
                                 },
+                                "research_subject_definition": _no_subject_definition(),
                                 "research_report": {
                                     "report_artifact": "",
                                     "headline": "외부 research 불필요",
                                     "planner_guidance": "planner가 local implementation context만으로 다음 단계를 정리할 수 있습니다.",
+                                    "research_subject_definition": _no_subject_definition(),
                                     "backing_sources": [],
                                     "open_questions": [],
                                     "effective_config": {},

@@ -25,6 +25,8 @@ Do not use this skill for non-sprint documentation tasks that do not affect spri
 - `shared_workspace/current_sprint.md`
 - `shared_workspace/backlog.md`
 - sprint kickoff docs in `shared_workspace/sprints/<sprint_folder_name>/kickoff.md`
+- source-backed research prepass in `Current request.result.proposals.research_report` or `research_prepass`
+- raw research reports under `shared_workspace/sprints/<sprint_folder_name>/research/` when referenced
 - sprint folder docs in `shared_workspace/sprints/<sprint_folder_name>/`
 - `shared_workspace/sprint_history/index.md` when the request is sprint-relevant
 - the smallest relevant prior sprint history file(s) under `shared_workspace/sprint_history/` when carry-over work, repeated blockers, milestone continuity, or already-closed decisions matter
@@ -35,30 +37,36 @@ Do not use this skill for non-sprint documentation tasks that do not affect spri
    Distinguish `initial` planning from `ongoing_review`.
 2. Read current sprint state before changing priorities.
    Use the existing milestone, preserved kickoff brief, kickoff requirements, and queue context as the baseline.
-3. Use prior sprint history as comparative context.
+3. Use research as planning leverage when present.
+   Treat the user milestone as an abstract entry point. Use research hints, backing reasoning, and sources to refine the milestone, identify further problems, set spec boundaries, and define todos. In `milestone_refinement`, return `proposals.sprint_plan_update.revised_milestone_title`, `refinement_rationale`, `problem_framing`, and `research_refs` when source-backed research exists.
+4. Use prior sprint history as comparative context.
    For sprint-relevant planning, inspect `shared_workspace/sprint_history/index.md` first and then open only the smallest relevant prior sprint history file(s). Use them to recover carry-over work, repeated blockers, milestone continuity, and already-closed decisions, but keep the current request, active sprint docs, and kickoff context authoritative.
-4. Recommend only actionable updates.
+5. Recommend only actionable updates.
    Persist sprint-bound backlog updates directly before returning, then describe the queue change in `proposals.sprint_plan_update`, summary, and `proposals.backlog_writes`.
-5. Keep sprint item names behavior-first.
+6. Keep sprint item names behavior-first.
    Promoted backlog and todo titles should describe the functional delta or workflow-contract change, not the activity performed to implement it.
-6. Keep promotion decisions explicit.
+7. Keep promotion decisions explicit.
    When a backlog item should move into the sprint, persist its `priority_rank`, `planned_in_sprint_id`, and the sprint's single `milestone_title` directly in backlog state.
-7. Avoid planner-only dead ends.
+8. Avoid planner-only dead ends.
    If execution should continue after planning, leave enough context for orchestrator to choose the downstream execution role centrally.
-8. Filter by milestone relevance.
+9. Filter by milestone relevance.
    Include only tasks that directly advance the sprint's single milestone. Leave unrelated maintenance, cleanup, or parallel ideas in backlog instead of promoting them into this sprint.
-9. Prefer smaller reviewable slices.
+10. Prefer smaller reviewable slices.
    A sprint backlog item should still be a single independently reviewable implementation slice. Split multi-subsystem, multi-contract, multi-phase, or multi-deliverable candidates before promotion.
-10. Size the sprint to the milestone.
+11. Size the sprint to the milestone.
    Do not default to three promoted items. Choose the exact number justified by the sprint milestone, preserved kickoff context, and current backlog state. More than three promoted items is normal when the milestone spans multiple independent slices.
-11. Ignore local count anchoring.
+12. Add research traceability when required.
+   When source-backed research exists, every created or reopened sprint-relevant backlog item must include `origin.research_refs` pointing to the report artifact, source title/url, or research hint label that shaped it.
+13. Ignore local count anchoring.
    Do not copy prior planner history or shared planning logs that happened to show three promoted items.
-12. Reopen blocked backlog explicitly.
+14. Reopen blocked backlog explicitly.
    If a blocked item is now ready, persist it back to `pending`, clear blocker fields, and only then consider it for sprint promotion.
 
 ## Guardrails
 
 - Do not promote work into the sprint without making the sprint's single milestone and priority rationale explicit.
+- Do not treat the user milestone as the final milestone when source-backed research gives planner new framing, constraints, or todo angles.
+- Do not omit `research_refs` from source-backed sprint backlog items.
 - Do not promote side quests just because they are convenient; sprint inclusion must be milestone-relevant.
 - Do not default to three sprint items when the work naturally collapses to one or expands beyond three.
 - Do not bundle multiple independent implementation slices into one sprint item just to keep the sprint short.

@@ -36,6 +36,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     record_sprint_planning_iteration,
     recover_sprint_todos_from_recovered,
     sort_sprint_todos,
+    sprint_research_prepass_body_lines,
     sprint_planning_phase_ready,
     sprint_attachment_filename,
     sprint_uses_manual_flow,
@@ -162,6 +163,49 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(record["artifacts"], ["shared_workspace/backlog.md", "docs/spec.md"])
         self.assertEqual(record["git_baseline"], {"sha": "abc123"})
         self.assertTrue(record["fingerprint"])
+
+    def test_sprint_research_prepass_body_lines_include_planning_hints(self) -> None:
+        lines = sprint_research_prepass_body_lines(
+            {
+                "research_prepass": {
+                    "request_id": "request-research",
+                    "status": "completed",
+                    "reason_code": "needed_external_grounding",
+                    "subject": "workflow planning evidence",
+                    "research_query": "Find workflow planning evidence.",
+                    "research_subject_definition": {
+                        "planning_decision": "milestone refinement",
+                        "knowledge_gap": "source-backed workflow ordering",
+                        "external_boundary": "external planning guidance",
+                        "planner_impact": "planner should refine milestone and trace todos",
+                        "candidate_subject": "workflow planning evidence",
+                        "research_query": "Find workflow planning evidence.",
+                        "source_requirements": ["workflow planning sources"],
+                        "rejected_subjects": ["repo-only implementation details"],
+                        "no_subject_rationale": "",
+                    },
+                    "headline": "Research changes the planning frame.",
+                    "planner_guidance": "planner는 evidence traceability를 반영해야 합니다.",
+                    "milestone_refinement_hints": ["추상 milestone을 evidence traceability contract로 구체화합니다."],
+                    "todo_definition_hints": ["research refs를 backlog origin에 남깁니다."],
+                    "backing_reasoning": ["Source explains why planner cannot keep the abstract milestone."],
+                    "backing_sources": [
+                        {
+                            "title": "Workflow Source",
+                            "url": "https://example.com/workflow",
+                        }
+                    ],
+                }
+            }
+        )
+
+        body = "\n".join(lines)
+        self.assertIn("milestone_refinement_hints", body)
+        self.assertIn("research_subject_definition", body)
+        self.assertIn("planning_decision: milestone refinement", body)
+        self.assertIn("todo_definition_hints", body)
+        self.assertIn("backing_reasoning", body)
+        self.assertIn("Workflow Source | https://example.com/workflow", body)
 
     def test_initial_phase_step_metadata_is_stable(self) -> None:
         self.assertEqual(
@@ -456,6 +500,110 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                 request_record=request_record,
                 sync_summary={"planner_persisted_backlog": True},
                 relevant_items=[traced_item],
+            ),
+            "",
+        )
+
+    def test_validate_initial_phase_step_result_enforces_research_backlog_trace(self) -> None:
+        sprint_state = {
+            "kickoff_requirements": ["requirement-a"],
+            "research_prepass": {
+                "status": "completed",
+                "backing_sources": [{"title": "Workflow Source", "url": "https://example.com/workflow"}],
+            },
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+            },
+        }
+        item = {
+            "title": "Research-traced workflow contract",
+            "acceptance_criteria": ["workflow가 research trace를 보존한다."],
+            "origin": {
+                "milestone_ref": "workflow initial",
+                "requirement_refs": ["requirement-a"],
+                "spec_refs": ["./shared_workspace/sprints/current/spec.md#workflow"],
+            },
+        }
+
+        self.assertIn(
+            "origin.research_refs 없음",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[item],
+            ),
+        )
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[
+                    {
+                        **item,
+                        "origin": {
+                            **item["origin"],
+                            "research_refs": ["Workflow Source | https://example.com/workflow"],
+                        },
+                    }
+                ],
+            ),
+            "",
+        )
+
+    def test_validate_initial_phase_step_result_blocks_copy_through_researched_milestone(self) -> None:
+        sprint_state = {
+            "requested_milestone_title": "Improve runtime planning",
+            "research_prepass": {
+                "status": "completed",
+                "backing_sources": [{"title": "Workflow Source", "url": "https://example.com/workflow"}],
+            },
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+            },
+            "result": {
+                "proposals": {
+                    "sprint_plan_update": {
+                        "revised_milestone_title": "Improve runtime planning",
+                        "refinement_rationale": "Research indicates planner needs stronger traceability.",
+                    }
+                }
+            },
+        }
+
+        self.assertIn(
+            "user 요청 milestone을 그대로 채택했습니다",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={},
+                relevant_items=[],
+            ),
+        )
+
+        request_record["result"]["proposals"]["sprint_plan_update"].update(
+            {
+                "problem_framing": "추상 milestone을 source-backed planning traceability 문제로 재구성합니다.",
+                "research_refs": ["Workflow Source | https://example.com/workflow"],
+            }
+        )
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={},
+                relevant_items=[],
             ),
             "",
         )

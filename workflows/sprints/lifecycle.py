@@ -30,6 +30,7 @@ from teams_runtime.workflows.state.sprint_store import (
     load_sprint_state,
     save_sprint_state,
 )
+from teams_runtime.workflows.roles.research import RESEARCH_REPORT_LIST_FIELDS
 
 
 LOGGER = logging.getLogger("teams_runtime.workflows.sprints.lifecycle")
@@ -54,6 +55,10 @@ INITIAL_PHASE_STEP_TITLES = {
     INITIAL_PHASE_STEP_TODO_FINALIZATION: "실행 todo 확정",
 }
 SPRINT_ACTIVE_BACKLOG_STATUSES = {"pending", "selected", "blocked"}
+
+
+def _string_list(values: Any) -> list[str]:
+    return [str(item).strip() for item in (values or []) if str(item).strip()]
 
 
 def utc_now() -> datetime:
@@ -559,6 +564,131 @@ def is_initial_phase_planner_request(request_record: dict[str, Any]) -> bool:
     return bool(initial_phase_step(request_record))
 
 
+def sprint_research_prepass_completed(sprint_state: dict[str, Any] | None) -> bool:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    return str(prepass.get("status") or "").strip().lower() == "completed"
+
+
+def should_start_sprint_research_prepass(
+    sprint_state: dict[str, Any],
+    *,
+    phase: str,
+    iteration: int,
+    step: str,
+) -> bool:
+    normalized_phase = str(phase or "").strip().lower()
+    normalized_step = str(step or "").strip().lower()
+    if normalized_phase != "initial":
+        return False
+    if int(iteration or 0) != 1:
+        return False
+    if normalized_step != INITIAL_PHASE_STEP_MILESTONE_REFINEMENT:
+        return False
+    return not sprint_research_prepass_completed(sprint_state)
+
+
+def sprint_research_prepass_artifacts(sprint_state: dict[str, Any] | None) -> list[str]:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    return _string_list(prepass.get("artifacts"))
+
+
+def sprint_research_prepass_source_backed(sprint_state: dict[str, Any] | None) -> bool:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    if str(prepass.get("status") or "").strip().lower() != "completed":
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("title") or "").strip()
+        and str(item.get("url") or "").strip().startswith(("http://", "https://"))
+        for item in (prepass.get("backing_sources") or [])
+    )
+
+
+def sprint_research_prepass_reference_lines(sprint_state: dict[str, Any] | None) -> list[str]:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    sources = [
+        item
+        for item in (prepass.get("backing_sources") or [])
+        if isinstance(item, dict) and (str(item.get("title") or "").strip() or str(item.get("url") or "").strip())
+    ]
+    return [
+        f"{str(source.get('title') or '').strip()} | {str(source.get('url') or '').strip()}".strip(" |")
+        for source in sources
+    ]
+
+
+def sprint_research_prepass_body_lines(sprint_state: dict[str, Any] | None) -> list[str]:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    if not prepass:
+        return []
+    subject_definition = (
+        dict(prepass.get("research_subject_definition") or {})
+        if isinstance(prepass.get("research_subject_definition"), dict)
+        else {}
+    )
+    sources = [
+        item
+        for item in (prepass.get("backing_sources") or [])
+        if isinstance(item, dict) and (str(item.get("title") or "").strip() or str(item.get("url") or "").strip())
+    ]
+    lines = [
+        "research_prepass:",
+        f"- request_id: {prepass.get('request_id') or ''}",
+        f"- status: {prepass.get('status') or ''}",
+        f"- reason_code: {prepass.get('reason_code') or ''}",
+        f"- subject: {prepass.get('subject') or ''}",
+        f"- research_query: {prepass.get('research_query') or ''}",
+        f"- research_url: {prepass.get('research_url') or ''}",
+        f"- headline: {prepass.get('headline') or ''}",
+        f"- planner_guidance: {prepass.get('planner_guidance') or ''}",
+        f"- backing_sources: {len(sources)}",
+    ]
+    if subject_definition:
+        lines.append("- research_subject_definition:")
+        for field in (
+            "planning_decision",
+            "knowledge_gap",
+            "external_boundary",
+            "planner_impact",
+            "candidate_subject",
+            "research_query",
+            "no_subject_rationale",
+        ):
+            value = str(subject_definition.get(field) or "").strip()
+            if value:
+                lines.append(f"  - {field}: {value}")
+        for field in ("source_requirements", "rejected_subjects"):
+            items = _string_list(subject_definition.get(field))
+            if not items:
+                continue
+            lines.append(f"  - {field}:")
+            lines.extend(f"    - {item}" for item in items[:5])
+    if sources:
+        lines.append("- backing_source_refs:")
+        for source in sources[:3]:
+            title = str(source.get("title") or "").strip()
+            url = str(source.get("url") or "").strip()
+            lines.append(f"  - {title} | {url}".rstrip(" |"))
+    section_labels = {
+        "milestone_refinement_hints": "milestone_refinement_hints",
+        "problem_framing_hints": "problem_framing_hints",
+        "spec_implications": "spec_implications",
+        "todo_definition_hints": "todo_definition_hints",
+        "backing_reasoning": "backing_reasoning",
+        "open_questions": "open_questions",
+    }
+    for field, label in section_labels.items():
+        items = _string_list(prepass.get(field))
+        if not items:
+            continue
+        lines.append(f"- {label}:")
+        lines.extend(f"  - {item}" for item in items[:5])
+    artifacts = sprint_research_prepass_artifacts(sprint_state)
+    if artifacts:
+        lines.append(f"- artifacts: {', '.join(artifacts[:3])}")
+    return [line for line in lines if str(line).strip()]
+
+
 def initial_phase_step_title(step: str) -> str:
     normalized = str(step or "").strip().lower()
     return INITIAL_PHASE_STEP_TITLES.get(normalized, normalized or "initial planning")
@@ -672,6 +802,7 @@ def build_sprint_planning_request_record(
                 initial_phase_step_instruction(normalized_step),
             ]
         )
+    body_lines.extend(sprint_research_prepass_body_lines(sprint_state))
     body = "\n".join(line for line in body_lines if str(line).strip())
     sprint_id = str(sprint_state.get("sprint_id") or "")
     return {
@@ -734,10 +865,68 @@ def validate_initial_phase_step_result(
     request_record: dict[str, Any],
     sync_summary: dict[str, Any],
     relevant_items: list[dict[str, Any]],
+    result: dict[str, Any] | None = None,
 ) -> str:
     step = initial_phase_step(request_record)
     if not step:
         return ""
+    role_result = (
+        dict(result or {})
+        if isinstance(result, dict)
+        else dict(request_record.get("result") or {})
+        if isinstance(request_record.get("result"), dict)
+        else {}
+    )
+    proposals = dict(role_result.get("proposals") or {}) if isinstance(role_result.get("proposals"), dict) else {}
+    sprint_plan_update = (
+        dict(proposals.get("sprint_plan_update") or {})
+        if isinstance(proposals.get("sprint_plan_update"), dict)
+        else {}
+    )
+    source_backed_research = sprint_research_prepass_source_backed(sprint_state)
+    if step == INITIAL_PHASE_STEP_MILESTONE_REFINEMENT and source_backed_research:
+        requested_title = str(sprint_state.get("requested_milestone_title") or "").strip()
+        revised_title = str(
+            proposals.get("revised_milestone_title")
+            or sprint_plan_update.get("revised_milestone_title")
+            or ""
+        ).strip()
+        refinement_rationale = str(
+            proposals.get("milestone_refinement_rationale")
+            or proposals.get("refinement_rationale")
+            or sprint_plan_update.get("milestone_refinement_rationale")
+            or sprint_plan_update.get("refinement_rationale")
+            or ""
+        ).strip()
+        developed_framing = str(
+            proposals.get("problem_framing")
+            or proposals.get("developed_problem_statement")
+            or sprint_plan_update.get("problem_framing")
+            or sprint_plan_update.get("developed_problem_statement")
+            or sprint_plan_update.get("refined_milestone_summary")
+            or ""
+        ).strip()
+        research_refs = normalize_trace_list(
+            proposals.get("research_refs")
+            or sprint_plan_update.get("research_refs")
+            or sprint_plan_update.get("source_refs")
+            or []
+        )
+        if not revised_title:
+            return (
+                "initial phase milestone 정리 단계에서 source-backed research를 반영한 "
+                "proposals.sprint_plan_update.revised_milestone_title이 없습니다."
+            )
+        if not refinement_rationale:
+            return (
+                "initial phase milestone 정리 단계에서 source-backed research를 milestone으로 연결한 "
+                "refinement_rationale이 없습니다."
+            )
+        if revised_title == requested_title and not (developed_framing and research_refs):
+            return (
+                "initial phase milestone 정리 단계에서 user 요청 milestone을 그대로 채택했습니다. "
+                "같은 제목을 유지하려면 developed problem framing과 research_refs가 필요합니다."
+            )
     if step in {
         INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
         INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION,
@@ -763,6 +952,7 @@ def validate_initial_phase_step_result(
         milestone_ref = str(origin.get("milestone_ref") or "").strip()
         requirement_refs = normalize_trace_list(origin.get("requirement_refs") or [])
         spec_refs = normalize_trace_list(origin.get("spec_refs") or [])
+        research_refs = normalize_trace_list(origin.get("research_refs") or [])
         if not acceptance:
             validation_errors.append(f"{title}: acceptance_criteria 없음")
         if not milestone_ref:
@@ -771,6 +961,8 @@ def validate_initial_phase_step_result(
             validation_errors.append(f"{title}: origin.requirement_refs 없음")
         if not spec_refs:
             validation_errors.append(f"{title}: origin.spec_refs 없음")
+        if source_backed_research and not research_refs:
+            validation_errors.append(f"{title}: origin.research_refs 없음")
     if validation_errors:
         return (
             "initial phase backlog 정의 단계의 backlog trace가 부족합니다. "
@@ -1125,6 +1317,7 @@ def sync_sprint_planning_state(
     request_record: dict[str, Any],
     result: dict[str, Any],
 ) -> bool:
+    service._merge_persisted_sprint_research_prepass(sprint_state)
     service._maybe_update_sprint_name_from_result(sprint_state, result)
     service._sync_manual_sprint_queue(sprint_state)
     params = dict(request_record.get("params") or {})
@@ -1152,7 +1345,73 @@ def sync_internal_sprint_artifacts_from_role_report(
 ) -> dict[str, Any]:
     if not service._is_internal_sprint_request(request_record):
         return {}
-    if str(result.get("role") or "").strip() != "planner":
+    role = str(result.get("role") or "").strip()
+    if role == "research":
+        status = str(result.get("status") or "").strip().lower()
+        if status != "completed":
+            return {}
+        params = dict(request_record.get("params") or {})
+        sprint_id = str(request_record.get("sprint_id") or params.get("sprint_id") or "").strip()
+        if not sprint_id:
+            return {}
+        sprint_state = service._load_sprint_state(sprint_id)
+        if not sprint_state:
+            return {}
+        proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+        research_signal = dict(proposals.get("research_signal") or {}) if isinstance(proposals.get("research_signal"), dict) else {}
+        research_report = dict(proposals.get("research_report") or {}) if isinstance(proposals.get("research_report"), dict) else {}
+        raw_subject_definition = proposals.get("research_subject_definition")
+        if not isinstance(raw_subject_definition, dict) or not raw_subject_definition:
+            raw_subject_definition = research_report.get("research_subject_definition")
+        subject_definition = dict(raw_subject_definition or {}) if isinstance(raw_subject_definition, dict) else {}
+        report_artifact = str(research_report.get("report_artifact") or "").strip()
+        artifacts = _dedupe_preserving_order(
+            [
+                *[str(item).strip() for item in (result.get("artifacts") or []) if str(item).strip()],
+                report_artifact,
+            ]
+        )
+        backing_sources = [
+            dict(item)
+            for item in (research_report.get("backing_sources") or [])
+            if isinstance(item, dict)
+        ]
+        prepass = {
+            "request_id": str(request_record.get("request_id") or result.get("request_id") or "").strip(),
+            "status": status,
+            "reason_code": str(research_signal.get("reason_code") or "").strip(),
+            "subject": str(research_signal.get("subject") or "").strip(),
+            "research_query": str(research_signal.get("research_query") or "").strip(),
+            "research_url": str(research_report.get("research_url") or "").strip(),
+            "research_subject_definition": subject_definition,
+            "headline": str(research_report.get("headline") or result.get("summary") or "").strip(),
+            "planner_guidance": str(research_report.get("planner_guidance") or "").strip(),
+            "backing_sources": backing_sources,
+            "artifacts": artifacts,
+            "completed_at": utc_now_iso(),
+        }
+        for field in RESEARCH_REPORT_LIST_FIELDS:
+            prepass[field] = _string_list(research_report.get(field))
+        sprint_state["research_prepass"] = prepass
+        sprint_state["reference_artifacts"] = _dedupe_preserving_order(
+            [
+                *[str(item).strip() for item in (sprint_state.get("reference_artifacts") or []) if str(item).strip()],
+                *artifacts,
+            ]
+        )
+        service._save_sprint_state(sprint_state)
+        service._append_sprint_event(
+            sprint_id,
+            event_type="research_prepass_completed",
+            summary=str(prepass.get("headline") or "sprint planning research prepass를 완료했습니다."),
+            payload={
+                "request_id": prepass["request_id"],
+                "artifacts": artifacts,
+                "backing_source_count": len(backing_sources),
+            },
+        )
+        return prepass
+    if role != "planner":
         return {}
     if str(result.get("status") or "").strip().lower() not in {"completed", "committed"}:
         return {}
@@ -1280,6 +1539,7 @@ def apply_sprint_planning_result(
             sprint_state,
             request_record=request_record,
             sync_summary=sync_summary,
+            result=result,
         )
     request_record["initial_phase_validation_error"] = validation_error
     service._save_request(request_record)

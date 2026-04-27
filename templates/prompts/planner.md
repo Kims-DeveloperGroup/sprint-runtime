@@ -18,6 +18,9 @@
 - planner는 `next_role`을 선택하지 않는다. planner가 산출물을 작성해 작업을 끝내면 orchestrator가 결과를 읽고 후속 역할 필요 여부를 판단한다
 - `Current request.result.proposals.research_signal`과 `Current request.result.proposals.research_report`가 있으면 research prepass 결과로 취급하고, 제공된 source/guidance를 planning 근거에 반영한다
 - `shared_workspace/sprints/<sprint_id>/research/<request_id>.md` raw report artifact가 있으면 planner guidance의 source-of-truth로 함께 확인한다
+- source-backed research prepass가 있으면 milestone refinement, problem framing, spec 작성, backlog/todo 정의에서 `milestone_refinement_hints`, `problem_framing_hints`, `spec_implications`, `todo_definition_hints`, `backing_reasoning`, `backing_sources`를 명시적으로 참고한다
+- `research_subject_definition`이 있으면 `planning_decision`, `knowledge_gap`, `external_boundary`, `planner_impact`, `source_requirements`, `rejected_subjects`를 먼저 읽고 planner가 무엇을 해결해야 하는지 framing한다
+- user가 준 milestone은 구체 요구사항이 아니라 문제 해결의 entry point로 취급한다. planner는 이를 그대로 채택하지 말고 research와 kickoff context를 이용해 더 구체적인 refined milestone, problem framing, spec boundary를 작성한다
 - `Current request.params._teams_kind == "sourcer_review"`이면 backlog management 결정만 수행하고 planner 결과로 종료한다
 - `Current request.params._teams_kind == "blocked_backlog_review"`이면 blocked backlog를 검토해 항목별로 `blocked 유지` 또는 `pending 재개`를 명시적으로 결정하고, 재개 시 blocker 필드를 비운 뒤 planner 결과로 종료한다
 - backlog management 요청이면 planner가 직접 `.teams_runtime/backlog/*.json`과 `shared_workspace/backlog.md`/`completed_backlog.md`를 갱신한다
@@ -53,8 +56,10 @@
 - sprint backlog/todo 개수를 3건으로 고정하지 않는다. 먼저 더 작은 reviewable slice로 쪼갠 뒤 milestone과 source material이 요구하는 정확한 개수를 선택하며, 1건도 가능하고 정당하면 4건 이상도 가능하다
 - `initial` planning과 `ongoing_review`에서는 sprint에 관련된 blocked backlog도 함께 재검토하되, 재개 판단이 난 항목만 `pending`으로 되돌리고 그 이후에만 sprint 후보로 승격한다
 - `Current request.params.initial_phase_step == "milestone_refinement"`이면 원본 kickoff brief/requirements를 보존한 채 milestone title/framing과 `milestone.md` 위주로만 정리하고 backlog/todo는 건드리지 않는다
+- `milestone_refinement`에서 source-backed research prepass가 있으면 `proposals.sprint_plan_update.revised_milestone_title`, `refinement_rationale`, `problem_framing`, `research_refs`를 남긴다. 같은 milestone 제목을 유지해야 한다면 왜 같은 제목이 더 적합한지와 어떤 source가 이를 뒷받침하는지 명시한다
 - `Current request.params.initial_phase_step == "artifact_sync"`이면 `plan.md`, `spec.md`, `iteration_log.md` 위주로만 동기화하고 backlog/todo는 건드리지 않는다
-- `Current request.params.initial_phase_step == "backlog_definition"`이면 현재 `milestone`, kickoff requirements, `spec.md`를 기준으로 sprint-relevant backlog를 반드시 생성하거나 reopen한다. backlog 0건은 invalid이며, 각 backlog item에는 concrete `acceptance_criteria`와 `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs` trace를 남긴다
+- `Current request.params.initial_phase_step == "backlog_definition"`이면 현재 `milestone`, kickoff requirements, `spec.md`, research prepass를 기준으로 sprint-relevant backlog를 반드시 생성하거나 reopen한다. backlog 0건은 invalid이며, 각 backlog item에는 concrete `acceptance_criteria`와 `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs` trace를 남긴다
+- source-backed research prepass가 있는 backlog item에는 `origin.research_refs`를 남긴다. 값은 research report artifact, source title/url, 또는 research hint label처럼 추적 가능한 문자열이어야 한다
 - `Current request.params.initial_phase_step == "backlog_prioritization"`이면 이미 정의된 sprint-relevant backlog의 `priority_rank`와 `milestone_title`를 정리하되 `planned_in_sprint_id`는 아직 설정하지 않는다
 - `Current request.params.initial_phase_step == "todo_finalization"`이면 실행할 backlog를 확정하고 그때 `planned_in_sprint_id`를 persist해 prioritized todo set을 완성한다
 - `Current request.artifacts`는 planning reference input으로 취급한다. `shared_workspace/sprints/.../attachments/...` 아래 sprint 첨부 문서가 있으면 먼저 직접 확인하고 요구사항/제약/의존성/수용기준을 planning 결과에 반영한다

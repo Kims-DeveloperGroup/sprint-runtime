@@ -370,6 +370,76 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                 self.assertIn("sprint_activity role=planner event=role_started", joined_logs)
                 self.assertIn("request_id=20260331-activity123", joined_logs)
 
+    def test_initial_milestone_research_activity_is_labeled_before_planner_refinement(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "research")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="research-first manual sprint",
+                    trigger="manual_start",
+                )
+                service._save_sprint_state(sprint_state)
+                request_record = service._build_sprint_planning_request_record(
+                    sprint_state,
+                    phase="initial",
+                    iteration=1,
+                    step=orchestration_module.INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+                )
+                request_record["status"] = "delegated"
+                request_record["current_role"] = "research"
+                request_record["next_role"] = "research"
+                service._save_request(request_record)
+                service._send_relay = AsyncMock(return_value=True)
+                service.role_runtime.run_task = lambda *_args, **_kwargs: {
+                    "request_id": request_record["request_id"],
+                    "role": "research",
+                    "status": "completed",
+                    "summary": "research prepass를 planner에 전달했습니다.",
+                    "insights": [],
+                    "proposals": {
+                        "research_signal": {
+                            "needed": False,
+                            "subject": "",
+                            "research_query": "",
+                            "reason_code": "not_needed_no_subject",
+                        }
+                    },
+                    "artifacts": [],
+                    "next_role": "",
+                    "approval_needed": False,
+                    "error": "",
+                }
+                envelope = MessageEnvelope(
+                    request_id=request_record["request_id"],
+                    sender="orchestrator",
+                    target="research",
+                    intent="research",
+                    urgency="normal",
+                    scope=request_record["scope"],
+                    body=request_record["body"],
+                    params={
+                        "_teams_kind": "delegate",
+                        "_origin": "sprint_internal",
+                        "sprint_id": sprint_state["sprint_id"],
+                    },
+                )
+
+                asyncio.run(service._process_delegated_request(envelope, request_record))
+
+                updated_sprint = service._load_sprint_state(sprint_state["sprint_id"])
+                started_activity = [
+                    item
+                    for item in updated_sprint.get("recent_activity") or []
+                    if item.get("event_type") == "role_started"
+                ][0]
+                self.assertEqual(started_activity["role"], "research")
+                self.assertIn("research prepass", started_activity["summary"])
+                self.assertNotIn("milestone 정리", started_activity["summary"])
+                current_sprint_text = service.paths.current_sprint_file.read_text(encoding="utf-8")
+                self.assertIn("role=research | event=role_started", current_sprint_text)
+                self.assertIn("research prepass", current_sprint_text)
+
     def test_pending_role_request_resume_loop_picks_up_request_created_after_startup(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
