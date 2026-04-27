@@ -265,6 +265,8 @@ python -m teams_runtime sprint stop
 python -m teams_runtime sprint restart
 ```
 
+Manual and scheduled sprint kickoff always begins with the `research` prepass before planner milestone refinement. The research report defines the external or local-evidence subject, provides sources or backing rationale, and is handed to planner so milestone refinement, specs, backlog, and todos are developed beyond the raw kickoff milestone.
+
 ### 8. Send a request
 
 DM or mention the `orchestrator` bot with a request such as:

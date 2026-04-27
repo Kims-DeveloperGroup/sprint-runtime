@@ -241,10 +241,12 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
   - `designer` and `architect` are advisory specialists during planning
   - planning advisory passes are capped at 2 shared passes total
 - sprint initial planning:
-  - `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
-  - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + spec`
+  - `research_initial` is always the first delegation, for both manual and scheduled sprint kickoff
+  - the research report defines the external/local-evidence subject, sources or rationale, and planning hints before planner milestone refinement
+  - planner then runs `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
+  - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec`
   - `backlog 0건` is invalid; orchestrator blocks sprint start with `planning_incomplete` instead of looping or silently continuing
-  - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/spec
+  - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/research/spec
 - planner-owned planning surfaces:
   - `shared_workspace/backlog.md`
   - `shared_workspace/completed_backlog.md`

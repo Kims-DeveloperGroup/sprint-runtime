@@ -371,10 +371,10 @@ For normal change work:
 - after control-flow requests are excluded, orchestrator delegates normal planning/backlog work to planner first
 - orchestrator applies a workflow contract before capability scoring, then uses its local `agent_utilization` skill and sibling `policy.yaml` as a bounded tie-breaker inside the allowed workflow roles
 - capability boundaries are also enforced directly: `should_not_handle` phrases exclude a candidate before scoring, so ownership limits are hard routing boundaries rather than advisory metadata
-- capability routing is bounded by planner ownership and workflow policy; it does not bypass planner-first intake, bounded advisory passes, the mandatory architect/developer review chain, sourcer-review-to-planner, blocked planning resume, sprint initial owner policy, or version-controller-only flows
+- capability routing is bounded by planner ownership and workflow policy; it does not bypass normal planner-first intake, research-first sprint initial policy, bounded advisory passes, the mandatory architect/developer review chain, sourcer-review-to-planner, blocked planning resume, or version-controller-only flows
 - planner owns backlog-management decisions such as add/update/dedupe/reprioritize and persists those backlog changes directly into runtime backlog state
 - planner backlog persistence uses the canonical backlog helper boundary with `backlog_items` / `backlog_item` payloads, and planner returns `proposals.backlog_writes` receipts after those writes succeed
-- backlog/todo definition is `spec-first`: sprint backlog must be derived from the current milestone, kickoff requirements, and `spec.md`, not only from pre-existing queue state
+- backlog/todo definition is research-informed and `spec-first`: sprint backlog must be derived from the current milestone, kickoff requirements, research report, and `spec.md`, not only from pre-existing queue state
 - `backlog.md` is updated from planner-owned backlog persistence and shows active items with `created_at`
 - active backlog can include `blocked` items that are waiting for missing inputs, but only `pending` items are sprint-selectable
 - `completed_backlog.md` is refreshed alongside it and keeps only `done` items
@@ -414,14 +414,16 @@ At sprint start:
 
 - discovery refresh runs
 - sprint state is created
-- immutable kickoff source fields plus `kickoff.md` are persisted from the sprint-start request before planner refines milestone framing
-- planner initial phase runs in this order:
+- immutable kickoff source fields plus `kickoff.md` are persisted from the sprint-start request before research and planner derive execution framing
+- the first initial-phase request is delegated to `research` as `research_initial`, including manual `sprint start` flows
+- the research prepass defines the research subject, sources or local-evidence/no-subject rationale, and planning hints before planner refines the milestone
+- planner then runs this initial phase:
   - `milestone_refinement`
   - `artifact_sync`
   - `backlog_definition`
   - `backlog_prioritization`
   - `todo_finalization`
-- `backlog_definition` must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + spec`
+- `backlog_definition` must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec`
 - `backlog 0건` is invalid during sprint start; orchestrator blocks with `planning_incomplete` instead of continuing
 - selected backlog items are marked `selected` only during `todo_finalization`
 - todos are derived from the selected backlog items after `todo_finalization`

@@ -225,7 +225,8 @@ In the autonomous sprint model, normal change requests do not execute immediatel
 - the orchestrator first routes them to planner for planning and backlog-management decisions
 - the first reply includes `request_id=...`
 - backlog IDs appear only after planner directly persists a backlog record and reports it
-- when the scheduler starts a sprint, planner first runs an initial phase that refines milestone/spec docs, defines sprint-relevant backlog, prioritizes it, and only then turns selected backlog items into sprint todos
+- when the scheduler or an operator starts a sprint, the first initial-phase delegation is `research` with workflow step `research_initial`; the resulting research prepass report reaches planner before milestone refinement
+- planner then uses that report to refine the raw kickoff milestone, write or update specs, define sprint-relevant backlog, prioritize it, and only then turn selected backlog items into sprint todos
 - `backlog 0건` is not a valid sprint-start state; the runtime blocks the sprint with `planning_incomplete` instead
 - sprint execution creates additional sprint-internal `request_id` values for each todo; these are separate from the intake/planner request ID
 

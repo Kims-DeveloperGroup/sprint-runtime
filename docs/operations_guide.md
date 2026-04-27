@@ -64,9 +64,9 @@ python -m teams_runtime sprint restart
 - Planner should persist canonical `backlog_items` / `backlog_item` payloads through the backlog helper boundary, then return `proposals.backlog_writes` receipts with affected `backlog_id` values and optional artifact paths.
 - `proposals.backlog_item` and `proposals.backlog_items` remain planning rationale and execution context. Orchestrator does not treat them as persistence instructions.
 - Orchestrator verifies `proposals.backlog_writes` against persisted `.teams_runtime/backlog/*.json` state and then continues routing, sprint selection, and status reporting from the saved backlog state.
-- During sprint `initial` planning, planner must first define or reopen sprint-relevant backlog from the current milestone, kickoff requirements, and `spec.md` before prioritization or todo finalization.
+- During sprint `initial` planning, orchestrator must run the `research` prepass first. Planner must reference that report when refining the milestone, writing specs, and defining or reopening sprint-relevant backlog from the current milestone, kickoff requirements, research findings, and `spec.md`.
 - `backlog 0건` is not an acceptable sprint-start result. If initial-phase backlog definition leaves zero sprint-relevant backlog, orchestrator blocks sprint start with `planning_incomplete`.
-- Sprint backlog definition items should carry concrete `acceptance_criteria` plus planner trace in `origin.milestone_ref`, `origin.requirement_refs`, and `origin.spec_refs`.
+- Sprint backlog definition items should carry concrete `acceptance_criteria` plus planner trace in `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs`, and `origin.research_refs` when a source-backed or local-evidence research report is available.
 - Legacy planner aliases such as `planned_backlog_updates` are compatibility inputs only inside role-runtime normalization. They are not accepted by the canonical backlog helper interface.
 
 ## Designer Advisory Contract

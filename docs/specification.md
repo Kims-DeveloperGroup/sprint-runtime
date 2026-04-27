@@ -164,7 +164,9 @@ Normal change and enhancement requests are backlog-first.
 - planner reasoning may still include `proposals.backlog_item` / `proposals.backlog_items`, but those are not persistence instructions for orchestrator
 - orchestrator verifies planner `backlog_writes` receipts against persisted backlog state and must not re-persist planner backlog proposals on behalf of planner
 - an internal non-public sourcer agent can independently propose new backlog candidates from workspace/runtime findings, but planner review is required before backlog persistence
-- when a sprint starts, planner must first derive sprint-relevant backlog from the current milestone, kickoff requirements, and `spec.md`
+- when a sprint starts, the first initial-phase delegation must be `research` at workflow step `research_initial`, before planner milestone refinement
+- the research prepass must define the research subject, provide source-backed findings or local-evidence/no-subject rationale, and give planner hints/backing reasons for refining the raw milestone
+- planner must then derive sprint-relevant backlog from the refined milestone, kickoff requirements, research report, and `spec.md`
 - sprint start cannot proceed with `backlog 0건`; if sprint-relevant backlog is empty, the runtime blocks with `planning_incomplete`
 - the scheduler later selects pending backlog items only after that initial-phase backlog-definition gate passes
 - selected items become sprint todos and are executed through internal `request_id` records with a standard workflow contract
@@ -183,7 +185,7 @@ Workflow rules:
 - `planner` is the sole final owner of planning output
 - `designer` and `architect` are advisory specialists during planning
 - planning advisory is capped at 2 shared passes total
-- sprint initial planning follows `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
+- sprint initial planning follows `research_initial -> planner_draft`, where planner covers `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
 - `backlog_definition` is mandatory and must persist sprint-relevant backlog before prioritization
 - planning-only clarification on planner-owned surfaces such as `current_sprint.md`, `todo_backlog.md`, and `iteration_log.md` closes in planning instead of opening implementation
 - planner가 planner-owned artifact만 보고하더라도 `workflow_transition.target_phase=implementation`을 명시하면 orchestrator는 planning close 대신 다음 implementation step을 열어야 함
