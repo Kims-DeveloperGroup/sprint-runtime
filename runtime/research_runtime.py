@@ -22,17 +22,39 @@ from teams_runtime.runtime.base_runtime import (
 )
 from teams_runtime.runtime.codex_runner import extract_json_object
 from teams_runtime.workflows.roles.research import (
+    RESEARCH_REPORT_LIST_FIELDS,
     RESEARCH_REASON_CODE_BLOCKED_DECISION_FAILED,
     build_research_decision_prompt,
-    build_research_decision_retry_prompt,
     build_research_prompt,
     default_research_planner_guidance,
     default_research_signal,
-    is_research_reason_code_schema_error,
     normalize_research_decision,
     parse_research_report,
     research_skip_summary,
+    validate_source_backed_research_report,
 )
+
+
+DEFAULT_RESEARCH_PROFILE_DIRNAME = "chrome_profile"
+DEFAULT_DEEP_RESEARCH_MODE_KEYWORDS = ("Pro", "프로", "최상위")
+
+
+def _empty_research_subject_definition() -> dict[str, Any]:
+    return {
+        "planning_decision": "",
+        "knowledge_gap": "",
+        "external_boundary": "",
+        "planner_impact": "",
+        "candidate_subject": "",
+        "research_query": "",
+        "source_requirements": [],
+        "rejected_subjects": [],
+        "no_subject_rationale": "",
+    }
+
+
+def _resolve_deep_research_mode(mode: str | None) -> str | list[str]:
+    return list(DEFAULT_DEEP_RESEARCH_MODE_KEYWORDS)
 
 
 class ResearchAgentRuntime(RoleAgentRuntime):
@@ -78,6 +100,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 active_session_id = resolved_session_id or active_session_id
             except Exception as exc:
                 signal = default_research_signal(reason_code=RESEARCH_REASON_CODE_BLOCKED_DECISION_FAILED)
+                subject_definition = _empty_research_subject_definition()
                 planner_guidance = default_research_planner_guidance(
                     signal,
                     local_sources_checked=local_sources_checked,
@@ -91,11 +114,14 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         "insights": [],
                         "proposals": {
                             "research_signal": signal,
+                            "research_subject_definition": subject_definition,
                             "research_report": {
                                 "report_artifact": "",
                                 "headline": "research 필요 판단 실패",
                                 "planner_guidance": planner_guidance,
+                                "research_subject_definition": subject_definition,
                                 "backing_sources": [],
+                                **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                                 "open_questions": [],
                                 "effective_config": asdict(effective_config),
                             },
@@ -112,6 +138,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 return payload
 
             signal = dict(decision.get("signal") or {})
+            subject_definition = dict(decision.get("research_subject_definition") or {})
             planner_guidance = str(decision.get("planner_guidance") or "").strip() or default_research_planner_guidance(
                 signal,
                 local_sources_checked=local_sources_checked,
@@ -124,6 +151,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 "insights": [],
                 "proposals": {
                     "research_signal": signal,
+                    "research_subject_definition": subject_definition,
                 },
                 "artifacts": [],
                 "error": "",
@@ -135,6 +163,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     envelope,
                     request_record,
                     signal=signal,
+                    subject_definition=subject_definition,
                     local_sources_checked=local_sources_checked,
                     artifact_hint=artifact_hint,
                 )
@@ -144,7 +173,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         app_name=effective_config.app,
                         notebook=effective_config.notebook,
                         files=list(effective_config.files),
-                        mode=effective_config.mode,
+                        mode=_resolve_deep_research_mode(effective_config.mode),
                         profile_path=effective_config.profile_path,
                         completion_timeout=effective_config.completion_timeout,
                         callback_timeout=effective_config.callback_timeout,
@@ -153,17 +182,29 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     response_text = str(result.response_text or "").strip()
                     if not response_text:
                         raise RuntimeError("Deep research returned an empty report.")
+                    if result.url:
+                        response_text += f"\n\n---\n**Deep Research URL:** {result.url}\n"
                     artifact_path.parent.mkdir(parents=True, exist_ok=True)
                     artifact_path.write_text(response_text.rstrip() + "\n", encoding="utf-8")
-                    parsed_report = parse_research_report(response_text)
+                    parsed_report = validate_source_backed_research_report(
+                        signal,
+                        parse_research_report(response_text),
+                    )
                     payload["summary"] = (
                         parsed_report["headline"]
                         or "외부 research를 수행하고 planner용 source-backed guidance를 정리했습니다."
                     )
                     payload["proposals"]["research_report"] = {
                         "report_artifact": artifact_hint,
+                        "research_url": result.url or "",
                         "headline": parsed_report["headline"],
                         "planner_guidance": parsed_report["planner_guidance"],
+                        "research_subject_definition": subject_definition,
+                        "milestone_refinement_hints": parsed_report["milestone_refinement_hints"],
+                        "problem_framing_hints": parsed_report["problem_framing_hints"],
+                        "spec_implications": parsed_report["spec_implications"],
+                        "todo_definition_hints": parsed_report["todo_definition_hints"],
+                        "backing_reasoning": parsed_report["backing_reasoning"],
                         "backing_sources": parsed_report["backing_sources"],
                         "open_questions": parsed_report["open_questions"],
                         "effective_config": asdict(effective_config),
@@ -175,9 +216,12 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     payload["error"] = str(exc) or "research execution failed"
                     payload["proposals"]["research_report"] = {
                         "report_artifact": "",
+                        "research_url": "",
                         "headline": "external research 실행 실패",
                         "planner_guidance": planner_guidance,
+                        "research_subject_definition": subject_definition,
                         "backing_sources": [],
+                        **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                         "open_questions": [],
                         "effective_config": asdict(effective_config),
                     }
@@ -185,9 +229,12 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 payload["summary"] = research_skip_summary(signal)
                 payload["proposals"]["research_report"] = {
                     "report_artifact": "",
+                    "research_url": "",
                     "headline": "외부 research 불필요",
                     "planner_guidance": planner_guidance,
+                    "research_subject_definition": subject_definition,
                     "backing_sources": [],
+                    **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                     "open_questions": [],
                     "effective_config": asdict(effective_config),
                 }
@@ -239,12 +286,21 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 return current
             return normalized if normalized > 0 else current
 
+        def resolve_profile_path(raw_value: str | None) -> str:
+            normalized = str(raw_value or "").strip()
+            if normalized:
+                profile_path = Path(normalized).expanduser()
+                if profile_path.is_absolute():
+                    return str(profile_path)
+                return str(self.paths.project_workspace_root / profile_path)
+            return str(self.paths.project_workspace_root / DEFAULT_RESEARCH_PROFILE_DIRNAME)
+
         return ResearchRuntimeConfig(
             app=choose_text("app", base.app),
             notebook=choose_text("notebook", base.notebook),
             files=files_value,
             mode=choose_text("mode", base.mode),
-            profile_path=choose_text("profile_path", base.profile_path),
+            profile_path=resolve_profile_path(choose_text("profile_path", base.profile_path)),
             completion_timeout=choose_timeout("completion_timeout", base.completion_timeout),
             callback_timeout=choose_timeout("callback_timeout", base.callback_timeout),
             cleanup=bool(override.get("cleanup")) if "cleanup" in override else base.cleanup,
@@ -311,19 +367,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
             bypass_sandbox=self._request_requires_default_bypass(envelope, request_record),
         )
         raw_payload = extract_json_object(output)
-        try:
-            return normalize_research_decision(raw_payload), resolved_session_id
-        except ValueError as exc:
-            if not is_research_reason_code_schema_error(exc):
-                raise
-            retry_output, retry_session_id = self.codex_runner.run(
-                Path(state.workspace_path),
-                build_research_decision_retry_prompt(prompt, str(exc)),
-                None,
-                bypass_sandbox=self._request_requires_default_bypass(envelope, request_record),
-            )
-            retry_payload = extract_json_object(retry_output)
-            return normalize_research_decision(retry_payload), retry_session_id or resolved_session_id
+        return normalize_research_decision(raw_payload, request_record=request_record), resolved_session_id
 
 
 __all__ = ["ResearchAgentRuntime"]
