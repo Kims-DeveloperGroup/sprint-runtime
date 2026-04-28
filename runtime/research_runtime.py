@@ -167,8 +167,12 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     local_sources_checked=local_sources_checked,
                     artifact_hint=artifact_hint,
                 )
+                deep_research_result: Any | None = None
+                response_text = ""
+                parsed_report: dict[str, Any] | None = None
+                failure_stage = "run_deep_research"
                 try:
-                    result = run_deep_research_sync(
+                    deep_research_result = run_deep_research_sync(
                         prompt,
                         app_name=effective_config.app,
                         notebook=effective_config.notebook,
@@ -179,16 +183,29 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         callback_timeout=effective_config.callback_timeout,
                         cleanup=effective_config.cleanup,
                     )
-                    response_text = str(result.response_text or "").strip()
+                    if not bool(getattr(deep_research_result, "completed", False)):
+                        failure_stage = "await_final_report"
+                        current_url = str(getattr(deep_research_result, "url", "") or "").strip()
+                        location_hint = f" Last URL: {current_url}" if current_url else ""
+                        raise RuntimeError(
+                            "Deep research did not reach final report completion before timeout."
+                            + location_hint
+                        )
+                    response_text = str(deep_research_result.response_text or "").strip()
+                    failure_stage = "response_validation"
                     if not response_text:
                         raise RuntimeError("Deep research returned an empty report.")
-                    if result.url:
-                        response_text += f"\n\n---\n**Deep Research URL:** {result.url}\n"
+                    if deep_research_result.url:
+                        response_text += f"\n\n---\n**Deep Research URL:** {deep_research_result.url}\n"
+                    failure_stage = "write_artifact"
                     artifact_path.parent.mkdir(parents=True, exist_ok=True)
                     artifact_path.write_text(response_text.rstrip() + "\n", encoding="utf-8")
+                    failure_stage = "parse_report"
+                    parsed_report = parse_research_report(response_text)
+                    failure_stage = "validate_report"
                     parsed_report = validate_source_backed_research_report(
                         signal,
-                        parse_research_report(response_text),
+                        parsed_report,
                     )
                     payload["summary"] = (
                         parsed_report["headline"]
@@ -196,7 +213,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     )
                     payload["proposals"]["research_report"] = {
                         "report_artifact": artifact_hint,
-                        "research_url": result.url or "",
+                        "research_url": deep_research_result.url or "",
                         "headline": parsed_report["headline"],
                         "planner_guidance": parsed_report["planner_guidance"],
                         "research_subject_definition": subject_definition,
@@ -211,18 +228,45 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     }
                     payload["artifacts"] = [artifact_hint]
                 except Exception as exc:
+                    artifact_written = artifact_path.exists()
+                    parsed_backing_sources = (
+                        parsed_report.get("backing_sources")
+                        if isinstance(parsed_report, dict) and isinstance(parsed_report.get("backing_sources"), list)
+                        else []
+                    )
+                    failure_details: dict[str, Any] = {
+                        "failure_stage": failure_stage,
+                        "exception_type": type(exc).__name__,
+                        "artifact_written": artifact_written,
+                        "parsed_backing_source_count": len(parsed_backing_sources),
+                    }
+                    if response_text:
+                        failure_details["response_excerpt"] = response_text[:1000]
+                    if artifact_written:
+                        failure_details["report_artifact"] = artifact_hint
+                    if deep_research_result is not None and getattr(deep_research_result, "url", None):
+                        failure_details["research_url"] = str(deep_research_result.url or "")
+                    if parsed_backing_sources:
+                        failure_details["parsed_backing_sources"] = parsed_backing_sources[:3]
+
                     payload["status"] = "failed"
                     payload["summary"] = "research prepass를 완료하지 못했습니다."
                     payload["error"] = str(exc) or "research execution failed"
+                    payload["artifacts"] = [artifact_hint] if artifact_written else []
                     payload["proposals"]["research_report"] = {
-                        "report_artifact": "",
-                        "research_url": "",
+                        "report_artifact": artifact_hint if artifact_written else "",
+                        "research_url": (
+                            str(getattr(deep_research_result, "url", "") or "")
+                            if deep_research_result is not None
+                            else ""
+                        ),
                         "headline": "external research 실행 실패",
                         "planner_guidance": planner_guidance,
                         "research_subject_definition": subject_definition,
                         "backing_sources": [],
                         **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                         "open_questions": [],
+                        "failure_details": failure_details,
                         "effective_config": asdict(effective_config),
                     }
             else:

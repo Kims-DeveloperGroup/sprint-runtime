@@ -612,7 +612,11 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
             )
             with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-2")) as decision_mock, patch(
                 "teams_runtime.runtime.research_runtime.run_deep_research_sync",
-                return_value=SimpleNamespace(response_text=report_text, url="https://gemini.google.com/test-url"),
+                return_value=SimpleNamespace(
+                    completed=True,
+                    response_text=report_text,
+                    url="https://gemini.google.com/test-url",
+                ),
             ) as deep_research_mock:
                 payload = runtime.run_task(envelope, request_record)
 
@@ -701,14 +705,159 @@ Keep provider assumptions soft.
             )
             with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-no-sources")), patch(
                 "teams_runtime.runtime.research_runtime.run_deep_research_sync",
-                return_value=SimpleNamespace(response_text=report_text, url="https://gemini.google.com/test-url"),
+                return_value=SimpleNamespace(
+                    completed=True,
+                    response_text=report_text,
+                    url="https://gemini.google.com/test-url",
+                ),
+            ):
+                payload = runtime.run_task(envelope, request_record)
+
+            artifact_hint = "shared_workspace/sprints/260418-Sprint-10:32/research/request-external-no-sources.md"
+            artifact = paths.sprint_research_file("260418-Sprint-10:32", "request-external-no-sources")
+            self.assertEqual(payload["status"], "failed")
+            self.assertIn("backing source", payload["error"])
+            self.assertTrue(artifact.exists())
+            self.assertEqual(payload["artifacts"], [artifact_hint])
+            self.assertEqual(payload["proposals"]["research_report"]["report_artifact"], artifact_hint)
+            self.assertEqual(payload["proposals"]["research_report"]["research_url"], "https://gemini.google.com/test-url")
+            self.assertEqual(payload["proposals"]["research_report"]["backing_sources"], [])
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["failure_stage"],
+                "validate_report",
+            )
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["parsed_backing_source_count"],
+                1,
+            )
+
+    def test_research_runtime_records_enable_failure_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:33",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-external-enable-fail",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="latest provider pricing comparison with sources",
+                body="Need source-backed comparison before planner decides provider direction.",
+            )
+            request_record = {
+                "request_id": "request-external-enable-fail",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:33",
+            }
+            decision_output = json.dumps(
+                {
+                    "needed": True,
+                    "subject": "Current provider pricing comparison",
+                    "research_query": "Compare current provider pricing with official sources.",
+                    "reason_code": "needed_external_grounding",
+                    "research_subject_definition": _external_subject_definition(),
+                    "planner_guidance": "planner는 외부 가격 근거가 정리되기 전까지 provider assumptions를 고정하지 마세요.",
+                },
+                ensure_ascii=False,
+            )
+            error_message = (
+                "Deep Research could not be enabled for this session. "
+                "Diagnostics: url=https://gemini.google.com/app; menu_items=['Deep Research']"
+            )
+            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-enable-fail")), patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync",
+                side_effect=RuntimeError(error_message),
             ):
                 payload = runtime.run_task(envelope, request_record)
 
             self.assertEqual(payload["status"], "failed")
-            self.assertIn("backing source", payload["error"])
+            self.assertIn("Diagnostics:", payload["error"])
             self.assertEqual(payload["artifacts"], [])
-            self.assertEqual(payload["proposals"]["research_report"]["backing_sources"], [])
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["failure_stage"],
+                "run_deep_research",
+            )
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["exception_type"],
+                "RuntimeError",
+            )
+            self.assertEqual(payload["proposals"]["research_report"]["report_artifact"], "")
+            self.assertEqual(payload["proposals"]["research_report"]["research_url"], "")
+
+    def test_research_runtime_fails_when_deep_research_never_reaches_final_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:34",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-external-incomplete",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="latest provider pricing comparison with sources",
+                body="Need source-backed comparison before planner decides provider direction.",
+            )
+            request_record = {
+                "request_id": "request-external-incomplete",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:34",
+            }
+            decision_output = json.dumps(
+                {
+                    "needed": True,
+                    "subject": "Current provider pricing comparison",
+                    "research_query": "Compare current provider pricing with official sources.",
+                    "reason_code": "needed_external_grounding",
+                    "research_subject_definition": _external_subject_definition(),
+                    "planner_guidance": "planner는 외부 가격 근거가 정리되기 전까지 provider assumptions를 고정하지 마세요.",
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-incomplete")), patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync",
+                return_value=SimpleNamespace(
+                    completed=False,
+                    response_text="중간 계획 텍스트",
+                    url="https://gemini.google.com/app/report-123",
+                ),
+            ):
+                payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(payload["status"], "failed")
+            self.assertIn("did not reach final report completion", payload["error"])
+            self.assertEqual(payload["artifacts"], [])
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["failure_stage"],
+                "await_final_report",
+            )
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["exception_type"],
+                "RuntimeError",
+            )
+            self.assertEqual(
+                payload["proposals"]["research_report"]["research_url"],
+                "https://gemini.google.com/app/report-123",
+            )
 
     def test_research_runtime_resolves_default_profile_from_project_workspace(self):
         with tempfile.TemporaryDirectory() as tmpdir:
