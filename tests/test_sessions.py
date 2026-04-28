@@ -23,6 +23,7 @@ from teams_runtime.runtime.identities import sanitize_runtime_identity
 from teams_runtime.runtime.identities import service_identity
 from teams_runtime.runtime.identities import service_runtime_identity
 from teams_runtime.runtime.research_runtime import ResearchAgentRuntime
+from teams_runtime.runtime.role_result_contract import validate_role_result_contract
 
 
 def _external_subject_definition(
@@ -626,14 +627,8 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
                 "Compare current OpenAI and Gemini API pricing with official sources",
                 deep_research_mock.call_args.args[0],
             )
-            self.assertEqual(
-                deep_research_mock.call_args.kwargs["profile_path"],
-                str(Path(tmpdir).resolve() / "chrome_profile"),
-            )
-            self.assertEqual(
-                deep_research_mock.call_args.kwargs["mode"],
-                ["Pro", "프로", "최상위"],
-            )
+            self.assertIsNone(deep_research_mock.call_args.kwargs["profile_path"])
+            self.assertIsNone(deep_research_mock.call_args.kwargs["mode"])
             artifact = paths.sprint_research_file("260418-Sprint-10:30", "request-external")
             self.assertTrue(artifact.exists())
             self.assertEqual(payload["status"], "completed")
@@ -859,20 +854,11 @@ Keep provider assumptions soft.
                 "https://gemini.google.com/app/report-123",
             )
 
-    def test_research_runtime_resolves_default_profile_from_project_workspace(self):
+    def test_research_runtime_keeps_default_profile_unset(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             runtime_workspace = project_root / "teams_generated"
             scaffold_workspace(runtime_workspace)
-            config_path = runtime_workspace / "team_runtime.yaml"
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    '  profile_path: "./chrome_profile"\n',
-                    '  profile_path: ""\n',
-                    1,
-                ),
-                encoding="utf-8",
-            )
             paths = RuntimePaths.from_root(runtime_workspace)
             runtime = ResearchAgentRuntime(
                 paths=paths,
@@ -901,10 +887,7 @@ Keep provider assumptions soft.
 
             effective_config = runtime._merge_research_config(envelope, request_record)
 
-            self.assertEqual(
-                effective_config.profile_path,
-                str(project_root.resolve() / "chrome_profile"),
-            )
+            self.assertIsNone(effective_config.profile_path)
 
     def test_research_runtime_resolves_relative_profile_override_from_project_workspace(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1234,6 +1217,39 @@ Keep provider assumptions soft.
             prompt = runtime._build_prompt(envelope, request_record)
 
             self.assertIn("./workspace/teams_generated", prompt)
+
+    def test_role_runtime_prompt_avoids_literal_status_enum_and_placeholder_examples(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="planner",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            envelope = MessageEnvelope(
+                request_id="prompt-shape-request",
+                sender="orchestrator",
+                target="planner",
+                intent="plan",
+                urgency="normal",
+                scope="scope",
+            )
+            request_record = {
+                "request_id": "prompt-shape-request",
+                "scope": "scope",
+                "body": "",
+                "artifacts": [],
+            }
+
+            prompt = runtime._build_prompt(envelope, request_record)
+
+            self.assertNotIn('"status": "completed|blocked|failed"', prompt)
+            self.assertNotIn("short Korean summary", prompt)
+            self.assertNotIn("private role insight for journal.md", prompt)
+            self.assertIn("Do not copy schema enums or placeholder example text literally.", prompt)
+            self.assertIn("Allowed `status` values are exactly `completed`, `blocked`, or `failed`.", prompt)
 
     def test_planner_role_runtime_prompt_treats_attachments_as_planning_inputs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2407,6 +2423,191 @@ context compacted
             self.assertEqual(payload["summary"], "")
             self.assertEqual(payload["request_id"], "request-1")
 
+    def test_role_runtime_repairs_placeholder_contract_output_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "teams_generated"
+            scaffold_workspace(workspace_root)
+            paths = RuntimePaths.from_root(workspace_root)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="developer",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            state = runtime.session_manager.ensure_session()
+            runtime.session_manager.finalize_session_id(state, "session-developer-1")
+
+            invalid_output = json.dumps(
+                {
+                    "request_id": "request-1",
+                    "role": "developer",
+                    "status": "completed|blocked|failed",
+                    "summary": "short Korean summary",
+                    "insights": ["private role insight for journal.md"],
+                    "proposals": {
+                        "workflow_transition": {
+                            "outcome": "advance",
+                            "target_phase": "validation",
+                            "target_step": "qa_validation",
+                            "requested_role": "qa",
+                            "reopen_category": "",
+                            "reason": "qa handoff",
+                            "unresolved_items": [],
+                            "finalize_phase": False,
+                        }
+                    },
+                    "artifacts": [],
+                    "error": "",
+                },
+                ensure_ascii=False,
+            )
+            repaired_output = json.dumps(
+                {
+                    "request_id": "request-1",
+                    "role": "developer",
+                    "status": "completed",
+                    "summary": "구현과 검증 범위를 정리해 QA handoff 조건을 명시했습니다.",
+                    "insights": ["workflow transition을 QA handoff 형태로 정리했습니다."],
+                    "proposals": {
+                        "workflow_transition": {
+                            "outcome": "advance",
+                            "target_phase": "validation",
+                            "target_step": "qa_validation",
+                            "requested_role": "qa",
+                            "reopen_category": "",
+                            "reason": "구현 결과가 QA 검증 단계로 이동할 준비가 되었습니다.",
+                            "unresolved_items": [],
+                            "finalize_phase": False,
+                        }
+                    },
+                    "artifacts": ["workspace/libs/example.py"],
+                    "error": "",
+                },
+                ensure_ascii=False,
+            )
+
+            class _RepairingRunner:
+                def __init__(self):
+                    self.calls: list[dict[str, object]] = []
+                    self.outputs = [
+                        (invalid_output, "session-developer-1"),
+                        (repaired_output, "session-developer-1"),
+                    ]
+
+                def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
+                    self.calls.append(
+                        {
+                            "workspace": str(workspace),
+                            "prompt": str(prompt),
+                            "session_id": session_id,
+                            "bypass_sandbox": bypass_sandbox,
+                        }
+                    )
+                    return self.outputs.pop(0)
+
+            fake_runner = _RepairingRunner()
+            runtime.codex_runner = fake_runner
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="developer",
+                intent="implement",
+                urgency="normal",
+                scope="implement defensive parsing",
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": "implement defensive parsing",
+                "body": "",
+                "artifacts": [],
+                "params": {
+                    "workflow": {
+                        "phase": "implementation",
+                        "step": "developer_build",
+                    }
+                },
+            }
+
+            payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(len(fake_runner.calls), 2)
+            self.assertEqual(fake_runner.calls[1]["session_id"], "session-developer-1")
+            self.assertIn("rejected by contract validation", str(fake_runner.calls[1]["prompt"]))
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["contract_status"], "repaired")
+            self.assertTrue(payload["contract_repair_attempted"])
+            self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
+            self.assertEqual(payload["summary"], "구현과 검증 범위를 정리해 QA handoff 조건을 명시했습니다.")
+
+    def test_role_runtime_fails_when_repair_cannot_fix_invalid_contract_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "teams_generated"
+            scaffold_workspace(workspace_root)
+            paths = RuntimePaths.from_root(workspace_root)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="planner",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            state = runtime.session_manager.ensure_session()
+            runtime.session_manager.finalize_session_id(state, "session-planner-1")
+
+            invalid_output = json.dumps(
+                {
+                    "request_id": "request-1",
+                    "role": "planner",
+                    "status": "completed|blocked|failed",
+                    "summary": "short Korean summary",
+                    "insights": ["private role insight for journal.md"],
+                    "proposals": {},
+                    "artifacts": [],
+                    "error": "",
+                },
+                ensure_ascii=False,
+            )
+
+            class _StillInvalidRunner:
+                def __init__(self):
+                    self.calls: list[dict[str, object]] = []
+
+                def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
+                    self.calls.append(
+                        {
+                            "workspace": str(workspace),
+                            "prompt": str(prompt),
+                            "session_id": session_id,
+                            "bypass_sandbox": bypass_sandbox,
+                        }
+                    )
+                    return invalid_output, "session-planner-1"
+
+            fake_runner = _StillInvalidRunner()
+            runtime.codex_runner = fake_runner
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="planner",
+                intent="plan",
+                urgency="normal",
+                scope="planner finalize",
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": "planner finalize",
+                "body": "",
+                "artifacts": [],
+            }
+
+            payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(len(fake_runner.calls), 2)
+            self.assertEqual(payload["status"], "failed")
+            self.assertEqual(payload["contract_status"], "invalid")
+            self.assertTrue(payload["contract_repair_attempted"])
+            self.assertIn("invalid_role_payload:", payload["error"])
+            self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
+
     def test_normalize_role_payload_coerces_common_shape_issues(self):
         payload = normalize_role_payload(
             {
@@ -2443,6 +2644,43 @@ context compacted
 
         self.assertEqual(payload["status"], "failed")
         self.assertIn("invalid status=done", payload["error"])
+
+    def test_normalize_role_payload_rejects_copied_prompt_status_literal_and_placeholders(self):
+        payload = normalize_role_payload(
+            {
+                "status": "completed|blocked|failed",
+                "summary": "short Korean summary",
+                "insights": ["private role insight for journal.md"],
+            }
+        )
+
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["summary"], "")
+        self.assertEqual(payload["insights"], [])
+        self.assertIn("status copied prompt enum literal", payload["error"])
+        self.assertIn("coerced copied prompt status enum literal", payload["validation_notes"])
+        self.assertIn("reset placeholder summary copied from prompt", payload["validation_notes"])
+        self.assertIn("reset placeholder insights copied from prompt", payload["validation_notes"])
+
+    def test_validate_role_result_contract_requires_workflow_transition_for_workflow_roles(self):
+        issues = validate_role_result_contract(
+            {
+                "status": "completed",
+                "summary": "ok",
+                "proposals": {},
+            },
+            request_record={
+                "params": {
+                    "workflow": {
+                        "phase": "implementation",
+                        "step": "developer_build",
+                    }
+                }
+            },
+            role="developer",
+        )
+
+        self.assertIn("missing_workflow_transition", issues)
 
     def test_normalize_role_payload_normalizes_planner_backlog_aliases_and_receipts(self):
         payload = normalize_role_payload(

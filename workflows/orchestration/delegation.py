@@ -8,6 +8,11 @@ import logging
 from typing import Any, Iterable
 
 from teams_runtime.runtime.base_runtime import normalize_role_payload
+from teams_runtime.runtime.role_result_contract import (
+    is_invalid_contract_payload,
+    summarize_contract_issues,
+    validate_role_result_contract,
+)
 from teams_runtime.shared.formatting import ReportSection
 from teams_runtime.shared.models import MessageEnvelope
 from teams_runtime.shared.persistence import utc_now_iso
@@ -59,6 +64,40 @@ def _normalize_string_list(value: Any) -> list[str]:
         normalized = str(value).strip()
         return [normalized] if normalized else []
     return []
+
+
+def _merge_contract_issue_lists(*issue_groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for issues in issue_groups:
+        for issue in issues:
+            normalized = str(issue or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged
+
+
+def _annotate_contract_validation(
+    result: dict[str, Any],
+    *,
+    request_record: dict[str, Any],
+    role: str,
+) -> dict[str, Any]:
+    contract_issues = validate_role_result_contract(
+        result,
+        request_record=request_record,
+        role=role,
+    )
+    normalized = normalize_role_payload(result)
+    if contract_issues:
+        normalized["contract_status"] = "invalid"
+        normalized["contract_issues"] = _merge_contract_issue_lists(
+            _normalize_string_list(normalized.get("contract_issues")),
+            contract_issues,
+        )
+    return normalized
 
 
 def _extract_proposal_acceptance_criteria(proposals: dict[str, Any]) -> list[str]:
@@ -1861,6 +1900,35 @@ async def apply_role_result(
     *,
     sender_role: str,
 ) -> None:
+    contract_invalid = is_invalid_contract_payload(result)
+    contract_issues = _normalize_string_list(result.get("contract_issues"))
+    contract_summary = summarize_contract_issues(contract_issues)
+    if contract_invalid:
+        service._record_internal_sprint_activity(
+            request_record,
+            event_type="invalid_role_payload",
+            role=str(result.get("role") or sender_role),
+            status="failed",
+            summary=contract_summary or "role result contract validation failed",
+            payload=result,
+        )
+        service._append_role_history(
+            "orchestrator",
+            request_record,
+            event_type="invalid_role_payload",
+            summary=contract_summary or "역할 결과 contract가 유효하지 않아 실패로 처리했습니다.",
+            result=result,
+        )
+        service._append_role_journal(
+            "orchestrator",
+            request_record,
+            title="invalid_role_payload",
+            lines=[
+                f"- role: {result.get('role') or sender_role}",
+                f"- issues: {contract_summary or 'N/A'}",
+                f"- error: {result.get('error') or '없음'}",
+            ],
+        )
     append_request_event(
         request_record,
         event_type="role_report",
@@ -2161,6 +2229,16 @@ async def process_delegated_request(service: Any, envelope: MessageEnvelope, req
     result = normalize_role_payload(result)
     request_record["result"] = dict(result)
     service._persist_request_result(request_record)
+    if is_invalid_contract_payload(result):
+        contract_summary = summarize_contract_issues(_normalize_string_list(result.get("contract_issues")))
+        service._record_internal_sprint_activity(
+            request_record,
+            event_type="invalid_role_payload",
+            role=str(result.get("role") or service.role),
+            status="failed",
+            summary=contract_summary or "role result contract validation failed",
+            payload=result,
+        )
     service._record_internal_sprint_activity(
         request_record,
         event_type="role_result",
@@ -2310,7 +2388,11 @@ async def handle_role_report(service: Any, message: Any, envelope: MessageEnvelo
         ):
             result = persisted_result
     if result:
-        result = normalize_role_payload(result)
+        result = _annotate_contract_validation(
+            result,
+            request_record=request_record,
+            role=str(envelope.sender or result.get("role") or request_record.get("current_role") or ""),
+        )
     if result.get("approval_needed") or str(result.get("status") or "").strip().lower() == "awaiting_approval":
         result = dict(result)
         compatibility_summary = " ".join(

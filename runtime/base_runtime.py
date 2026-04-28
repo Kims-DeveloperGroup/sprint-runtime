@@ -9,13 +9,26 @@ from typing import Any
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
 from teams_runtime.runtime.identities import service_runtime_identity
+from teams_runtime.runtime.role_result_contract import (
+    ALLOWED_ROLE_STATUSES,
+    CONTRACT_STATUS_INVALID,
+    CONTRACT_STATUS_REPAIRED,
+    PROMPT_PLACEHOLDER_INSIGHT,
+    PROMPT_PLACEHOLDER_SUMMARY,
+    PROMPT_STATUS_ENUM_LITERAL,
+    describe_contract_issues,
+    is_invalid_contract_payload,
+    render_role_result_contract,
+    summarize_contract_issues,
+    validate_role_result_contract,
+)
 from teams_runtime.runtime.session_manager import RoleSessionManager
 from teams_runtime.shared.models import MessageEnvelope, RequestRecord, RoleResult, RoleRuntimeConfig
 from teams_runtime.workflows.roles import render_role_prompt_spec
 from teams_runtime.workflows.roles.planner import normalize_planner_proposals
 
 
-ALLOWED_ROLE_STATUSES = {"completed", "blocked", "failed"}
+CONTRACT_REPAIR_MAX_ATTEMPTS = 1
 WRITE_DENIAL_TERMS = (
     "operation not permitted",
     "permissionerror",
@@ -62,6 +75,38 @@ def _collapse_whitespace(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
+def _coerce_prompt_status_enum_literal(payload: dict[str, Any]) -> str:
+    proposals = payload.get("proposals")
+    transition = proposals.get("workflow_transition") if isinstance(proposals, dict) else {}
+    if isinstance(transition, dict):
+        outcome = str(transition.get("outcome") or "").strip().lower()
+        if outcome in {"block", "reopen"}:
+            return "blocked"
+        if outcome in {"continue", "advance", "complete"}:
+            return "completed"
+        if any(
+            str(transition.get(key) or "").strip()
+            for key in ("target_phase", "target_step", "requested_role")
+        ):
+            return "completed"
+    if str(payload.get("error") or "").strip():
+        return "failed"
+    return "failed"
+
+
+def _merge_contract_issue_lists(*issue_groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for issues in issue_groups:
+        for issue in issues:
+            normalized = str(issue or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged
+
+
 def normalize_role_payload(payload: dict[str, Any]) -> RoleResult:
     normalized = dict(payload) if isinstance(payload, dict) else {}
     validation_notes: list[str] = []
@@ -70,6 +115,11 @@ def normalize_role_payload(payload: dict[str, Any]) -> RoleResult:
     status = str(normalized.get("status") or "").strip().lower()
     if not status:
         status = "completed"
+    elif status == PROMPT_STATUS_ENUM_LITERAL:
+        validation_notes.append("coerced copied prompt status enum literal")
+        status = _coerce_prompt_status_enum_literal(normalized)
+        if status == "failed":
+            blocking_notes.append("status copied prompt enum literal without a concrete role result")
     elif status == "awaiting_approval":
         note = "approval flow is no longer supported; converted awaiting_approval to blocked"
         validation_notes.append(note)
@@ -83,6 +133,9 @@ def normalize_role_payload(payload: dict[str, Any]) -> RoleResult:
     normalized["status"] = status
 
     normalized["summary"] = str(normalized.get("summary") or "").strip()
+    if normalized["summary"].lower() == PROMPT_PLACEHOLDER_SUMMARY:
+        normalized["summary"] = ""
+        validation_notes.append("reset placeholder summary copied from prompt")
 
     raw_insights = normalized.get("insights")
     if isinstance(raw_insights, list):
@@ -94,6 +147,15 @@ def normalize_role_payload(payload: dict[str, Any]) -> RoleResult:
         normalized["insights"] = []
         if raw_insights not in (None, ""):
             validation_notes.append("reset invalid insights payload")
+    if normalized["insights"]:
+        filtered_insights = [
+            item
+            for item in normalized["insights"]
+            if item.lower() != PROMPT_PLACEHOLDER_INSIGHT
+        ]
+        if len(filtered_insights) != len(normalized["insights"]):
+            validation_notes.append("reset placeholder insights copied from prompt")
+        normalized["insights"] = filtered_insights
 
     raw_proposals = normalized.get("proposals")
     if isinstance(raw_proposals, dict):
@@ -271,6 +333,14 @@ class RoleAgentRuntime:
                     )
                     active_session_id = resolved_session_id or active_session_id
                     payload = self._parse_role_output(output, request_record)
+                payload, active_session_id = self._repair_invalid_role_payload_once(
+                    payload,
+                    request_record,
+                    current_sprint_id=current_sprint_id,
+                    workspace_path=Path(state.workspace_path),
+                    active_session_id=active_session_id,
+                    bypass_sandbox=default_bypass,
+                )
             except RuntimeError as exc:
                 LOGGER.warning(
                     "[%s] task_runtime_error request_id=%s sprint_id=%s todo_id=%s backlog_id=%s workspace=%s error=%s",
@@ -323,6 +393,7 @@ class RoleAgentRuntime:
             return payload
 
     def _parse_role_output(self, output: str, request_record: RequestRecord) -> RoleResult:
+        contract_issues: list[str] = []
         try:
             payload = extract_json_object(output)
         except ValueError:
@@ -336,9 +407,149 @@ class RoleAgentRuntime:
                 "artifacts": [],
                 "error": "Role response did not contain valid JSON.",
             }
+            contract_issues.append("missing_json_object")
         payload["request_id"] = request_record["request_id"]
         payload["role"] = self.role
-        return normalize_role_payload(payload)
+        contract_issues = _merge_contract_issue_lists(
+            contract_issues,
+            validate_role_result_contract(payload, request_record=request_record, role=self.role),
+        )
+        normalized = normalize_role_payload(payload)
+        if contract_issues:
+            normalized["contract_status"] = CONTRACT_STATUS_INVALID
+            normalized["contract_issues"] = contract_issues
+        return normalized
+
+    def _repair_invalid_role_payload_once(
+        self,
+        payload: RoleResult,
+        request_record: RequestRecord,
+        *,
+        current_sprint_id: str,
+        workspace_path: Path,
+        active_session_id: str | None,
+        bypass_sandbox: bool,
+    ) -> tuple[RoleResult, str | None]:
+        if not is_invalid_contract_payload(payload):
+            return payload, active_session_id
+
+        observed_issues = _merge_contract_issue_lists(list(payload.get("contract_issues") or []))
+        attempts = 0
+        latest_payload = dict(payload)
+        latest_session_id = active_session_id
+        while attempts < CONTRACT_REPAIR_MAX_ATTEMPTS and is_invalid_contract_payload(latest_payload):
+            attempts += 1
+            issue_summary = summarize_contract_issues(observed_issues) or "role result contract validation failed"
+            LOGGER.warning(
+                "[%s] invalid_role_payload request_id=%s sprint_id=%s attempt=%s session_id=%s issues=%s",
+                self.role,
+                str(request_record.get("request_id") or "unknown"),
+                current_sprint_id or "N/A",
+                attempts,
+                latest_session_id or "new",
+                issue_summary,
+            )
+            repair_prompt = self._build_role_result_repair_prompt(
+                request_record,
+                latest_payload,
+                observed_issues,
+                current_sprint_id=current_sprint_id,
+            )
+            output, resolved_session_id = self.codex_runner.run(
+                workspace_path,
+                repair_prompt,
+                latest_session_id,
+                bypass_sandbox=bypass_sandbox,
+            )
+            latest_session_id = resolved_session_id or latest_session_id
+            latest_payload = self._parse_role_output(output, request_record)
+            observed_issues = _merge_contract_issue_lists(
+                observed_issues,
+                list(latest_payload.get("contract_issues") or []),
+            )
+
+        if is_invalid_contract_payload(latest_payload):
+            return (
+                self._build_invalid_role_payload_result(
+                    request_record,
+                    observed_issues,
+                    contract_repair_attempted=attempts > 0,
+                ),
+                latest_session_id,
+            )
+
+        if attempts > 0:
+            latest_payload = dict(latest_payload)
+            latest_payload["contract_status"] = CONTRACT_STATUS_REPAIRED
+            latest_payload["contract_issues"] = observed_issues
+            latest_payload["contract_repair_attempted"] = True
+        return latest_payload, latest_session_id
+
+    def _build_invalid_role_payload_result(
+        self,
+        request_record: RequestRecord,
+        issues: list[str],
+        *,
+        contract_repair_attempted: bool,
+    ) -> RoleResult:
+        error_summary = summarize_contract_issues(issues) or "role result contract validation failed"
+        payload = normalize_role_payload(
+            {
+                "request_id": request_record["request_id"],
+                "role": self.role,
+                "status": "failed",
+                "summary": "역할 결과 JSON contract를 복구하지 못했습니다.",
+                "insights": [],
+                "proposals": {},
+                "artifacts": [],
+                "error": f"invalid_role_payload: {error_summary}",
+            }
+        )
+        payload["contract_status"] = CONTRACT_STATUS_INVALID
+        payload["contract_issues"] = list(issues)
+        payload["contract_repair_attempted"] = contract_repair_attempted
+        return payload
+
+    def _build_role_result_repair_prompt(
+        self,
+        request_record: RequestRecord,
+        invalid_payload: RoleResult,
+        issues: list[str],
+        *,
+        current_sprint_id: str,
+    ) -> str:
+        team_workspace_hint = "./workspace/teams_generated" if self.paths.workspace_root.name == "teams_generated" else "./workspace"
+        role_specific_rules, extra_fields = render_role_prompt_spec(self.role, team_workspace_hint)
+        contract_block = render_role_result_contract(
+            request_id=str(request_record["request_id"]),
+            role=self.role,
+            extra_fields=extra_fields,
+        )
+        issue_lines = "\n".join(f"- {line}" for line in describe_contract_issues(issues)) or "- unknown contract error"
+        return f"""Your previous teams_runtime role result was rejected by contract validation.
+Do not perform new repository work unless it is strictly necessary to fix the role result JSON.
+Use only facts you already observed in this session. If you cannot justify `completed`, return `blocked` or `failed` with a concrete Korean summary and error.
+
+Validation errors:
+{issue_lines}
+
+Previous invalid payload:
+```json
+{json.dumps(invalid_payload, ensure_ascii=False, indent=2, sort_keys=True)}
+```
+
+Return corrected strict JSON only with this shape:
+{contract_block}
+
+Current sprint: {current_sprint_id or "N/A"}
+Treat `Current request` as the source of truth.
+When `Current request.params.workflow` exists, `proposals.workflow_transition` is required for workflow-managed roles.
+Never copy schema enums or placeholder example text literally.
+{role_specific_rules}
+
+Current request:
+{json.dumps(request_record, ensure_ascii=False, indent=2)}
+"""
 
     def _should_retry_with_bypass(self, payload: dict[str, Any]) -> bool:
         combined = " ".join(
@@ -402,6 +613,11 @@ class RoleAgentRuntime:
         )
         team_workspace_hint = "./workspace/teams_generated" if self.paths.workspace_root.name == "teams_generated" else "./workspace"
         role_specific_rules, extra_fields = render_role_prompt_spec(self.role, team_workspace_hint)
+        contract_block = render_role_result_contract(
+            request_id=str(request_record["request_id"]),
+            role=self.role,
+            extra_fields=extra_fields,
+        )
         return f"""You are the {self.role} role inside teams_runtime.
 
 Use your role workspace files for team-private coordination.
@@ -413,17 +629,7 @@ The teams workspace root and its config files live in {team_workspace_hint}, not
 Use ./workspace_context.md if you need the exact path mapping for this session.
 
 Return strict JSON only with this shape:
-{{
-  "request_id": "{request_record['request_id']}",
-  "role": "{self.role}",
-  "status": "completed|blocked|failed",
-  "summary": "short Korean summary",
-  "insights": ["private role insight for journal.md"],
-  "proposals": {{}},
-  "artifacts": [],
-  "error": ""
-{extra_fields}
-}}
+{contract_block}
 
 Current sprint: {resolved_sprint_id}
 Treat `Current request` as the source of truth.

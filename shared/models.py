@@ -128,6 +128,9 @@ class RoleResult(TypedDict, total=False):
     next_role: str
     error: str
     validation_notes: list[str]
+    contract_status: str
+    contract_issues: list[str]
+    contract_repair_attempted: bool
 
 
 class RequestRecord(TypedDict, total=False):

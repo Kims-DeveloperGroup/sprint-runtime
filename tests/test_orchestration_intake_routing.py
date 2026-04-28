@@ -2865,6 +2865,72 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertEqual(updated["status"], "completed")
                 self.assertEqual(updated["result"]["summary"], "본문 JSON에서 복구했습니다.")
 
+    def test_orchestrator_marks_invalid_role_contract_reports_distinctly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                request_record = {
+                    "request_id": "20260428-invalid-contract-1",
+                    "status": "delegated",
+                    "intent": "plan",
+                    "urgency": "normal",
+                    "scope": "planner finalize invalid contract",
+                    "body": "planner finalize invalid contract",
+                    "artifacts": [],
+                    "params": {},
+                    "current_role": "planner",
+                    "next_role": "planner",
+                    "owner_role": "orchestrator",
+                    "sprint_id": "2026-Sprint-01",
+                    "created_at": "2026-04-28T00:00:00+00:00",
+                    "updated_at": "2026-04-28T00:00:00+00:00",
+                    "fingerprint": "f",
+                    "reply_route": {
+                        "author_id": "user-1",
+                        "author_name": "tester",
+                        "channel_id": "channel-1",
+                        "guild_id": "guild-1",
+                        "is_dm": False,
+                        "message_id": "message-1",
+                    },
+                    "events": [],
+                    "result": {},
+                }
+                service._save_request(request_record)
+                envelope = MessageEnvelope(
+                    request_id="20260428-invalid-contract-1",
+                    sender="planner",
+                    target="orchestrator",
+                    intent="report",
+                    urgency="normal",
+                    scope="planner finalize invalid contract",
+                    params={"_teams_kind": "report"},
+                    body='```json\n{"request_id":"20260428-invalid-contract-1","role":"planner","status":"completed|blocked|failed","summary":"short Korean summary","insights":["private role insight for journal.md"],"proposals":{},"artifacts":[],"error":""}\n```',
+                )
+                message = DiscordMessage(
+                    message_id="relay-invalid-contract",
+                    channel_id="111111111111111111",
+                    guild_id="guild-1",
+                    author_id="111111111111111113",
+                    author_name="planner",
+                    content="relay",
+                    is_dm=False,
+                    mentions_bot=True,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                asyncio.run(service._handle_role_report(message, envelope))
+
+                updated = service._load_request("20260428-invalid-contract-1")
+                self.assertEqual(updated["status"], "failed")
+                self.assertEqual(updated["result"]["contract_status"], "invalid")
+                self.assertIn("copied_prompt_status_enum_literal", updated["result"]["contract_issues"])
+                history_text = service.paths.role_history_file("orchestrator").read_text(encoding="utf-8")
+                journal_text = service.paths.role_journal_file("orchestrator").read_text(encoding="utf-8")
+                self.assertIn("invalid_role_payload", history_text)
+                self.assertIn("invalid_role_payload", journal_text)
+
     def test_orchestrator_recovers_chunk_merged_qa_report_body_and_routes_to_planner(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
