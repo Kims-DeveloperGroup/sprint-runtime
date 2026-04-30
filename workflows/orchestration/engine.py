@@ -77,7 +77,7 @@ def research_first_workflow_state() -> WorkflowState:
 
 
 def initial_workflow_state(review_cycle_limit: int | None = None) -> WorkflowState:
-    state = research_first_workflow_state()
+    state = dict(default_workflow_state())
     if review_cycle_limit is not None:
         state["review_cycle_limit"] = max(1, int(review_cycle_limit))
     return state

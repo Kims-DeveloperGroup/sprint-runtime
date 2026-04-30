@@ -2266,6 +2266,12 @@ def create_internal_request_record(
     backlog_item: dict[str, Any],
 ) -> dict[str, Any]:
     request_id = new_request_id()
+    workflow_state = service._initial_workflow_state_for_internal_request()
+    initial_role = str(
+        workflow_state.get("phase_owner")
+        or todo.get("owner_role")
+        or "planner"
+    ).strip() or "planner"
     record = {
         "request_id": request_id,
         "status": "queued",
@@ -2279,10 +2285,10 @@ def create_internal_request_record(
             "sprint_id": sprint_state.get("sprint_id") or "",
             "backlog_id": todo.get("backlog_id") or "",
             "todo_id": todo.get("todo_id") or "",
-            "workflow": service._initial_workflow_state_for_internal_request(),
+            "workflow": workflow_state,
         },
         "current_role": "orchestrator",
-        "next_role": str(todo.get("owner_role") or "planner"),
+        "next_role": initial_role,
         "owner_role": "orchestrator",
         "sprint_id": str(sprint_state.get("sprint_id") or ""),
         "backlog_id": str(todo.get("backlog_id") or ""),

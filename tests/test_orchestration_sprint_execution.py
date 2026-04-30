@@ -182,6 +182,36 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertIn("research_subject_definition:", next_planning_request["body"])
                 self.assertIn(research_artifact, next_planning_request["artifacts"])
 
+    def test_sprint_internal_todo_starts_at_planner_without_research_prepass(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                backlog_item = build_backlog_item(
+                    title="internal todo implementation",
+                    summary="regular sprint todo should not start with research.",
+                    kind="enhancement",
+                    source="planner",
+                    scope="regular sprint todo",
+                )
+                service._save_backlog_item(backlog_item)
+                todo = build_todo_item(backlog_item, owner_role="developer")
+                sprint_state = {
+                    "sprint_id": "2026-Sprint-Regular-Todo",
+                    "status": "running",
+                    "trigger": "test",
+                    "selected_backlog_ids": [backlog_item["backlog_id"]],
+                    "selected_items": [dict(backlog_item)],
+                    "todos": [todo],
+                }
+
+                request_record = service._create_internal_request_record(sprint_state, todo, backlog_item)
+                workflow = dict(request_record.get("params", {}).get("workflow") or {})
+
+                self.assertEqual(request_record["next_role"], "planner")
+                self.assertEqual(workflow.get("phase_owner"), "planner")
+                self.assertEqual(workflow.get("step"), "planner_draft")
+
     def test_execute_sprint_todo_marks_same_backlog_blocked_without_creating_new_item(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -2449,7 +2479,6 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertEqual(
                     delegated_steps,
                     [
-                        ("research", "research_initial"),
                         ("planner", "planner_draft"),
                         ("architect", "architect_guidance"),
                         ("developer", "developer_build"),
@@ -2612,7 +2641,7 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 updated_request = service._load_request(str(todo.get("request_id") or ""))
                 updated_workflow = dict(updated_request.get("params", {}).get("workflow") or {})
                 updated_backlog = service._load_backlog_item(backlog_item["backlog_id"])
-                self.assertEqual(delegated_steps, [("research", "research_initial"), ("planner", "planner_draft")])
+                self.assertEqual(delegated_steps, [("planner", "planner_draft")])
                 self.assertEqual(todo["status"], "completed")
                 self.assertEqual(updated_backlog["status"], "done")
                 self.assertEqual(updated_request["status"], "completed")
