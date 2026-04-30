@@ -527,13 +527,9 @@ def update_team_runtime_research_defaults(
         raw_research_defaults["files"] = normalized_files
     if mode is not None:
         normalized = str(mode).strip()
-        if not normalized:
-            raise ValueError("mode must be a non-empty string when provided.")
         raw_research_defaults["mode"] = normalized
     if profile_path is not None:
         normalized = str(profile_path).strip()
-        if not normalized:
-            raise ValueError("profile_path must be a non-empty string when provided.")
         raw_research_defaults["profile_path"] = normalized
     if completion_timeout is not None:
         if float(completion_timeout) <= 0:

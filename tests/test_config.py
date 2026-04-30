@@ -251,7 +251,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.role_defaults["research"].reasoning, "medium")
             self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "xhigh")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
-            self.assertEqual(runtime_config.research_defaults.profile_path, "./chrome_profile")
+            self.assertIsNone(runtime_config.research_defaults.profile_path)
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 600.0)
             self.assertEqual(runtime_config.research_defaults.callback_timeout, 1200.0)
             team_runtime_text = (workspace_root / "team_runtime.yaml").read_text(encoding="utf-8")
@@ -614,7 +614,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             config_path = Path(tmpdir) / "team_runtime.yaml"
             content = config_path.read_text(encoding="utf-8")
             content = content.replace(
-                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  profile_path: \"./chrome_profile\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
+                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  profile_path: \"\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
                 "research_defaults: invalid\n",
                 1,
             )
@@ -682,6 +682,22 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "At least one research setting"):
                 update_team_runtime_research_defaults(tmpdir)
+
+    def test_update_team_runtime_research_defaults_allows_clearing_mode_and_profile_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+
+            updated = update_team_runtime_research_defaults(
+                tmpdir,
+                mode="",
+                profile_path="",
+            )
+
+            self.assertIsNone(updated.mode)
+            self.assertIsNone(updated.profile_path)
+            runtime_config = load_team_runtime_config(tmpdir)
+            self.assertIsNone(runtime_config.research_defaults.mode)
+            self.assertIsNone(runtime_config.research_defaults.profile_path)
 
     def test_load_discord_agents_config_supports_internal_agents_and_report_channel(self):
         with tempfile.TemporaryDirectory() as tmpdir:

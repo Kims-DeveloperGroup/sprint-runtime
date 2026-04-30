@@ -35,10 +35,6 @@ from teams_runtime.workflows.roles.research import (
 )
 
 
-DEFAULT_RESEARCH_PROFILE_DIRNAME = "chrome_profile"
-DEFAULT_DEEP_RESEARCH_MODE_KEYWORDS = ("Pro", "프로", "최상위")
-
-
 def _empty_research_subject_definition() -> dict[str, Any]:
     return {
         "planning_decision": "",
@@ -53,8 +49,9 @@ def _empty_research_subject_definition() -> dict[str, Any]:
     }
 
 
-def _resolve_deep_research_mode(mode: str | None) -> str | list[str]:
-    return list(DEFAULT_DEEP_RESEARCH_MODE_KEYWORDS)
+def _resolve_deep_research_mode(mode: str | None) -> str | list[str] | None:
+    normalized = str(mode or "").strip()
+    return normalized or None
 
 
 class ResearchAgentRuntime(RoleAgentRuntime):
@@ -330,14 +327,14 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 return current
             return normalized if normalized > 0 else current
 
-        def resolve_profile_path(raw_value: str | None) -> str:
+        def resolve_profile_path(raw_value: str | None) -> str | None:
             normalized = str(raw_value or "").strip()
             if normalized:
                 profile_path = Path(normalized).expanduser()
                 if profile_path.is_absolute():
                     return str(profile_path)
                 return str(self.paths.project_workspace_root / profile_path)
-            return str(self.paths.project_workspace_root / DEFAULT_RESEARCH_PROFILE_DIRNAME)
+            return None
 
         return ResearchRuntimeConfig(
             app=choose_text("app", base.app),
