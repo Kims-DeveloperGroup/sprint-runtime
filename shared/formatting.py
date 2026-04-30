@@ -12,6 +12,42 @@ from teams_runtime.shared.persistence import (
 )
 
 
+PRIORITY_RANK_UNSET_SORT_VALUE = 10**9
+
+
+def normalize_priority_rank(value: Any) -> int:
+    try:
+        rank = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return rank if rank > 0 else 0
+
+
+def priority_rank_sort_value(value: Any) -> int:
+    rank = normalize_priority_rank(value)
+    return rank if rank > 0 else PRIORITY_RANK_UNSET_SORT_VALUE
+
+
+def priority_rank_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
+    return (
+        priority_rank_sort_value(item.get("priority_rank")),
+        str(item.get("created_at") or item.get("started_at") or item.get("updated_at") or ""),
+        str(item.get("backlog_id") or item.get("todo_id") or ""),
+    )
+
+
+def backlog_status_sort_value(value: Any) -> int:
+    normalized = str(value or "").strip().lower()
+    return {
+        "selected": 0,
+        "pending": 0,
+        "blocked": 1,
+        "failed": 1,
+        "carried_over": 2,
+        "done": 3,
+    }.get(normalized, 4)
+
+
 @dataclass(frozen=True, slots=True)
 class ReportSection:
     title: str
@@ -102,10 +138,11 @@ def render_backlog_markdown(
     sorted_items = sorted(
         list(items),
         key=lambda item: (
-            str(item.get("status") or ""),
-            str(item.get("updated_at") or ""),
+            backlog_status_sort_value(item.get("status")),
+            priority_rank_sort_value(item.get("priority_rank")),
+            str(item.get("updated_at") or item.get("created_at") or ""),
+            str(item.get("backlog_id") or ""),
         ),
-        reverse=True,
     )
     if not sorted_items:
         lines.append(f"- {empty_message}")

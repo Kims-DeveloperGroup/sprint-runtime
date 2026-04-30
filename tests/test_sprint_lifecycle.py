@@ -36,6 +36,8 @@ from teams_runtime.workflows.sprints.lifecycle import (
     record_sprint_planning_iteration,
     recover_sprint_todos_from_recovered,
     sort_sprint_todos,
+    sprint_todo_dependencies_satisfied,
+    sprint_todo_dependency_waiting_on,
     sprint_research_prepass_body_lines,
     sprint_planning_phase_ready,
     sprint_attachment_filename,
@@ -285,7 +287,25 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             {"todo_id": "high", "status": "queued", "priority_rank": 5, "created_at": "2026-04-20T02:00:00"},
         ]
 
-        self.assertEqual([todo["todo_id"] for todo in sort_sprint_todos(todos)], ["running", "high", "low"])
+        self.assertEqual([todo["todo_id"] for todo in sort_sprint_todos(todos)], ["running", "low", "high"])
+
+    def test_ranked_todo_dependencies_require_lower_ranks_to_complete(self) -> None:
+        todos = [
+            {"todo_id": "rank-1", "status": "queued", "priority_rank": 1},
+            {"todo_id": "rank-2", "status": "queued", "priority_rank": 2},
+            {"todo_id": "rank-3", "status": "queued", "priority_rank": 3},
+        ]
+
+        self.assertTrue(sprint_todo_dependencies_satisfied(todos[0], todos))
+        self.assertFalse(sprint_todo_dependencies_satisfied(todos[1], todos))
+        self.assertEqual(
+            [todo["todo_id"] for todo in sprint_todo_dependency_waiting_on(todos[2], todos)],
+            ["rank-1", "rank-2"],
+        )
+
+        todos[0]["status"] = "committed"
+        self.assertTrue(sprint_todo_dependencies_satisfied(todos[1], todos))
+        self.assertFalse(sprint_todo_dependencies_satisfied(todos[2], todos))
 
     def test_todo_status_from_request_record_prefers_result_status(self) -> None:
         self.assertEqual(
@@ -426,7 +446,7 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertTrue(recover_sprint_todos_from_recovered(sprint_state, recovered_todos))
 
         todos_by_id = {todo["todo_id"]: todo for todo in sprint_state["todos"]}
-        self.assertEqual([todo["todo_id"] for todo in sprint_state["todos"]], ["todo-new", "todo-retry", "todo-existing"])
+        self.assertEqual([todo["todo_id"] for todo in sprint_state["todos"]], ["todo-retry", "todo-new", "todo-existing"])
         self.assertEqual(todos_by_id["todo-existing"]["status"], "completed")
         self.assertEqual(todos_by_id["todo-existing"]["summary"], "Recovered existing work.")
         self.assertEqual(todos_by_id["todo-existing"]["artifacts"], ["new.md"])

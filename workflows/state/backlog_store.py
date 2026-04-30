@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from teams_runtime.shared.formatting import build_backlog_item, render_backlog_markdown
+from teams_runtime.shared.formatting import (
+    build_backlog_item,
+    priority_rank_sort_value,
+    render_backlog_markdown,
+)
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.shared.persistence import (
     build_request_fingerprint,
@@ -651,10 +655,9 @@ def backlog_kind_rank(value: str) -> int:
 
 def backlog_priority_key(item: dict[str, Any]) -> tuple[int, int, int, int, str]:
     source_rank = 0 if str(item.get("source") or "").strip() == "user" else 1
-    priority_rank = int(item.get("priority_rank") or 0)
     return (
         backlog_status_rank(str(item.get("status") or "")),
-        -priority_rank,
+        priority_rank_sort_value(item.get("priority_rank")),
         source_rank,
         backlog_kind_rank(str(item.get("kind") or "")),
         str(item.get("created_at") or ""),

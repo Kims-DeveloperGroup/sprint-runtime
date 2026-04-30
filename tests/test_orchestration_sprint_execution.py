@@ -212,6 +212,52 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertEqual(workflow.get("phase_owner"), "planner")
                 self.assertEqual(workflow.get("step"), "planner_draft")
 
+    def test_execute_sprint_todo_waits_for_lower_rank_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                first_item = build_backlog_item(
+                    title="rank one",
+                    summary="first dependency",
+                    kind="feature",
+                    source="planner",
+                    scope="rank one",
+                )
+                first_item["priority_rank"] = 1
+                second_item = build_backlog_item(
+                    title="rank two",
+                    summary="must wait for rank one",
+                    kind="feature",
+                    source="planner",
+                    scope="rank two",
+                )
+                second_item["priority_rank"] = 2
+                service._save_backlog_item(first_item)
+                service._save_backlog_item(second_item)
+                first_todo = build_todo_item(first_item, owner_role="planner")
+                second_todo = build_todo_item(second_item, owner_role="planner")
+                sprint_state = {
+                    "sprint_id": "2026-Sprint-Priority-Gate",
+                    "status": "running",
+                    "trigger": "test",
+                    "selected_backlog_ids": [first_item["backlog_id"], second_item["backlog_id"]],
+                    "selected_items": [dict(first_item), dict(second_item)],
+                    "todos": [second_todo, first_todo],
+                    "commit_sha": "",
+                    "report_path": "",
+                }
+                service._save_sprint_state(sprint_state)
+
+                with patch.object(service, "_run_internal_request_chain", new=AsyncMock()) as internal_chain_mock:
+                    asyncio.run(service._execute_sprint_todo(sprint_state, second_todo))
+
+                internal_chain_mock.assert_not_awaited()
+                self.assertEqual(second_todo["status"], "queued")
+                events = service._load_sprint_event_entries(sprint_state)
+                self.assertEqual(events[-1]["type"], "todo_dependency_wait")
+                self.assertEqual(events[-1]["payload"]["waiting_on"][0]["todo_id"], first_todo["todo_id"])
+
     def test_execute_sprint_todo_marks_same_backlog_blocked_without_creating_new_item(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

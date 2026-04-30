@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from teams_runtime.shared.formatting import ReportSection, build_progress_report
+from teams_runtime.shared.formatting import (
+    ReportSection,
+    build_progress_report,
+    priority_rank_sort_value,
+)
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.workflows.sprints.lifecycle import (
     INITIAL_PHASE_STEP_ARTIFACT_SYNC,
@@ -2789,7 +2793,9 @@ def render_live_sprint_report_markdown(
     headline_parts = [f"{milestone} 스프린트가 {status_label} 상태입니다."]
     if running_count:
         headline_parts.append(f"실행 중 {running_count}건이 있습니다.")
-    if issue_count:
+    if queued_count and issue_count:
+        headline_parts.append(f"다음 대기 작업 {queued_count}건과 후속 확인 {issue_count}건이 남아 있습니다.")
+    elif issue_count:
         headline_parts.append(f"후속 확인 {issue_count}건이 남아 있습니다.")
     elif queued_count:
         headline_parts.append(f"다음 대기 작업 {queued_count}건이 있습니다.")
@@ -2802,21 +2808,17 @@ def render_live_sprint_report_markdown(
 
     next_action_priority = {
         "running": 0,
-        "blocked": 1,
-        "failed": 1,
-        "uncommitted": 1,
-        "queued": 2,
+        "queued": 1,
+        "uncommitted": 2,
+        "blocked": 3,
+        "failed": 3,
     }
     actionable_todos: list[tuple[int, int, int, dict[str, Any]]] = []
     for index, todo in enumerate(todos):
         status = str(todo.get("status") or "").strip().lower()
         if status not in next_action_priority:
             continue
-        priority_rank = todo.get("priority_rank")
-        try:
-            normalized_rank = int(priority_rank)
-        except (TypeError, ValueError):
-            normalized_rank = 999999
+        normalized_rank = priority_rank_sort_value(todo.get("priority_rank"))
         actionable_todos.append((next_action_priority[status], normalized_rank, index, todo))
     actionable_todos.sort(key=lambda item: (item[0], item[1], item[2]))
 

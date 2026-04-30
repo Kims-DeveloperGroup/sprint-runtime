@@ -19,7 +19,11 @@ from teams_runtime.shared.persistence import (
     runtime_now,
     utc_now_iso,
 )
-from teams_runtime.shared.formatting import build_backlog_item
+from teams_runtime.shared.formatting import (
+    build_backlog_item,
+    priority_rank_sort_key,
+    priority_rank_sort_value,
+)
 from teams_runtime.workflows.repository_ops import capture_git_baseline, inspect_sprint_closeout
 from teams_runtime.workflows.state.request_store import append_request_event
 from teams_runtime.workflows.state.backlog_store import (
@@ -220,12 +224,46 @@ def sort_sprint_todos(todos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         todos,
         key=lambda todo: (
+            0 if str(todo.get("dependency_gate_bypass") or "").strip() == "restart_checkpoint" else 1,
             0 if str(todo.get("status") or "").strip().lower() == "running" else 1,
-            -int(todo.get("priority_rank") or 0),
+            priority_rank_sort_value(todo.get("priority_rank")),
             str(todo.get("created_at") or todo.get("started_at") or ""),
             str(todo.get("todo_id") or ""),
         ),
     )
+
+
+def successful_todo_status(status: str) -> bool:
+    return str(status or "").strip().lower() in {"completed", "committed"}
+
+
+def sprint_todo_dependency_waiting_on(
+    todo: dict[str, Any],
+    todos: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    current_rank = priority_rank_sort_value(todo.get("priority_rank"))
+    if current_rank <= 1 or current_rank >= 10**9:
+        return []
+    waiting: list[dict[str, Any]] = []
+    current_todo_id = str(todo.get("todo_id") or "").strip()
+    for candidate in todos:
+        candidate_todo_id = str(candidate.get("todo_id") or "").strip()
+        if current_todo_id and candidate_todo_id == current_todo_id:
+            continue
+        candidate_rank = priority_rank_sort_value(candidate.get("priority_rank"))
+        if candidate_rank >= current_rank:
+            continue
+        if successful_todo_status(str(candidate.get("status") or "")):
+            continue
+        waiting.append(candidate)
+    return sorted(waiting, key=priority_rank_sort_key)
+
+
+def sprint_todo_dependencies_satisfied(
+    todo: dict[str, Any],
+    todos: list[dict[str, Any]],
+) -> bool:
+    return not sprint_todo_dependency_waiting_on(todo, todos)
 
 
 def todo_status_from_request_record(request_record: dict[str, Any]) -> str:
@@ -532,7 +570,7 @@ def collect_sprint_relevant_backlog_items(
             relevant_items.append(item)
     relevant_items.sort(
         key=lambda item: (
-            int(item.get("priority_rank") or 0) if int(item.get("priority_rank") or 0) > 0 else 10**9,
+            priority_rank_sort_value(item.get("priority_rank")),
             str(item.get("created_at") or ""),
             str(item.get("backlog_id") or ""),
         )
@@ -732,12 +770,14 @@ def initial_phase_step_instruction(step: str) -> str:
     if normalized == INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION:
         return (
             "Prioritize only the already-defined sprint-relevant backlog work and persist priority_rank plus milestone_title. "
+            "Use priority_rank=1 for the first dependency to execute; larger priority_rank values run later. "
             "Do not create execution todos in this step, and do not proceed if sprint-relevant backlog is still zero."
         )
     if normalized == INITIAL_PHASE_STEP_TODO_FINALIZATION:
         return (
             "Finalize the execution-ready todo set for this sprint. "
-            "Persist planned_in_sprint_id for the chosen backlog items and leave the prioritized todo set ready to run."
+            "Persist planned_in_sprint_id for the chosen backlog items and leave the prioritized todo set ready to run "
+            "in ascending priority_rank order."
         )
     return ""
 
@@ -1158,12 +1198,27 @@ def synchronize_sprint_todo_backlog_state(
         if str(merged_item.get("status") or "").strip().lower() in {"pending", "selected"}:
             live_selected_backlog_ids.append(backlog_id)
 
+    updated_selected_items = sorted(
+        updated_selected_items,
+        key=priority_rank_sort_key,
+    )
+    live_selected_backlog_ids = [
+        str(item.get("backlog_id") or "").strip()
+        for item in updated_selected_items
+        if str(item.get("backlog_id") or "").strip()
+        and str(item.get("status") or "").strip().lower() in {"pending", "selected"}
+    ]
+    sorted_todos = sort_sprint_todos(todos)
+
     changed = False
     if updated_selected_items != existing_selected_items:
         sprint_state["selected_items"] = updated_selected_items
         changed = True
     if live_selected_backlog_ids != existing_selected_backlog_ids:
         sprint_state["selected_backlog_ids"] = live_selected_backlog_ids
+        changed = True
+    if sorted_todos != todos:
+        sprint_state["todos"] = sorted_todos
         changed = True
     if backlog_changed:
         service._refresh_backlog_markdown()
@@ -1257,7 +1312,7 @@ def sync_manual_sprint_queue(service: Any, sprint_state: dict[str, Any]) -> None
     ]
     selected_items.sort(
         key=lambda item: (
-            -int(item.get("priority_rank") or 0),
+            priority_rank_sort_value(item.get("priority_rank")),
             str(item.get("created_at") or ""),
         )
     )
@@ -1796,6 +1851,7 @@ async def run_autonomous_sprint(
             )
             return
 
+        selected_items = sorted(selected_items, key=priority_rank_sort_key)
         for item in selected_items:
             item["status"] = "selected"
             item["selected_in_sprint_id"] = sprint_id
@@ -1931,6 +1987,7 @@ def prepare_requested_restart_checkpoint(service: Any, sprint_state: dict[str, A
             todo["retry_of_request_id"] = previous_request_id
         todo["request_id"] = ""
         todo["status"] = "queued"
+        todo["dependency_gate_bypass"] = "restart_checkpoint"
         todo["ended_at"] = ""
         todo["carry_over_backlog_id"] = ""
         todo["version_control_status"] = ""
@@ -2036,12 +2093,14 @@ async def continue_manual_daily_sprint(
         await service._run_ongoing_sprint_review(sprint_state, force=force_review)
         force_review = False
         service._sync_manual_sprint_queue(sprint_state)
+        sprint_state["todos"] = service._sort_sprint_todos(list(sprint_state.get("todos") or []))
         service._save_sprint_state(sprint_state)
         next_todo = next(
             (
                 todo
                 for todo in (sprint_state.get("todos") or [])
                 if service._is_executable_todo_status(str(todo.get("status") or "").strip().lower())
+                and sprint_todo_dependencies_satisfied(todo, list(sprint_state.get("todos") or []))
             ),
             None,
         )
@@ -2095,6 +2154,7 @@ async def continue_sprint(
             build_todo_item(item, owner_role="planner")
             for item in sprint_state.get("selected_items") or []
         ]
+    sprint_state["todos"] = service._sort_sprint_todos(list(sprint_state.get("todos") or []))
     sprint_state["status"] = "running"
     service._save_sprint_state(sprint_state)
     if announce:
@@ -2107,6 +2167,8 @@ async def continue_sprint(
             await service._finalize_sprint(sprint_state)
             return
         if is_terminal_todo_status(str(todo.get("status") or "")):
+            continue
+        if not sprint_todo_dependencies_satisfied(todo, list(sprint_state.get("todos") or [])):
             continue
         await service._execute_sprint_todo(sprint_state, todo)
         service._save_sprint_state(sprint_state)
@@ -2462,6 +2524,32 @@ async def resume_uncommitted_sprint_todo(
 
 async def execute_sprint_todo(service: Any, sprint_state: dict[str, Any], todo: dict[str, Any]) -> None:
     backlog_item = service._load_backlog_item(str(todo.get("backlog_id") or ""))
+    bypass_dependency_gate = str(todo.get("dependency_gate_bypass") or "").strip() == "restart_checkpoint"
+    waiting_on = (
+        []
+        if bypass_dependency_gate
+        else sprint_todo_dependency_waiting_on(todo, list(sprint_state.get("todos") or []))
+    )
+    if waiting_on:
+        service._append_sprint_event(
+            str(sprint_state.get("sprint_id") or ""),
+            event_type="todo_dependency_wait",
+            summary=str(todo.get("title") or ""),
+            payload={
+                "todo_id": todo.get("todo_id") or "",
+                "backlog_id": todo.get("backlog_id") or "",
+                "waiting_on": [
+                    {
+                        "todo_id": str(item.get("todo_id") or ""),
+                        "backlog_id": str(item.get("backlog_id") or ""),
+                        "priority_rank": int(item.get("priority_rank") or 0),
+                        "status": str(item.get("status") or ""),
+                    }
+                    for item in waiting_on
+                ],
+            },
+        )
+        return
     request_record: dict[str, Any] = {}
     existing_request_id = str(todo.get("request_id") or "").strip()
     if existing_request_id:

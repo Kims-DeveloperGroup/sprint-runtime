@@ -92,7 +92,7 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertEqual(sprint_state["milestone_title"], "workflow refined")
                 self.assertEqual(
                     [item["title"] for item in sprint_state["selected_items"]],
-                    ["manual sprint start gate", "sprint folder artifact rendering"],
+                    ["sprint folder artifact rendering", "manual sprint start gate"],
                 )
                 self.assertEqual(
                     {item["milestone_title"] for item in sprint_state["selected_items"]},
@@ -100,7 +100,7 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 )
                 self.assertEqual(
                     [todo["priority_rank"] for todo in sprint_state["todos"][:2]],
-                    [2, 1],
+                    [1, 2],
                 )
                 self.assertEqual(
                     {todo["milestone_title"] for todo in sprint_state["todos"][:2]},
@@ -550,16 +550,16 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertIn("- todo 요약: running:1, queued:1, committed:1, blocked:1", report_body)
                 self.assertIn("- todo_summary: running:1, queued:1, committed:1, blocked:1", report_body)
                 self.assertIn("- [running] 실시간 상태 반영 순서 재정리 | request_id=req-live-running", next_action_section)
-                self.assertIn("- [blocked] KIS 활용률 검증 및 fallback 축소 기준 정리 | request_id=req-live-blocked", next_action_section)
                 self.assertIn("- [queued] 데일리 요약 카드 재배치 | request_id=req-live-queued", next_action_section)
+                self.assertIn("- [blocked] KIS 활용률 검증 및 fallback 축소 기준 정리 | request_id=req-live-blocked", next_action_section)
                 self.assertNotIn("완료된 기록 보강", next_action_section)
                 self.assertLess(
                     next_action_section.index("- [running] 실시간 상태 반영 순서 재정리 | request_id=req-live-running"),
-                    next_action_section.index("- [blocked] KIS 활용률 검증 및 fallback 축소 기준 정리 | request_id=req-live-blocked"),
+                    next_action_section.index("- [queued] 데일리 요약 카드 재배치 | request_id=req-live-queued"),
                 )
                 self.assertLess(
-                    next_action_section.index("- [blocked] KIS 활용률 검증 및 fallback 축소 기준 정리 | request_id=req-live-blocked"),
                     next_action_section.index("- [queued] 데일리 요약 카드 재배치 | request_id=req-live-queued"),
+                    next_action_section.index("- [blocked] KIS 활용률 검증 및 fallback 축소 기준 정리 | request_id=req-live-blocked"),
                 )
                 self.assertIn("artifact=kis_adoption_verification.md", report_body)
 
