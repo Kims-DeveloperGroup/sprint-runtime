@@ -20,6 +20,18 @@ WORKFLOW_TRANSITION_REQUIRED_KEYS = (
 WORKFLOW_TRANSITION_REQUIRED_ROLES = {"planner", "designer", "architect", "developer", "qa"}
 CONTRACT_STATUS_INVALID = "invalid"
 CONTRACT_STATUS_REPAIRED = "repaired"
+QA_VALIDATION_ALLOWED_DECISIONS = {"pass", "fail", "blocked"}
+QA_VALIDATION_ALLOWED_RESULTS = {"pass", "fail", "not_checked"}
+QA_VALIDATION_REQUIRED_KEYS = (
+    "methodology",
+    "decision",
+    "evidence_matrix",
+    "passed_checks",
+    "findings",
+    "residual_risks",
+    "not_checked",
+)
+QA_EVIDENCE_MATRIX_REQUIRED_KEYS = ("criterion", "source", "evidence", "result")
 
 
 def render_role_result_contract(*, request_id: str, role: str, extra_fields: str = "") -> str:
@@ -80,6 +92,8 @@ def validate_role_result_contract(
             finalize_phase = transition.get("finalize_phase")
             if finalize_phase not in (None, True, False):
                 issues.append("invalid_workflow_transition_finalize_phase")
+        if normalized_role == "qa" and _request_workflow_step(request_record) == "qa_validation":
+            issues.extend(_validate_qa_validation_contract(proposals if isinstance(proposals, dict) else None))
 
     return issues
 
@@ -109,6 +123,27 @@ def describe_contract_issues(issues: list[str]) -> list[str]:
             descriptions.append("`workflow_transition.unresolved_items`는 list 또는 string이어야 합니다.")
         elif issue == "invalid_workflow_transition_finalize_phase":
             descriptions.append("`workflow_transition.finalize_phase`는 boolean이어야 합니다.")
+        elif issue == "missing_qa_validation":
+            descriptions.append("QA validation 단계인데 `proposals.qa_validation`이 없습니다.")
+        elif issue.startswith("qa_validation_missing_keys:"):
+            missing = issue.split(":", 1)[1]
+            descriptions.append(f"`proposals.qa_validation`에 필수 키가 없습니다: {missing}.")
+        elif issue == "invalid_qa_validation_methodology":
+            descriptions.append("`qa_validation.methodology`는 `evidence_matrix`여야 합니다.")
+        elif issue.startswith("invalid_qa_validation_decision:"):
+            decision = issue.split(":", 1)[1]
+            descriptions.append(f"`qa_validation.decision` 값이 허용 범위를 벗어났습니다: {decision}.")
+        elif issue == "empty_qa_validation_evidence_matrix":
+            descriptions.append("`qa_validation.evidence_matrix`에는 하나 이상의 evidence 항목이 필요합니다.")
+        elif issue.startswith("qa_validation_evidence_missing_keys:"):
+            missing = issue.split(":", 1)[1]
+            descriptions.append(f"`qa_validation.evidence_matrix` 항목에 필수 키가 없습니다: {missing}.")
+        elif issue.startswith("invalid_qa_validation_evidence_result:"):
+            result = issue.split(":", 1)[1]
+            descriptions.append(f"`qa_validation.evidence_matrix[].result` 값이 허용 범위를 벗어났습니다: {result}.")
+        elif issue.startswith("invalid_qa_validation_list_field:"):
+            field = issue.split(":", 1)[1]
+            descriptions.append(f"`qa_validation.{field}`는 list여야 합니다.")
         else:
             descriptions.append(issue)
     return descriptions
@@ -135,6 +170,59 @@ def _request_has_workflow(request_record: dict[str, Any]) -> bool:
     return isinstance(params.get("workflow"), dict) and bool(params.get("workflow"))
 
 
+def _request_workflow_step(request_record: dict[str, Any]) -> str:
+    params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
+    workflow = params.get("workflow")
+    if not isinstance(workflow, dict):
+        return ""
+    return str(workflow.get("step") or "").strip().lower()
+
+
+def _validate_qa_validation_contract(proposals: dict[str, Any] | None) -> list[str]:
+    if not isinstance(proposals, dict):
+        return ["missing_qa_validation"]
+    qa_validation = proposals.get("qa_validation")
+    if not isinstance(qa_validation, dict):
+        return ["missing_qa_validation"]
+
+    issues: list[str] = []
+    missing_keys = [key for key in QA_VALIDATION_REQUIRED_KEYS if key not in qa_validation]
+    if missing_keys:
+        issues.append(f"qa_validation_missing_keys:{','.join(missing_keys)}")
+
+    methodology = str(qa_validation.get("methodology") or "").strip().lower()
+    if methodology != "evidence_matrix":
+        issues.append("invalid_qa_validation_methodology")
+
+    decision = str(qa_validation.get("decision") or "").strip().lower()
+    if decision not in QA_VALIDATION_ALLOWED_DECISIONS:
+        issues.append(f"invalid_qa_validation_decision:{decision}")
+
+    evidence_matrix = qa_validation.get("evidence_matrix")
+    if not isinstance(evidence_matrix, list) or not evidence_matrix:
+        issues.append("empty_qa_validation_evidence_matrix")
+    else:
+        for item in evidence_matrix:
+            if not isinstance(item, dict):
+                issues.append("qa_validation_evidence_missing_keys:criterion,source,evidence,result")
+                continue
+            missing_entry_keys = [
+                key
+                for key in QA_EVIDENCE_MATRIX_REQUIRED_KEYS
+                if not str(item.get(key) or "").strip()
+            ]
+            if missing_entry_keys:
+                issues.append(f"qa_validation_evidence_missing_keys:{','.join(missing_entry_keys)}")
+            result = str(item.get("result") or "").strip().lower()
+            if result and result not in QA_VALIDATION_ALLOWED_RESULTS:
+                issues.append(f"invalid_qa_validation_evidence_result:{result}")
+
+    for field in ("passed_checks", "findings", "residual_risks", "not_checked"):
+        if field in qa_validation and not isinstance(qa_validation.get(field), list):
+            issues.append(f"invalid_qa_validation_list_field:{field}")
+    return issues
+
+
 __all__ = [
     "ALLOWED_ROLE_STATUSES",
     "CONTRACT_STATUS_INVALID",
@@ -142,6 +230,8 @@ __all__ = [
     "PROMPT_PLACEHOLDER_INSIGHT",
     "PROMPT_PLACEHOLDER_SUMMARY",
     "PROMPT_STATUS_ENUM_LITERAL",
+    "QA_VALIDATION_ALLOWED_DECISIONS",
+    "QA_VALIDATION_ALLOWED_RESULTS",
     "describe_contract_issues",
     "is_invalid_contract_payload",
     "render_role_result_contract",

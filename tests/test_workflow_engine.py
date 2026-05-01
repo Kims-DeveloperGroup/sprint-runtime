@@ -235,6 +235,38 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
         self.assertEqual(decision["workflow_state"]["phase_owner"], "developer")
         self.assertEqual(decision["workflow_state"]["reopen_category"], "verification")
 
+    def test_qa_ux_reopen_routes_to_designer_advisory(self):
+        workflow_state = default_workflow_state()
+        workflow_state["phase"] = "validation"
+        workflow_state["step"] = WORKFLOW_STEP_QA_VALIDATION
+        workflow_state["phase_owner"] = "qa"
+
+        transition = workflow_transition(
+            {
+                "proposals": {
+                    "workflow_transition": {
+                        "outcome": "reopen",
+                        "target_phase": "planning",
+                        "target_step": "designer_advisory",
+                        "reopen_category": "ux",
+                    }
+                }
+            }
+        )
+
+        decision = derive_workflow_routing_decision(
+            workflow_state,
+            transition,
+            current_role="qa",
+            reason="designer intent와 user-facing ordering drift를 QA가 확인했습니다.",
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["next_role"], "designer")
+        self.assertEqual(decision["workflow_state"]["step"], "designer_advisory")
+        self.assertEqual(decision["workflow_state"]["phase_owner"], "designer")
+        self.assertEqual(decision["workflow_state"]["reopen_category"], "ux")
+
     def test_role_capability_terms_match_in_engine(self):
         policy = default_agent_utilization_policy()
 
