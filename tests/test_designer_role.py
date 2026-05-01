@@ -20,7 +20,7 @@ class TeamsRuntimeDesignerRoleTests(unittest.TestCase):
         self.assertIn("Put durable usability judgment in `proposals.design_feedback`.", rules)
         self.assertIn("`entry_point`: one of `planning_route`, `message_readability`, `info_prioritization`, `ux_reopen`", rules)
         self.assertIn("`message_priority` concrete with at least `lead` and `defer`", rules)
-        self.assertIn("`planner_advisory`", rules)
+        self.assertIn("`designer_advisory`", rules)
         self.assertIn("reopen_category='ux'", rules)
 
     def test_role_runtime_prompt_uses_designer_role_rules(self):
@@ -49,7 +49,7 @@ class TeamsRuntimeDesignerRoleTests(unittest.TestCase):
                 "params": {
                     "workflow": {
                         "phase": "planning",
-                        "step": "planner_advisory",
+                        "step": "designer_advisory",
                     }
                 },
             }
@@ -60,7 +60,7 @@ class TeamsRuntimeDesignerRoleTests(unittest.TestCase):
             self.assertIn("planning advisory pass or an orchestrator-triggered UX reopen pass", prompt)
             self.assertIn("`proposals.design_feedback` should include:", prompt)
             self.assertIn("`message_priority` concrete with at least `lead` and `defer`", prompt)
-            self.assertIn("`Current request.params.workflow.step` is `planner_advisory`", prompt)
+            self.assertIn("`Current request.params.workflow.step` is `designer_advisory`", prompt)
             self.assertIn("reopen_category='ux'", prompt)
 
 

@@ -405,7 +405,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                     },
                     {},
                     current_role="orchestrator",
-                    requested_role="",
+                    preferred_role="",
                     selection_source="user_intake",
                 )
 
@@ -440,7 +440,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                     },
                     {},
                     current_role="orchestrator",
-                    requested_role="",
+                    preferred_role="",
                     selection_source="sprint_initial",
                 )
 
@@ -480,7 +480,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                         "proposals": {},
                     },
                     current_role="planner",
-                    requested_role="",
+                    preferred_role="",
                     selection_source="role_report",
                 )
 
@@ -507,7 +507,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                         "proposals": {},
                     },
                     current_role="developer",
-                    requested_role="",
+                    preferred_role="",
                     selection_source="role_report",
                 )
 
@@ -560,7 +560,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                         "proposals": {},
                     },
                     current_role="architect",
-                    requested_role="",
+                    preferred_role="",
                     selection_source="role_report",
                 )
 
@@ -1796,7 +1796,6 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                                 "outcome": "advance",
                                 "target_phase": "implementation",
                                 "target_step": "developer_build",
-                                "requested_role": "",
                                 "reopen_category": "",
                                 "reason": "developer build로 진행합니다.",
                                 "unresolved_items": [],
@@ -1821,7 +1820,6 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                             "outcome": "reopen",
                             "target_phase": "planning",
                             "target_step": "planner_finalize",
-                            "requested_role": "planner",
                             "reopen_category": "scope",
                             "reason": "stale planner finalize",
                             "unresolved_items": ["planner 문서 정리 필요"],
@@ -1917,7 +1915,6 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                                 "outcome": "complete",
                                 "target_phase": "closeout",
                                 "target_step": "closeout",
-                                "requested_role": "",
                                 "reopen_category": "",
                                 "reason": "closeout을 마쳤습니다.",
                                 "unresolved_items": [],
@@ -1942,7 +1939,6 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                             "outcome": "reopen",
                             "target_phase": "planning",
                             "target_step": "planner_finalize",
-                            "requested_role": "planner",
                             "reopen_category": "scope",
                             "reason": "stale planner finalize",
                             "unresolved_items": ["planner 문서 정리 필요"],
@@ -2233,7 +2229,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertEqual(updated["status"], "delegated")
                 self.assertEqual(updated["current_role"], "developer")
                 self.assertEqual(updated["next_role"], "developer")
-                self.assertEqual(updated["routing_context"]["requested_role"], "")
+                self.assertEqual(updated["routing_context"]["preferred_role"], "")
                 self.assertEqual(len(service.discord_client.sent_channels), 2)
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
                 self.assertIn(f"<@{developer_bot_id}>", relay_content)
@@ -2324,7 +2320,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertIn("routing_context", updated)
                 self.assertEqual(updated["result"]["next_role"], "")
                 self.assertEqual(updated["routing_context"]["selected_role"], "developer")
-                self.assertEqual(updated["routing_context"]["requested_role"], "")
+                self.assertEqual(updated["routing_context"]["preferred_role"], "")
                 self.assertEqual(updated["routing_context"]["selection_source"], "role_report")
                 self.assertEqual(updated["routing_context"]["policy_source"], "workspace_skill_policy")
                 self.assertEqual(updated["routing_context"]["routing_phase"], "implementation")
@@ -2424,7 +2420,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertEqual(updated["current_role"], "developer")
                 self.assertEqual(updated["next_role"], "developer")
                 self.assertEqual(updated["routing_context"]["selected_role"], "developer")
-                self.assertEqual(updated["routing_context"]["requested_role"], "")
+                self.assertEqual(updated["routing_context"]["preferred_role"], "")
                 self.assertEqual(updated["routing_context"]["request_state_class"], "execution_opened")
                 self.assertGreater(updated["routing_context"]["score_total"], 0)
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
@@ -2673,7 +2669,7 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertEqual(updated["current_role"], "planner")
                 self.assertEqual(updated["next_role"], "planner")
                 self.assertEqual(updated["routing_context"]["selected_role"], "planner")
-                self.assertEqual(updated["routing_context"]["requested_role"], "")
+                self.assertEqual(updated["routing_context"]["preferred_role"], "")
                 self.assertGreater(updated["routing_context"]["score_total"], 0)
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
                 self.assertIn(f"<@{planner_bot_id}>", relay_content)

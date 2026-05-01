@@ -86,7 +86,7 @@ def _coerce_prompt_status_enum_literal(payload: dict[str, Any]) -> str:
             return "completed"
         if any(
             str(transition.get(key) or "").strip()
-            for key in ("target_phase", "target_step", "requested_role")
+            for key in ("target_phase", "target_step")
         ):
             return "completed"
     if str(payload.get("error") or "").strip():
@@ -639,8 +639,8 @@ Before deciding your next action, read the latest request `result` and recent `e
 If `Current request`, relay text, and a role-local request snapshot differ, trust `Current request`.
 Orchestrator exclusively owns `next_role` selection. Do not choose or rely on `next_role` in your role output; make your summary, proposals, and artifacts explicit enough for orchestrator to choose the next step.
 When `Current request.params.workflow` exists, use `proposals.workflow_transition` as the structured workflow contract. The expected shape is:
-`{{"outcome":"continue|advance|reopen|block|complete","target_phase":"","target_step":"","requested_role":"","reopen_category":"","reason":"...","unresolved_items":[],"finalize_phase":false}}`.
-Prefer `requested_role=designer|architect` only for planner-owned advisory requests. Other roles should describe the blocker or completion clearly and let orchestrator choose the next step from the workflow contract.
+`{{"outcome":"continue|advance|reopen|block|complete","target_phase":"","target_step":"","reopen_category":"","reason":"...","unresolved_items":[],"finalize_phase":false}}`.
+Planner-owned advisory requests must use role-specific target steps such as `designer_advisory` or `architect_advisory`; other roles should describe the blocker or completion clearly and let orchestrator choose the next step from the workflow contract.
 Never claim a file edit, test pass, verification result, or document reflection unless you directly observed it in the current session.
 Separate observed facts from inference. If you did not open the file, run the command, or inspect the artifact yourself, say that explicitly and reduce the claim instead of reporting success.
 When you claim a file change or validation result, leave enough evidence in `summary`, `insights`, or `proposals` for orchestrator to verify what you actually checked.

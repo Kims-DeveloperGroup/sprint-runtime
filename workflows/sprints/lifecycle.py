@@ -2407,7 +2407,7 @@ async def run_internal_request_chain(
         request_record,
         {},
         current_role="orchestrator",
-        requested_role=seeded_initial_role or str(initial_role or "").strip(),
+        preferred_role=seeded_initial_role or str(initial_role or "").strip(),
         selection_source="sprint_initial",
     )
     next_role = str(selection.get("selected_role") or "").strip() or seeded_initial_role or "planner"
@@ -2419,7 +2419,7 @@ async def run_internal_request_chain(
         request_record["routing_context"] = service._build_routing_context(
             next_role,
             reason=f"Selected {next_role} as the current best role for this sprint step.",
-            requested_role=str(selection.get("requested_role") or ""),
+            preferred_role=str(selection.get("preferred_role") or ""),
             selection_source="sprint_initial",
             matched_signals=[
                 str(item).strip()

@@ -1118,7 +1118,7 @@ def render_sprint_iteration_log_markdown(
                 routing_context = dict(payload.get("routing_context") or {})
                 if routing_context:
                     lines.append(
-                        f"- selected_role: {routing_context.get('selected_role') or routing_context.get('requested_role') or 'N/A'}"
+                        f"- selected_role: {routing_context.get('selected_role') or routing_context.get('preferred_role') or 'N/A'}"
                     )
                     lines.append(f"- reason: {routing_context.get('reason') or ''}")
             if payload and event_type == "role_report":

@@ -29,12 +29,11 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             summary="designer advisory가 필요합니다.",
                             outcome="continue",
                             target_phase="planning",
-                            target_step="planner_advisory",
-                            requested_role="designer",
+                            target_step="designer_advisory",
                         ),
                         "expected_next_role": "designer",
                         "expected_phase": "planning",
-                        "expected_step": "planner_advisory",
+                        "expected_step": "designer_advisory",
                         "expected_phase_owner": "designer",
                         "expected_planning_pass_count": 1,
                     },
@@ -168,7 +167,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             outcome="advance",
                             target_phase="validation",
                             target_step="qa_validation",
-                            requested_role="qa",
                         ),
                         "expected_next_role": "qa",
                         "expected_phase": "validation",
@@ -253,12 +251,12 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             summary="UX spec mismatch가 있어 designer advisory가 필요합니다.",
                             outcome="reopen",
                             target_phase="planning",
-                            target_step="planner_advisory",
+                            target_step="designer_advisory",
                             reopen_category="ux",
                         ),
                         "expected_next_role": "designer",
                         "expected_phase": "planning",
-                        "expected_step": "planner_advisory",
+                        "expected_step": "designer_advisory",
                         "expected_phase_owner": "designer",
                         "expected_reopen_category": "ux",
                         "expected_planning_pass_count": 1,
@@ -499,7 +497,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                     "outcome": "advance",
                                     "target_phase": "implementation",
                                     "target_step": "architect_guidance",
-                                    "requested_role": "",
                                     "reopen_category": "",
                                     "reason": "implementation guidance가 필요합니다.",
                                     "unresolved_items": [],
@@ -600,8 +597,7 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                         "workflow_transition": {
                                             "outcome": "continue",
                                             "target_phase": "planning",
-                                            "target_step": "planner_advisory",
-                                            "requested_role": "designer",
+                                            "target_step": "designer_advisory",
                                             "reopen_category": "",
                                             "reason": "사용자 노출 메시지의 정보 우선순위를 designer가 점검해야 합니다.",
                                             "unresolved_items": ["알림 메시지 readability"],
@@ -622,7 +618,7 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                 self.assertEqual(updated["current_role"], "designer")
                 self.assertEqual(updated["next_role"], "designer")
                 self.assertEqual(updated["params"]["workflow"]["phase"], "planning")
-                self.assertEqual(updated["params"]["workflow"]["step"], "planner_advisory")
+                self.assertEqual(updated["params"]["workflow"]["step"], "designer_advisory")
                 self.assertEqual(updated["params"]["workflow"]["planning_pass_count"], 1)
 
     def test_internal_sprint_designer_advisory_routes_back_to_planner_finalize(self):
@@ -643,7 +639,7 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                         "workflow": {
                             "contract_version": 1,
                             "phase": "planning",
-                            "step": "planner_advisory",
+                            "step": "designer_advisory",
                             "phase_owner": "designer",
                             "phase_status": "active",
                             "planning_pass_count": 1,
@@ -715,7 +711,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "advance",
                                             "target_phase": "planning",
                                             "target_step": "planner_finalize",
-                                            "requested_role": "",
                                             "reopen_category": "",
                                             "reason": "designer advisory를 planner가 반영해 planning을 마무리합니다.",
                                             "unresolved_items": [],
@@ -814,7 +809,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                     "outcome": "advance",
                                     "target_phase": "implementation",
                                     "target_step": "architect_review",
-                                    "requested_role": "",
                                     "reopen_category": "",
                                     "reason": "architect review로 넘깁니다.",
                                     "unresolved_items": [],
@@ -911,7 +905,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                     "outcome": "advance",
                                     "target_phase": "implementation",
                                     "target_step": "developer_revision",
-                                    "requested_role": "",
                                     "reopen_category": "",
                                     "reason": "review findings를 developer가 반영해야 합니다.",
                                     "unresolved_items": ["구조 리뷰 반영"],
@@ -1010,7 +1003,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "advance",
                                             "target_phase": "implementation",
                                             "target_step": "developer_revision",
-                                            "requested_role": "",
                                             "reopen_category": "",
                                             "reason": "review findings를 developer가 반영해야 합니다.",
                                             "unresolved_items": ["구조 리뷰 반영"],
@@ -1111,7 +1103,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "reopen",
                                             "target_phase": "implementation",
                                             "target_step": "developer_revision",
-                                            "requested_role": "",
                                             "reopen_category": "",
                                             "reason": "review findings를 반영하도록 developer revision으로 되돌립니다.",
                                             "unresolved_items": ["구조 리뷰 반영"],
@@ -1210,7 +1201,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "advance",
                                             "target_phase": "validation",
                                             "target_step": "qa_validation",
-                                            "requested_role": "qa",
                                             "reopen_category": "",
                                             "reason": "추가 developer 수정 없이 QA가 회귀를 검증합니다.",
                                             "unresolved_items": [],
@@ -1311,7 +1301,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "advance",
                                             "target_phase": "validation",
                                             "target_step": "qa_validation",
-                                            "requested_role": "qa",
                                             "reopen_category": "",
                                             "reason": "추가 developer 수정 없이 QA가 최종 검증합니다.",
                                             "unresolved_items": [],
@@ -1411,8 +1400,7 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                         "workflow_transition": {
                                             "outcome": "reopen",
                                             "target_phase": "planning",
-                                            "target_step": "planner_advisory",
-                                            "requested_role": "",
+                                            "target_step": "designer_advisory",
                                             "reopen_category": "ux",
                                             "reason": "status message readability를 designer가 다시 점검해야 합니다.",
                                             "unresolved_items": ["상태 보고 정보 우선순위 조정"],
@@ -1433,7 +1421,7 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                 self.assertEqual(updated["current_role"], "designer")
                 self.assertEqual(updated["next_role"], "designer")
                 self.assertEqual(updated["params"]["workflow"]["phase"], "planning")
-                self.assertEqual(updated["params"]["workflow"]["step"], "planner_advisory")
+                self.assertEqual(updated["params"]["workflow"]["step"], "designer_advisory")
                 self.assertEqual(updated["params"]["workflow"]["reopen_category"], "ux")
 
     def test_internal_sprint_qa_spec_mismatch_routes_to_planner_finalize(self):
@@ -1523,7 +1511,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                                 "outcome": "reopen",
                                                 "target_phase": "validation",
                                                 "target_step": "",
-                                                "requested_role": "",
                                                 "reopen_category": "verification",
                                                 "reason": "spec.md와 todo_backlog.md를 planner가 다시 정렬해야 합니다.",
                                                 "unresolved_items": ["spec.md contract drift"],
@@ -1637,7 +1624,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                                 "outcome": "reopen",
                                                 "target_phase": "validation",
                                                 "target_step": "",
-                                                "requested_role": "",
                                                 "reopen_category": "verification",
                                                 "reason": "planner-owned 상태 문서 sync가 필요합니다.",
                                                 "unresolved_items": ["current_sprint.md sync drift"],
@@ -1743,7 +1729,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "reopen",
                                             "target_phase": "implementation",
                                             "target_step": "developer_revision",
-                                            "requested_role": "",
                                             "reopen_category": "implementation",
                                             "reason": "implementation 수정은 developer revision에서 이어갑니다.",
                                             "unresolved_items": ["구조 리뷰 반영"],
@@ -1843,7 +1828,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "advance",
                                             "target_phase": "implementation",
                                             "target_step": "architect_review",
-                                            "requested_role": "",
                                             "reopen_category": "",
                                             "reason": "architect가 수정 반영을 다시 검토해야 합니다.",
                                             "unresolved_items": [],
@@ -1944,7 +1928,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "advance",
                                             "target_phase": "implementation",
                                             "target_step": "developer_revision",
-                                            "requested_role": "",
                                             "reopen_category": "",
                                             "reason": "review findings를 developer가 추가 반영해야 합니다.",
                                             "unresolved_items": ["추가 구조 수정"],
@@ -2044,8 +2027,7 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                 "workflow_transition": {
                                     "outcome": "continue",
                                     "target_phase": "planning",
-                                    "target_step": "planner_advisory",
-                                    "requested_role": "architect",
+                                    "target_step": "architect_advisory",
                                     "reopen_category": "",
                                     "reason": "추가 technical advisory가 필요합니다.",
                                     "unresolved_items": ["technical detail"],
@@ -2214,7 +2196,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             "outcome": "complete",
                             "target_phase": "",
                             "target_step": "",
-                            "requested_role": "",
                             "reopen_category": "",
                             "reason": "planner finalize에서 planning closeout으로 닫습니다.",
                             "unresolved_items": [
@@ -2355,7 +2336,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                             "outcome": "complete",
                                             "target_phase": "",
                                             "target_step": "",
-                                            "requested_role": "",
                                             "reopen_category": "",
                                             "reason": "planner finalize를 마쳤습니다.",
                                             "unresolved_items": [],
@@ -2451,7 +2431,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             "outcome": "advance",
                             "target_phase": "implementation",
                             "target_step": "execution_ready",
-                            "requested_role": "",
                             "reopen_category": "",
                             "reason": "architect guidance를 시작합니다.",
                             "unresolved_items": [],
@@ -2574,7 +2553,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             "outcome": "advance",
                             "target_phase": "implementation",
                             "target_step": "architect_guidance",
-                            "requested_role": "architect",
                             "reopen_category": "",
                             "reason": "implementation으로 다시 진행합니다.",
                             "unresolved_items": [],
@@ -2710,7 +2688,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             "outcome": "complete",
                             "target_phase": "",
                             "target_step": "",
-                            "requested_role": "",
                             "reopen_category": "",
                             "reason": "planner finalize를 마쳤습니다.",
                             "unresolved_items": [],
@@ -2828,7 +2805,6 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                             "outcome": "advance",
                             "target_phase": "implementation",
                             "target_step": "architect_review",
-                            "requested_role": "",
                             "reopen_category": "",
                             "reason": "architect review를 진행합니다.",
                             "unresolved_items": [],

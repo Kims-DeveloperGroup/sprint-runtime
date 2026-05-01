@@ -351,7 +351,7 @@ class TeamsRuntimeIngressTests(unittest.TestCase):
     def test_build_resume_routing_context_kwargs_normalizes_selection_fields(self) -> None:
         kwargs = build_resume_routing_context_kwargs(
             {
-                "requested_role": "planner",
+                "preferred_role": "planner",
                 "matched_signals": [" signal-a ", ""],
                 "override_reason": "manual override",
                 "matched_strongest_domains": [" workflow "],
@@ -369,7 +369,7 @@ class TeamsRuntimeIngressTests(unittest.TestCase):
         )
 
         self.assertEqual(kwargs["reason"], "resume summary")
-        self.assertEqual(kwargs["requested_role"], "planner")
+        self.assertEqual(kwargs["preferred_role"], "planner")
         self.assertEqual(kwargs["selection_source"], "planning_resume")
         self.assertEqual(kwargs["matched_signals"], ["signal-a"])
         self.assertEqual(kwargs["matched_strongest_domains"], ["workflow"])

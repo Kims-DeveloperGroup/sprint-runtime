@@ -458,7 +458,7 @@ async def handle_user_request(
         routing_context=service._build_routing_context(
             "orchestrator",
             reason="Selected orchestrator as the first agent owner for this user-originated request.",
-            requested_role="orchestrator",
+            preferred_role="orchestrator",
             selection_source="agent_first_intake",
         ),
     )
@@ -1407,7 +1407,7 @@ def build_resume_routing_context_kwargs(
 ) -> dict[str, Any]:
     return {
         "reason": summary or f"Selected {selected_role} while resuming the request with additional context.",
-        "requested_role": str(selection.get("requested_role") or ""),
+        "preferred_role": str(selection.get("preferred_role") or ""),
         "selection_source": "planning_resume",
         "matched_signals": [
             str(item).strip()

@@ -27,6 +27,8 @@ WORKFLOW_PHASES = {
 WORKFLOW_STEP_PLANNER_DRAFT = "planner_draft"
 WORKFLOW_STEP_RESEARCH_INITIAL = "research_initial"
 WORKFLOW_STEP_PLANNER_ADVISORY = "planner_advisory"
+WORKFLOW_STEP_DESIGNER_ADVISORY = "designer_advisory"
+WORKFLOW_STEP_ARCHITECT_ADVISORY = "architect_advisory"
 WORKFLOW_STEP_PLANNER_FINALIZE = "planner_finalize"
 WORKFLOW_STEP_ARCHITECT_GUIDANCE = "architect_guidance"
 WORKFLOW_STEP_DEVELOPER_BUILD = "developer_build"
@@ -39,6 +41,8 @@ WORKFLOW_STEPS = {
     WORKFLOW_STEP_RESEARCH_INITIAL,
     WORKFLOW_STEP_PLANNER_DRAFT,
     WORKFLOW_STEP_PLANNER_ADVISORY,
+    WORKFLOW_STEP_DESIGNER_ADVISORY,
+    WORKFLOW_STEP_ARCHITECT_ADVISORY,
     WORKFLOW_STEP_PLANNER_FINALIZE,
     WORKFLOW_STEP_ARCHITECT_GUIDANCE,
     WORKFLOW_STEP_DEVELOPER_BUILD,
@@ -49,6 +53,14 @@ WORKFLOW_STEPS = {
 }
 WORKFLOW_REOPEN_CATEGORIES = {"", "scope", "ux", "architecture", "implementation", "verification"}
 PLANNING_ADVISORY_ROLES = {"designer", "architect"}
+PLANNING_ADVISORY_STEP_TO_ROLE = {
+    WORKFLOW_STEP_DESIGNER_ADVISORY: "designer",
+    WORKFLOW_STEP_ARCHITECT_ADVISORY: "architect",
+}
+PLANNING_ADVISORY_ROLE_TO_STEP = {
+    role: step
+    for step, role in PLANNING_ADVISORY_STEP_TO_ROLE.items()
+}
 WORKFLOW_QA_REOPEN_REQUIRED_DOC_NAMES = ("spec.md", "todo_backlog.md", "iteration_log.md", "current_sprint.md")
 
 
@@ -83,6 +95,18 @@ def initial_workflow_state(review_cycle_limit: int | None = None) -> WorkflowSta
     return state
 
 
+def planning_advisory_step_for_role(role: str) -> str:
+    return PLANNING_ADVISORY_ROLE_TO_STEP.get(str(role or "").strip().lower(), "")
+
+
+def planning_advisory_role_for_step(step: str, *, phase_owner: str = "") -> str:
+    normalized_step = str(step or "").strip().lower()
+    if normalized_step == WORKFLOW_STEP_PLANNER_ADVISORY:
+        normalized_owner = str(phase_owner or "").strip().lower()
+        return normalized_owner if normalized_owner in PLANNING_ADVISORY_ROLES else ""
+    return PLANNING_ADVISORY_STEP_TO_ROLE.get(normalized_step, "")
+
+
 def normalize_workflow_state(raw: Any) -> WorkflowState:
     state = default_workflow_state()
     if not isinstance(raw, dict):
@@ -101,6 +125,10 @@ def normalize_workflow_state(raw: Any) -> WorkflowState:
         state["step"] = step
     if phase_owner in TEAM_ROLES or phase_owner == "version_controller":
         state["phase_owner"] = phase_owner
+    if state["step"] == WORKFLOW_STEP_PLANNER_ADVISORY:
+        advisory_step = planning_advisory_step_for_role(state["phase_owner"])
+        if advisory_step:
+            state["step"] = advisory_step
     if phase_status in {"active", "finalizing", "blocked", "completed"}:
         state["phase_status"] = phase_status
     if planning_final_owner in TEAM_ROLES:
@@ -151,7 +179,7 @@ def infer_legacy_internal_workflow_state(request_record: RequestRecord) -> Workf
         state["phase_owner"] = "planner"
         state["phase_status"] = "finalizing" if advisory_reports else "active"
         return state
-    state["step"] = WORKFLOW_STEP_PLANNER_ADVISORY
+    state["step"] = planning_advisory_step_for_role(current_role) or WORKFLOW_STEP_PLANNER_ADVISORY
     state["phase_owner"] = current_role
     state["phase_status"] = "active"
     if state["planning_pass_count"] == 0:
@@ -173,7 +201,6 @@ def workflow_transition(result: dict[str, Any]) -> dict[str, Any]:
             "outcome": "",
             "target_phase": "",
             "target_step": "",
-            "requested_role": "",
             "reopen_category": "",
             "reason": "",
             "unresolved_items": [],
@@ -182,8 +209,16 @@ def workflow_transition(result: dict[str, Any]) -> dict[str, Any]:
     outcome = str(raw.get("outcome") or "").strip().lower()
     target_phase = str(raw.get("target_phase") or "").strip().lower()
     target_step = str(raw.get("target_step") or "").strip().lower()
-    requested_role = str(raw.get("requested_role") or "").strip().lower()
+    legacy_requested_role = str(raw.get("requested_role") or "").strip().lower()
     reopen_category = str(raw.get("reopen_category") or "").strip().lower()
+    if target_step == WORKFLOW_STEP_PLANNER_ADVISORY and legacy_requested_role in PLANNING_ADVISORY_ROLES:
+        target_step = planning_advisory_step_for_role(legacy_requested_role)
+    elif not target_step and legacy_requested_role in PLANNING_ADVISORY_ROLES:
+        target_step = planning_advisory_step_for_role(legacy_requested_role)
+    elif not target_step and legacy_requested_role == "planner":
+        target_step = WORKFLOW_STEP_PLANNER_FINALIZE
+    elif not target_step and legacy_requested_role == "qa":
+        target_step = WORKFLOW_STEP_QA_VALIDATION
     unresolved_items = [
         str(item).strip()
         for item in (raw.get("unresolved_items") or [])
@@ -193,7 +228,6 @@ def workflow_transition(result: dict[str, Any]) -> dict[str, Any]:
         "outcome": outcome if outcome in {"continue", "advance", "reopen", "block", "complete"} else "",
         "target_phase": target_phase if target_phase in WORKFLOW_PHASES else "",
         "target_step": target_step if target_step in WORKFLOW_STEPS else "",
-        "requested_role": requested_role if requested_role in TEAM_ROLES or requested_role == "version_controller" else "",
         "reopen_category": reopen_category if reopen_category in WORKFLOW_REOPEN_CATEGORIES else "",
         "reason": str(raw.get("reason") or "").strip(),
         "unresolved_items": unresolved_items,
@@ -212,11 +246,9 @@ def workflow_transition_requests_explicit_continuation(transition: dict[str, Any
 def workflow_transition_requests_validation_handoff(transition: dict[str, Any]) -> bool:
     target_step = str(transition.get("target_step") or "").strip().lower()
     target_phase = str(transition.get("target_phase") or "").strip().lower()
-    requested_role = str(transition.get("requested_role") or "").strip().lower()
     outcome = str(transition.get("outcome") or "").strip().lower()
     return (
         target_step == WORKFLOW_STEP_QA_VALIDATION
-        or requested_role == "qa"
         or outcome == "complete"
         or target_phase == WORKFLOW_PHASE_VALIDATION
     )
@@ -238,8 +270,8 @@ def workflow_should_close_in_planning(
     step = str(workflow_state.get("step") or "").strip().lower()
     if step not in {WORKFLOW_STEP_PLANNER_DRAFT, WORKFLOW_STEP_PLANNER_FINALIZE}:
         return False
-    requested_role = str((transition or {}).get("requested_role") or "").strip().lower()
-    if requested_role in PLANNING_ADVISORY_ROLES:
+    transition_target_step = str((transition or {}).get("target_step") or "").strip().lower()
+    if planning_advisory_role_for_step(transition_target_step):
         return False
     normalized_proposals = dict(proposals or {})
     has_planning_contract = any(
@@ -334,7 +366,7 @@ def workflow_route_to_planning_advisory_state(
 ) -> WorkflowState:
     updated_state = dict(workflow_state or default_workflow_state())
     updated_state["phase"] = WORKFLOW_PHASE_PLANNING
-    updated_state["step"] = WORKFLOW_STEP_PLANNER_ADVISORY
+    updated_state["step"] = planning_advisory_step_for_role(role) or WORKFLOW_STEP_PLANNER_ADVISORY
     updated_state["phase_owner"] = role
     updated_state["phase_status"] = "active"
     updated_state["planning_pass_count"] = int(updated_state.get("planning_pass_count") or 0) + 1
@@ -415,6 +447,8 @@ def workflow_mark_reopen_state(
 _WORKFLOW_STATE_EXPORTS = [
     "DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT",
     "PLANNING_ADVISORY_ROLES",
+    "PLANNING_ADVISORY_ROLE_TO_STEP",
+    "PLANNING_ADVISORY_STEP_TO_ROLE",
     "WORKFLOW_CONTRACT_VERSION",
     "WORKFLOW_PHASE_CLOSEOUT",
     "WORKFLOW_PHASE_IMPLEMENTATION",
@@ -426,10 +460,12 @@ _WORKFLOW_STATE_EXPORTS = [
     "WORKFLOW_REOPEN_CATEGORIES",
     "WORKFLOW_SELECTION_SOURCE",
     "WORKFLOW_STEP_ARCHITECT_GUIDANCE",
+    "WORKFLOW_STEP_ARCHITECT_ADVISORY",
     "WORKFLOW_STEP_ARCHITECT_REVIEW",
     "WORKFLOW_STEP_CLOSEOUT",
     "WORKFLOW_STEP_DEVELOPER_BUILD",
     "WORKFLOW_STEP_DEVELOPER_REVISION",
+    "WORKFLOW_STEP_DESIGNER_ADVISORY",
     "WORKFLOW_STEP_PLANNER_ADVISORY",
     "WORKFLOW_STEP_PLANNER_DRAFT",
     "WORKFLOW_STEP_PLANNER_FINALIZE",
@@ -609,7 +645,6 @@ def planner_contract_reopen_result(
         "outcome": "reopen",
         "target_phase": "planning",
         "target_step": "planner_finalize",
-        "requested_role": "planner",
         "reopen_category": "scope",
         "reason": (
             "planner는 관련 spec/todo/current_sprint 문서를 실제로 갱신한 근거 없이 "
@@ -698,7 +733,6 @@ def qa_runtime_sync_result(result: dict[str, Any]) -> dict[str, Any]:
         "outcome": "complete",
         "target_phase": "",
         "target_step": "",
-        "requested_role": "",
         "reopen_category": "",
         "reason": sync_summary,
         "unresolved_items": [],
@@ -733,7 +767,6 @@ def qa_planner_reopen_result(
         "outcome": "reopen",
         "target_phase": "planning",
         "target_step": "planner_finalize",
-        "requested_role": "planner",
         "reopen_category": "scope",
         "reason": (
             str(transition.get("reason") or "").strip()
@@ -898,14 +931,14 @@ def workflow_route_decision(
     *,
     workflow_state: dict[str, Any],
     reason: str,
-    requested_role: str = "",
+    preferred_role: str = "",
     matched_signals: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "next_role": next_role,
         "workflow_state": workflow_state,
         "route_reason": str(reason or "").strip(),
-        "requested_role": str(requested_role or "").strip(),
+        "preferred_role": str(preferred_role or "").strip(),
         "matched_signals": [
             str(item).strip()
             for item in (matched_signals or [])
@@ -939,7 +972,7 @@ def workflow_route_to_research_initial_decision(
         "research",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="research",
+        preferred_role="research",
         matched_signals=["workflow:research_initial"],
     )
 
@@ -955,7 +988,7 @@ def workflow_route_to_planner_draft_decision(
         "planner",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="planner",
+        preferred_role="planner",
         matched_signals=["workflow:planner_draft"],
     )
 
@@ -971,7 +1004,7 @@ def workflow_route_to_planner_finalize_decision(
         "planner",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="planner",
+        preferred_role="planner",
         matched_signals=["workflow:planner_finalize"],
     )
 
@@ -999,7 +1032,7 @@ def workflow_route_to_planning_advisory_decision(
         role,
         workflow_state=updated_state,
         reason=reason,
-        requested_role=role,
+        preferred_role=role,
         matched_signals=[f"workflow:planning_advisory:{role}"],
     )
 
@@ -1015,7 +1048,7 @@ def workflow_route_to_architect_guidance_decision(
         "architect",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="architect",
+        preferred_role="architect",
         matched_signals=["workflow:architect_guidance"],
     )
 
@@ -1036,7 +1069,7 @@ def workflow_route_to_developer_build_decision(
         "developer",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="developer",
+        preferred_role="developer",
         matched_signals=[f"workflow:{step}"],
     )
 
@@ -1052,7 +1085,7 @@ def workflow_route_to_architect_review_decision(
         "architect",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="architect",
+        preferred_role="architect",
         matched_signals=["workflow:architect_review"],
     )
 
@@ -1067,7 +1100,7 @@ def workflow_route_to_qa_decision(
         "qa",
         workflow_state=updated_state,
         reason=reason,
-        requested_role="qa",
+        preferred_role="qa",
         matched_signals=["workflow:qa_validation"],
     )
 
@@ -1164,9 +1197,9 @@ def derive_workflow_routing_decision(
     should_close_in_planning: bool = False,
 ) -> dict[str, Any] | None:
     outcome = str(transition.get("outcome") or "").strip().lower()
-    requested_role = str(transition.get("requested_role") or "").strip().lower()
     reopen_category = str(transition.get("reopen_category") or "").strip().lower()
     step = str((workflow_state or {}).get("step") or "").strip().lower()
+    target_step = str(transition.get("target_step") or "").strip().lower()
 
     if outcome == "block":
         return workflow_terminal_block_decision(
@@ -1189,8 +1222,7 @@ def derive_workflow_routing_decision(
                 reason="planning owner인 planner가 최종 정리를 이어갑니다.",
             )
         if outcome == "reopen" and (
-            requested_role == "planner"
-            or str(transition.get("target_step") or "").strip().lower() == WORKFLOW_STEP_PLANNER_FINALIZE
+            target_step == WORKFLOW_STEP_PLANNER_FINALIZE
             or reopen_category == "scope"
         ):
             return workflow_route_to_planner_finalize_decision(
@@ -1198,7 +1230,8 @@ def derive_workflow_routing_decision(
                 reason=reason or "planner가 planning 문서/contract를 다시 정리합니다.",
                 category=reopen_category,
             )
-        if requested_role in PLANNING_ADVISORY_ROLES and outcome in {"continue", "reopen", ""}:
+        advisory_role = planning_advisory_role_for_step(target_step)
+        if advisory_role and outcome in {"advance", "continue", "reopen", ""}:
             if int((workflow_state or {}).get("planning_pass_count") or 0) >= int((workflow_state or {}).get("planning_pass_limit") or 0):
                 return workflow_terminal_block_decision(
                     workflow_state,
@@ -1207,7 +1240,7 @@ def derive_workflow_routing_decision(
                 )
             return workflow_route_to_planning_advisory_decision(
                 workflow_state,
-                role=requested_role,
+                role=advisory_role,
                 reason=reason,
                 category=reopen_category,
             )
@@ -1222,7 +1255,10 @@ def derive_workflow_routing_decision(
             category=reopen_category,
         )
 
-    if step == WORKFLOW_STEP_PLANNER_ADVISORY:
+    if step == WORKFLOW_STEP_PLANNER_ADVISORY or planning_advisory_role_for_step(
+        step,
+        phase_owner=str((workflow_state or {}).get("phase_owner") or ""),
+    ):
         return workflow_route_to_planner_finalize_decision(
             workflow_state,
             reason=reason or "specialist advisory를 planner가 반영합니다.",
@@ -1560,7 +1596,7 @@ def classify_request_state(
     *,
     policy: AgentUtilizationPolicy,
     current_role: str,
-    requested_role: str,
+    preferred_role: str,
     selection_source: str,
     text: str,
     is_internal_sprint_request: bool,
@@ -1569,7 +1605,7 @@ def classify_request_state(
     if selection_source == "planning_resume":
         return "blocked_resume"
     if current_role == "planner":
-        if requested_role in EXECUTION_AGENT_ROLES:
+        if preferred_role in EXECUTION_AGENT_ROLES:
             return "execution_opened"
         if request_indicates_execution(policy=policy, intent=intent, text=text):
             return "execution_opened"
@@ -1591,7 +1627,7 @@ def derive_routing_phase(
     *,
     policy: AgentUtilizationPolicy,
     current_role: str,
-    requested_role: str,
+    preferred_role: str,
     selection_source: str,
     request_state_class: str,
     intent: str,
@@ -1605,8 +1641,8 @@ def derive_routing_phase(
         return "resume"
     if request_state_class == "closeout_ready":
         return "closeout"
-    if requested_role in TEAM_ROLES:
-        return routing_phase_for_role(requested_role)
+    if preferred_role in TEAM_ROLES:
+        return routing_phase_for_role(preferred_role)
     if current_role == "research":
         return "planning"
     if current_role == "planner":
@@ -1682,20 +1718,20 @@ def build_governed_routing_selection(
     *,
     policy: AgentUtilizationPolicy,
     current_role: str,
-    requested_role: str,
+    preferred_role: str,
     selection_source: str,
     routing_text: str,
     is_internal_sprint_request: bool,
     planner_reentry_has_explicit_signal: bool,
 ) -> dict[str, Any]:
-    normalized_requested_role = str(requested_role or "").strip()
+    normalized_preferred_role = str(preferred_role or "").strip()
     intent = str(request_record.get("intent") or "").strip().lower()
     text = normalize_routing_reference_text(routing_text)
     request_state_class = classify_request_state(
         request_record,
         policy=policy,
         current_role=current_role,
-        requested_role=normalized_requested_role,
+        preferred_role=normalized_preferred_role,
         selection_source=selection_source,
         text=text,
         is_internal_sprint_request=is_internal_sprint_request,
@@ -1703,7 +1739,7 @@ def build_governed_routing_selection(
     routing_phase = derive_routing_phase(
         policy=policy,
         current_role=current_role,
-        requested_role=normalized_requested_role,
+        preferred_role=normalized_preferred_role,
         selection_source=selection_source,
         request_state_class=request_state_class,
         intent=intent,
@@ -1725,11 +1761,11 @@ def build_governed_routing_selection(
         selected_role = policy.user_intake_role
         return {
             "selected_role": selected_role,
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": ["policy:user_intake"],
             "override_reason": (
-                f"Requested {normalized_requested_role}, but user_intake policy selected {selected_role}."
-                if normalized_requested_role and normalized_requested_role != selected_role
+                f"Preferred {normalized_preferred_role}, but user_intake policy selected {selected_role}."
+                if normalized_preferred_role and normalized_preferred_role != selected_role
                 else ""
             ),
             **base_selection,
@@ -1742,28 +1778,28 @@ def build_governed_routing_selection(
         )
         return {
             "selected_role": selected_role,
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [f"policy:{selection_source}"],
             "override_reason": (
-                f"Requested {normalized_requested_role}, but {selection_source} policy selected {selected_role}."
-                if normalized_requested_role and normalized_requested_role != selected_role
+                f"Preferred {normalized_preferred_role}, but {selection_source} policy selected {selected_role}."
+                if normalized_preferred_role and normalized_preferred_role != selected_role
                 else ""
             ),
             **base_selection,
         }
     if selection_source == "sprint_initial":
         selected_role = (
-            normalized_requested_role
-            if normalized_requested_role in TEAM_ROLES and normalized_requested_role != "orchestrator"
+            normalized_preferred_role
+            if normalized_preferred_role in TEAM_ROLES and normalized_preferred_role != "orchestrator"
             else policy.sprint_initial_default_role
         )
         return {
             "selected_role": selected_role,
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": ["policy:sprint_initial_owner"],
             "override_reason": (
-                f"Requested {normalized_requested_role}, but sprint initial owner policy selected {selected_role}."
-                if normalized_requested_role and normalized_requested_role != selected_role
+                f"Preferred {normalized_preferred_role}, but sprint initial owner policy selected {selected_role}."
+                if normalized_preferred_role and normalized_preferred_role != selected_role
                 else ""
             ),
             **base_selection,
@@ -1772,10 +1808,10 @@ def build_governed_routing_selection(
     if current_role == "research":
         candidate_roles = ["planner"]
     elif current_role == "planner":
-        if not normalized_requested_role and request_state_class != "execution_opened":
+        if not normalized_preferred_role and request_state_class != "execution_opened":
             return {
                 "selected_role": "",
-                "requested_role": normalized_requested_role,
+                "preferred_role": normalized_preferred_role,
                 "matched_signals": [],
                 "override_reason": "",
                 **base_selection,
@@ -1791,7 +1827,7 @@ def build_governed_routing_selection(
         if not candidate_roles:
             return {
                 "selected_role": "",
-                "requested_role": normalized_requested_role,
+                "preferred_role": normalized_preferred_role,
                 "matched_signals": [],
                 "override_reason": "",
                 **base_selection,
@@ -1808,7 +1844,7 @@ def build_governed_routing_selection(
         ):
             return {
                 "selected_role": "",
-                "requested_role": normalized_requested_role,
+                "preferred_role": normalized_preferred_role,
                 "matched_signals": [],
                 "override_reason": "",
                 **base_selection,
@@ -1819,7 +1855,7 @@ def build_governed_routing_selection(
     if not candidate_roles:
         return {
             "selected_role": "",
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [],
             "override_reason": "",
             **base_selection,
@@ -1857,7 +1893,7 @@ def build_governed_routing_selection(
             (
                 int(score_details.get("score_total") or 0),
                 int(capability.routing_priority or 0),
-                1 if candidate_role == normalized_requested_role else 0,
+                1 if candidate_role == normalized_preferred_role else 0,
                 candidate_role,
                 score_details,
             )
@@ -1879,17 +1915,17 @@ def build_governed_routing_selection(
         return {
             **base_selection,
             "selected_role": "",
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [],
             "override_reason": "",
             "candidate_summary": candidate_summary,
         }
     _score, _priority, _requested_bonus, selected_role, selected_details = scored_candidates[0]
-    if current_role == "planner" and not normalized_requested_role and not int(selected_details.get("evidence_score") or 0):
+    if current_role == "planner" and not normalized_preferred_role and not int(selected_details.get("evidence_score") or 0):
         return {
             **base_selection,
             "selected_role": "",
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [],
             "override_reason": "",
             "candidate_summary": candidate_summary,
@@ -1902,7 +1938,7 @@ def build_governed_routing_selection(
         return {
             **base_selection,
             "selected_role": "",
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [],
             "override_reason": "",
             "candidate_summary": candidate_summary,
@@ -1911,13 +1947,13 @@ def build_governed_routing_selection(
         policy.planner_reentry_requires_explicit_signal
         and current_role in EXECUTION_AGENT_ROLES
         and selected_role == "planner"
-        and not normalized_requested_role
+        and not normalized_preferred_role
         and not planner_reentry_has_explicit_signal
     ):
         return {
             **base_selection,
             "selected_role": "",
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [],
             "override_reason": "",
             "candidate_summary": candidate_summary,
@@ -1926,17 +1962,17 @@ def build_governed_routing_selection(
         return {
             **base_selection,
             "selected_role": "",
-            "requested_role": normalized_requested_role,
+            "preferred_role": normalized_preferred_role,
             "matched_signals": [],
             "override_reason": "",
             "candidate_summary": candidate_summary,
         }
     matched_signals = [str(item).strip() for item in (selected_details.get("matched_signals") or []) if str(item).strip()]
-    if not matched_signals and selected_role == normalized_requested_role:
-        matched_signals = ["requested_role"]
+    if not matched_signals and selected_role == normalized_preferred_role:
+        matched_signals = ["preferred_role"]
     return {
         "selected_role": selected_role,
-        "requested_role": normalized_requested_role,
+        "preferred_role": normalized_preferred_role,
         "matched_signals": matched_signals,
         "matched_strongest_domains": [
             str(item).strip()
@@ -1975,6 +2011,8 @@ __all__ = [
     "execution_evidence_score",
     "match_reference_terms",
     "normalize_routing_reference_text",
+    "planning_advisory_role_for_step",
+    "planning_advisory_step_for_role",
     "preferred_skill_matches",
     "request_indicates_execution",
     "role_hint_score",

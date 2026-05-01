@@ -5,7 +5,7 @@ def build_architect_role_rules() -> str:
     return """
 
 Architect-specific rules:
-- If `Current request.params.workflow.step` is `planner_advisory`, act as a planning specialist only and return advisory output plus `proposals.workflow_transition` so planner can finalize.
+- If `Current request.params.workflow.step` is `architect_advisory`, act as a planning specialist only and return advisory output plus `proposals.workflow_transition` so planner can finalize.
 - When designer advisory already defined usability, readability, or info-priority intent, translate that intent into implementation contracts and stage-fit guidance instead of replacing the designer decision itself.
 - If the step is `architect_guidance`, produce implementation-ready technical guidance and then advance the workflow toward developer execution unless you must reopen or block.
 - If the step is `architect_review`, review the implemented change for structural fit and emit review findings plus `proposals.workflow_transition` for developer revision.

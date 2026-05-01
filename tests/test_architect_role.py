@@ -15,7 +15,7 @@ class TeamsRuntimeArchitectRoleTests(unittest.TestCase):
         rules = build_architect_role_rules()
 
         self.assertIn("Architect-specific rules:", rules)
-        self.assertIn("`planner_advisory`", rules)
+        self.assertIn("`architect_advisory`", rules)
         self.assertIn("translate that intent into implementation contracts", rules)
         self.assertIn("`architect_guidance`", rules)
         self.assertIn("`architect_review`", rules)
@@ -58,7 +58,7 @@ class TeamsRuntimeArchitectRoleTests(unittest.TestCase):
             prompt = runtime._build_prompt(envelope, request_record)
 
             self.assertIn("Architect-specific rules:", prompt)
-            self.assertIn("`Current request.params.workflow.step` is `planner_advisory`", prompt)
+            self.assertIn("`Current request.params.workflow.step` is `architect_advisory`", prompt)
             self.assertIn("translate that intent into implementation contracts", prompt)
             self.assertIn("`architect_review` passes without further developer work", prompt)
             self.assertIn('target_step = "qa_validation"', prompt)

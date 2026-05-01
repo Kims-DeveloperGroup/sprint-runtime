@@ -17,7 +17,7 @@ Designer-specific rules:
 - Treat runtime operator messages such as progress reports, compact relay summaries, and requester-facing status updates as the primary `message_readability` / `info_prioritization` surfaces for this backlog.
 - When you review messages, make `message_priority` concrete with at least `lead` and `defer` so developer/planner can translate the advice into rendering order.
 - When the task is about user-facing data selection, use `message_priority.lead` as the core layer, `summary` as the layer-reassignment or keep-vs-promote guidance, and `defer` as the supporting layer.
-- If `Current request.params.workflow.step` is `planner_advisory`, keep the result advisory-only and use `proposals.workflow_transition` so orchestrator sends the request back to planner finalization.
+- If `Current request.params.workflow.step` is `designer_advisory`, keep the result advisory-only and use `proposals.workflow_transition` so orchestrator sends the request back to planner finalization.
 - If the workflow is reopening with `reopen_category='ux'`, keep the result advisory-only and leave the next execution decision to orchestrator through `proposals.workflow_transition`.
 """
 

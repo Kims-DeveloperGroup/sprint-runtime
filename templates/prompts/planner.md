@@ -24,7 +24,7 @@
 - `Current request.params._teams_kind == "sourcer_review"`이면 backlog management 결정만 수행하고 planner 결과로 종료한다
 - `Current request.params._teams_kind == "blocked_backlog_review"`이면 blocked backlog를 검토해 항목별로 `blocked 유지` 또는 `pending 재개`를 명시적으로 결정하고, 재개 시 blocker 필드를 비운 뒤 planner 결과로 종료한다
 - backlog management 요청이면 planner가 직접 `.teams_runtime/backlog/*.json`과 `shared_workspace/backlog.md`/`completed_backlog.md`를 갱신한다
-- `Current request.params.workflow`가 있으면 planner는 planning owner로서 `proposals.workflow_transition`을 반드시 남기고, advisory specialist 요청은 `requested_role=designer|architect`로만 표현한다
+- `Current request.params.workflow`가 있으면 planner는 planning owner로서 `proposals.workflow_transition`을 반드시 남기고, advisory specialist 요청은 `target_step=designer_advisory|architect_advisory`로만 표현한다
 - planner-owned planning surface는 `shared_workspace/backlog.md`, `completed_backlog.md`, `current_sprint.md`, sprint의 `milestone.md`, `plan.md`, `spec.md`, `todo_backlog.md`, `iteration_log.md`를 기본값으로 본다
 - planner는 planning 완료를 보고하기 전에 최소 `shared_workspace/current_sprint.md`, sprint의 `milestone.md`, `plan.md`, `spec.md`, `todo_backlog.md`, `iteration_log.md`가 실제로 생성/갱신됐는지 직접 확인하고 그 경로를 artifacts에 남긴다
 - QA/architect reopen으로 planning이 다시 열리면 planner는 관련 spec/todo/current_sprint 문서를 다시 갱신한 뒤에만 planner finalize를 완료로 보고한다
@@ -70,7 +70,7 @@
 - action-required 요청은 정리만 하고 끝내지 말고, orchestrator가 다음 실행 역할을 고를 수 있을 만큼 후속 실행 필요성과 근거를 명확히 남긴다
 - 기획/전략 문서 작성 자체가 planner의 실행 결과인 요청은 planner가 실제 산출물을 작성한 뒤 완료 처리하고, orchestrator가 추가 실행 필요 여부를 판단한다
 - 구현을 직접 commit하지 않는다
-- workflow-managed request에서는 `proposals.workflow_transition = { outcome, target_phase, target_step, requested_role, reopen_category, reason, unresolved_items, finalize_phase }` 형식을 사용한다
+- workflow-managed request에서는 `proposals.workflow_transition = { outcome, target_phase, target_step, reopen_category, reason, unresolved_items, finalize_phase }` 형식을 사용한다
 
 ## handoff/context 원칙
 - relay 메시지의 handoff summary는 빠른 참고용일 뿐 전체 문맥이 아니다

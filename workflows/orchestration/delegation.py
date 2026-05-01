@@ -391,7 +391,6 @@ def proposal_semantic_details(
     transition: dict[str, Any],
 ) -> dict[str, list[str]]:
     skip_keys = {
-        "requested_role",
         "target_phase",
         "target_step",
         "finalize_phase",
@@ -1758,17 +1757,17 @@ def derive_routing_decision_after_report(
         }
     if current_role == "orchestrator" and not service._request_workflow_state(request_record):
         request_params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
-        requested_role = str(request_params.get("user_requested_role") or "").strip().lower()
+        user_requested_role = str(request_params.get("user_requested_role") or "").strip().lower()
         seeded_state = service._research_first_workflow_state()
         return service._workflow_route_to_research_initial(
             seeded_state,
             reason=(
                 "Selected research as the standard pre-planning step before planner."
-                if requested_role != "research"
+                if user_requested_role != "research"
                 else "Selected research because the user explicitly targeted the public research role."
             ),
         )
-    requested_next_role = ""
+    preferred_next_role = ""
     proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
 
     if service.agent_utilization_policy.verification_result_terminal and proposals.get("verification_result") is not None:
@@ -1797,7 +1796,7 @@ def derive_routing_decision_after_report(
         request_record,
         result,
         current_role=current_role,
-        requested_role=requested_next_role,
+        preferred_role=preferred_next_role,
         selection_source="role_report",
     )
     next_role = str(selection.get("selected_role") or "").strip()
@@ -1835,7 +1834,7 @@ def derive_routing_decision_after_report(
             "routing_context": service._build_routing_context(
                 next_role,
                 reason=reason,
-                requested_role=str(selection.get("requested_role") or ""),
+                preferred_role=str(selection.get("preferred_role") or ""),
                 selection_source="role_report",
                 matched_signals=matched_signals,
                 override_reason=override_reason,
@@ -1876,7 +1875,7 @@ def derive_routing_decision_after_report(
         "routing_context": service._build_routing_context(
             next_role,
             reason=reason,
-            requested_role=str(selection.get("requested_role") or ""),
+            preferred_role=str(selection.get("preferred_role") or ""),
             selection_source="role_report",
             matched_signals=matched_signals or (["policy:sprint_force_qa"] if next_role == "qa" else []),
             override_reason=override_reason,

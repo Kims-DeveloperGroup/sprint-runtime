@@ -314,8 +314,8 @@ sequenceDiagram
 
     U->>O: planning-needed request
     O->>P: planner_draft
-    P-->>O: requested_role=designer or architect
-    O->>S: planner_advisory
+    P-->>O: target_step=designer_advisory or architect_advisory
+    O->>S: role-specific planning advisory
     S-->>O: advisory workflow_transition
     O->>P: planner_finalize
     P-->>O: execution-ready planning result

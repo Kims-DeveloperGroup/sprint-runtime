@@ -4,6 +4,7 @@ import unittest
 
 from teams_runtime.workflows.orchestration.engine import (
     WORKFLOW_STEP_ARCHITECT_REVIEW,
+    WORKFLOW_STEP_DESIGNER_ADVISORY,
     WORKFLOW_STEP_PLANNER_DRAFT,
     WORKFLOW_STEP_QA_VALIDATION,
     WORKFLOW_STEP_RESEARCH_INITIAL,
@@ -37,7 +38,7 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
         self.assertEqual(decision["workflow_state"]["step"], WORKFLOW_STEP_PLANNER_DRAFT)
         self.assertEqual(decision["workflow_state"]["phase_owner"], "planner")
 
-    def test_planner_requested_designer_advisory_opens_planning_pass(self):
+    def test_planner_designer_advisory_step_opens_planning_pass(self):
         workflow_state = default_workflow_state()
         workflow_state["step"] = WORKFLOW_STEP_PLANNER_DRAFT
 
@@ -46,9 +47,8 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
                 "proposals": {
                     "workflow_transition": {
                         "outcome": "continue",
-                        "requested_role": "designer",
                         "target_phase": "planning",
-                        "target_step": "planner_advisory",
+                        "target_step": "designer_advisory",
                     }
                 }
             }
@@ -63,7 +63,7 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision["next_role"], "designer")
-        self.assertEqual(decision["workflow_state"]["step"], "planner_advisory")
+        self.assertEqual(decision["workflow_state"]["step"], WORKFLOW_STEP_DESIGNER_ADVISORY)
         self.assertEqual(decision["workflow_state"]["phase_owner"], "designer")
         self.assertEqual(decision["workflow_state"]["planning_pass_count"], 1)
 
@@ -258,7 +258,7 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
             },
             policy=policy,
             current_role="planner",
-            requested_role="",
+            preferred_role="",
             selection_source="role_report",
             routing_text=normalize_routing_reference_text(
                 "route teams_runtime module structure overview와 developer 구현용 technical specification 작성 "
@@ -278,7 +278,6 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
                 "proposals": {
                     "workflow_transition": {
                         "outcome": "continue",
-                        "requested_role": "developer",
                     }
                 }
             }
@@ -305,7 +304,6 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
                 "proposals": {
                     "workflow_transition": {
                         "outcome": "continue",
-                        "requested_role": "developer",
                     }
                 }
             }

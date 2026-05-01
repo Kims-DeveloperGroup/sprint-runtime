@@ -709,7 +709,7 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                         "workflow": {
                             "contract_version": 1,
                             "phase": "planning",
-                            "step": "planner_advisory",
+                            "step": "designer_advisory",
                             "phase_owner": "designer",
                             "phase_status": "active",
                             "planning_pass_count": 1,
@@ -751,7 +751,6 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                                 "outcome": "advance",
                                 "target_phase": "planning",
                                 "target_step": "planner_finalize",
-                                "requested_role": "",
                                 "reopen_category": "",
                                 "reason": "designer 판단을 planner finalization에 반영합니다.",
                                 "unresolved_items": [],
@@ -772,7 +771,7 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                 _channel_id, content = service.discord_client.sent_channels[0]
                 self.assertIn("handoff | designer -> planner | route", content)
                 self.assertIn("[전달 정보]", content)
-                self.assertIn("- 전달 경로: start -> planning/planner_advisory@planner", content)
+                self.assertIn("- 전달 경로: start -> planning/designer_advisory@planner", content)
                 self.assertIn("[참고 파일]", content)
                 self.assertNotIn("[이관 이유]", content)
                 self.assertNotIn("[지금 볼 것]", content)
@@ -857,8 +856,7 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                             "workflow_transition": {
                                 "outcome": "advance",
                                 "target_phase": "planning",
-                                "target_step": "advisory",
-                                "requested_role": "architect",
+                                "target_step": "architect_advisory",
                                 "reopen_category": "",
                                 "reason": "architect advisory로 support role 경계를 검증합니다.",
                                 "unresolved_items": [],

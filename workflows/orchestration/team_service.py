@@ -1357,13 +1357,13 @@ class TeamService:
         *,
         workflow_state: dict[str, Any],
         reason: str,
-        requested_role: str = "",
+        preferred_role: str = "",
         matched_signals: list[str] | None = None,
     ) -> dict[str, Any]:
         return self._build_routing_context(
             next_role,
             reason=reason,
-            requested_role=requested_role,
+            preferred_role=preferred_role,
             selection_source=WORKFLOW_SELECTION_SOURCE,
             matched_signals=matched_signals or [],
             policy_source=WORKFLOW_POLICY_SOURCE,
@@ -1377,7 +1377,7 @@ class TeamService:
         *,
         workflow_state: dict[str, Any],
         reason: str,
-        requested_role: str = "",
+        preferred_role: str = "",
         matched_signals: list[str] | None = None,
     ) -> dict[str, Any]:
         return {
@@ -1386,7 +1386,7 @@ class TeamService:
                 next_role,
                 workflow_state=workflow_state,
                 reason=reason,
-                requested_role=requested_role,
+                preferred_role=preferred_role,
                 matched_signals=matched_signals,
             ),
             "workflow_state": workflow_state,
@@ -1402,7 +1402,7 @@ class TeamService:
                 next_role,
                 workflow_state=dict(materialized.get("workflow_state") or {}),
                 reason=str(materialized.pop("route_reason", "")).strip(),
-                requested_role=str(materialized.pop("requested_role", "")).strip(),
+                preferred_role=str(materialized.pop("preferred_role", "")).strip(),
                 matched_signals=[
                     str(item).strip()
                     for item in (materialized.pop("matched_signals", []) or [])
@@ -1412,7 +1412,7 @@ class TeamService:
         else:
             materialized["routing_context"] = {}
             materialized.pop("route_reason", None)
-            materialized.pop("requested_role", None)
+            materialized.pop("preferred_role", None)
             materialized.pop("matched_signals", None)
         return materialized
 
@@ -1933,7 +1933,7 @@ class TeamService:
         result: dict[str, Any],
         *,
         current_role: str,
-        requested_role: str,
+        preferred_role: str,
         selection_source: str,
         text: str,
     ) -> str:
@@ -1942,7 +1942,7 @@ class TeamService:
             request_record,
             policy=self.agent_utilization_policy,
             current_role=current_role,
-            requested_role=requested_role,
+            preferred_role=preferred_role,
             selection_source=selection_source,
             text=text,
             is_internal_sprint_request=self._is_internal_sprint_request(request_record),
@@ -1952,7 +1952,7 @@ class TeamService:
         self,
         *,
         current_role: str,
-        requested_role: str,
+        preferred_role: str,
         selection_source: str,
         request_state_class: str,
         intent: str,
@@ -1961,7 +1961,7 @@ class TeamService:
         return derive_routing_phase_helper(
             policy=self.agent_utilization_policy,
             current_role=current_role,
-            requested_role=requested_role,
+            preferred_role=preferred_role,
             selection_source=selection_source,
             request_state_class=request_state_class,
             intent=intent,
@@ -1992,14 +1992,14 @@ class TeamService:
         result: dict[str, Any],
         *,
         current_role: str,
-        requested_role: str,
+        preferred_role: str,
         selection_source: str,
     ) -> dict[str, Any]:
         return build_governed_routing_selection_helper(
             request_record,
             policy=self.agent_utilization_policy,
             current_role=current_role,
-            requested_role=requested_role,
+            preferred_role=preferred_role,
             selection_source=selection_source,
             routing_text=self._request_routing_text(request_record, result),
             is_internal_sprint_request=self._is_internal_sprint_request(request_record),
@@ -2011,7 +2011,7 @@ class TeamService:
         role: str,
         *,
         reason: str,
-        requested_role: str = "",
+        preferred_role: str = "",
         selection_source: str = "",
         matched_signals: list[str] | None = None,
         override_reason: str = "",
@@ -2028,7 +2028,7 @@ class TeamService:
         capability = self._agent_capability(role)
         return {
             "selected_role": role,
-            "requested_role": str(requested_role or "").strip(),
+            "preferred_role": str(preferred_role or "").strip(),
             "selection_source": str(selection_source or "").strip(),
             "policy_source": str(policy_source or self.agent_utilization_policy.policy_source).strip(),
             "routing_phase": str(routing_phase or "").strip(),
@@ -2167,7 +2167,7 @@ class TeamService:
             request_record,
             {},
             current_role=str(request_record.get("current_role") or "planner"),
-            requested_role=str(next_role or "").strip(),
+            preferred_role=str(next_role or "").strip(),
             selection_source="planning_resume",
         )
         normalized_next_role = str(selection.get("selected_role") or "").strip() or "planner"
@@ -2275,7 +2275,7 @@ class TeamService:
                 routing_context=self._build_routing_context(
                     "orchestrator",
                     reason="Retrying the existing blocked orchestrator-owned request from a repeated user request.",
-                    requested_role="orchestrator",
+                    preferred_role="orchestrator",
                     selection_source="blocked_retry",
                 ),
             )
@@ -3884,13 +3884,13 @@ class TeamService:
             request_record,
             {},
             current_role="orchestrator",
-            requested_role="planner",
+            preferred_role="planner",
             selection_source="sourcer_review",
         )
         request_record["routing_context"] = self._build_routing_context(
             "planner",
             reason="Selected planner because sourcer candidates require planner-owned backlog review and persistence.",
-            requested_role=str(selection.get("requested_role") or ""),
+            preferred_role=str(selection.get("preferred_role") or ""),
             selection_source="sourcer_review",
             matched_signals=[
                 str(item).strip()
@@ -3970,7 +3970,7 @@ class TeamService:
             request_record,
             {},
             current_role="orchestrator",
-            requested_role="planner",
+            preferred_role="planner",
             selection_source="blocked_backlog_review",
         )
         request_record["routing_context"] = self._build_routing_context(
@@ -3979,7 +3979,7 @@ class TeamService:
                 "Selected planner because blocked backlog must be explicitly reopened or kept blocked "
                 "before future sprint selection."
             ),
-            requested_role=str(selection.get("requested_role") or ""),
+            preferred_role=str(selection.get("preferred_role") or ""),
             selection_source="blocked_backlog_review",
             matched_signals=[
                 str(item).strip()

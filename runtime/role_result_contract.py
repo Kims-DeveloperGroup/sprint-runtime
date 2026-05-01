@@ -12,7 +12,6 @@ WORKFLOW_TRANSITION_REQUIRED_KEYS = (
     "outcome",
     "target_phase",
     "target_step",
-    "requested_role",
     "reopen_category",
     "reason",
     "unresolved_items",

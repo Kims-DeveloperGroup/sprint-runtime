@@ -77,7 +77,6 @@ class TeamsRuntimeWorkflowStateTests(unittest.TestCase):
                         "outcome": "advance",
                         "target_phase": "planning",
                         "target_step": "research_initial",
-                        "requested_role": "research",
                         "reopen_category": "",
                         "reason": "research prepass first",
                         "unresolved_items": ["external grounding"],
@@ -88,7 +87,6 @@ class TeamsRuntimeWorkflowStateTests(unittest.TestCase):
 
         self.assertEqual(transition["outcome"], "advance")
         self.assertEqual(transition["target_step"], WORKFLOW_STEP_RESEARCH_INITIAL)
-        self.assertEqual(transition["requested_role"], "research")
         self.assertEqual(transition["unresolved_items"], ["external grounding"])
 
     def test_workflow_complete_state_enters_closeout(self):
