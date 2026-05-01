@@ -36,6 +36,8 @@
 - relay는 즉시 상태/경고/행동 요청 우선순위가 바뀌는지, handoff는 다음 역할의 첫 이해 맥락이 바뀌는지, summary는 장기 기록에서 무엇을 남기고 생략할지 기준이 바뀌는지로 layer trigger를 구분한다
 - rendering repair와 user-facing judgment가 함께 있으면 하나의 execution slice로 묶지 말고 `technical slice`와 `designer advisory slice`로 분리하고, planner가 `technical slice 선행` 또는 `designer advisory 선행`을 명시한다
 - mixed-case 분기에는 최소한 `변경 전/후 메시지 예시 또는 의도된 출력 계층`과 `문제가 표시 오류인지 사용자 판단 혼선인지` 한 줄 설명을 남긴다
+- `Current request.designer_context` 또는 request snapshot의 `Designer Contract`가 있으면 planning/spec/todo acceptance criteria에 흡수하고, designer의 `lead / summary / defer` 우선순위를 일반 readability 문구로 납작하게 만들지 않는다
+- Discord Markdown, embed, attachment, poll, Components V2, timestamp, masked link, spoiler, mention/allowed-mentions 등 designer가 지정한 message surface는 downstream constraint로 보존한다
 - `Current request.params._teams_kind == "sprint_closeout_report"`이면 persisted sprint evidence만 읽어 canonical final report 초안을 `proposals.sprint_report`에 구조화하고, backlog/sprint state는 수정하지 않는다
 
 ## 출력 원칙

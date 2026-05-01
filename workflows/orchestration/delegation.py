@@ -909,6 +909,78 @@ def synthesize_latest_role_context(service: Any, result: dict[str, Any]) -> dict
     }
 
 
+def _designer_proposals_without_routing(proposals: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(proposals, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in proposals.items()
+        if str(key).strip() and str(key).strip() != "workflow_transition"
+    }
+
+
+def _designer_context_from_result(result: dict[str, Any], *, source: str) -> dict[str, Any]:
+    if not isinstance(result, dict) or str(result.get("role") or "").strip() != "designer":
+        return {}
+    proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+    design_feedback = proposals.get("design_feedback") if isinstance(proposals.get("design_feedback"), dict) else {}
+    designer_proposals = _designer_proposals_without_routing(proposals)
+    transition = workflow_transition(result)
+    if not any(
+        [
+            _collapse_whitespace(transition.get("outcome") or ""),
+            _collapse_whitespace(transition.get("target_phase") or ""),
+            _collapse_whitespace(transition.get("target_step") or ""),
+            _collapse_whitespace(transition.get("reopen_category") or ""),
+            _collapse_whitespace(transition.get("reason") or ""),
+            _normalize_string_list(transition.get("unresolved_items")),
+            bool(transition.get("finalize_phase")),
+        ]
+    ):
+        transition = {}
+    context = {
+        "source": source,
+        "summary": _collapse_whitespace(result.get("summary") or ""),
+        "insights": _normalize_string_list(result.get("insights")),
+        "artifacts": _normalize_string_list(result.get("artifacts")),
+        "design_feedback": design_feedback,
+        "designer_proposals": designer_proposals,
+        "source_workflow_transition": transition,
+    }
+    if not any(
+        [
+            context["summary"],
+            context["insights"],
+            context["artifacts"],
+            context["design_feedback"],
+            context["designer_proposals"],
+            context["source_workflow_transition"],
+        ]
+    ):
+        return {}
+    return context
+
+
+def extract_designer_context(request_record: dict[str, Any]) -> dict[str, Any]:
+    current_result = request_record.get("result") if isinstance(request_record.get("result"), dict) else {}
+    context = _designer_context_from_result(current_result, source="current_result")
+    if context:
+        return context
+    events = request_record.get("events") if isinstance(request_record.get("events"), list) else []
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or event.get("event_type") or "").strip() != "role_report":
+            continue
+        if str(event.get("actor") or "").strip() not in {"", "designer"}:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        context = _designer_context_from_result(payload, source="event_history")
+        if context:
+            return context
+    return {}
+
+
 def summarize_relay_body(service: Any, envelope: MessageEnvelope) -> list[str]:
     kind = str(envelope.params.get("_teams_kind") or "").strip()
     payload: Any = {}
@@ -1281,6 +1353,11 @@ def build_delegation_context(service: Any, request_record: dict[str, Any], next_
     workflow_step = _collapse_whitespace(str(workflow_state.get("step") or "").strip())
     workflow_stage = f"{workflow_phase} / {workflow_step}" if workflow_phase and workflow_step else workflow_phase
     has_workflow_stage = bool(workflow_stage)
+    designer_context = (
+        extract_designer_context(request_record)
+        if str(next_role or "").strip() in {"planner", "architect", "developer"}
+        else {}
+    )
     reference_artifacts = _compact_reference_items(
         [
             item
@@ -1473,6 +1550,7 @@ def build_delegation_context(service: Any, request_record: dict[str, Any], next_
         "canonical_request": canonical_request,
         "snapshot_path": "",
         "why_this_role": routing_reason,
+        "designer_context": designer_context,
     }
 
 
@@ -1595,6 +1673,63 @@ def build_delegate_body(service: Any, request_record: dict[str, Any], delegation
     return render_report_sections_message(header, sections)
 
 
+def _format_designer_contract_snapshot_lines(designer_context: dict[str, Any]) -> list[str]:
+    if not isinstance(designer_context, dict) or not designer_context:
+        return []
+    design_feedback = (
+        designer_context.get("design_feedback")
+        if isinstance(designer_context.get("design_feedback"), dict)
+        else {}
+    )
+    message_priority = (
+        design_feedback.get("message_priority")
+        if isinstance(design_feedback.get("message_priority"), dict)
+        else {}
+    )
+    raw_proposals = (
+        designer_context.get("designer_proposals")
+        if isinstance(designer_context.get("designer_proposals"), dict)
+        else {}
+    )
+    lines = ["## Designer Contract", ""]
+    entry_point = _designer_entry_point_label(design_feedback.get("entry_point"))
+    if entry_point:
+        lines.append(f"- entry point: {entry_point}")
+    judgments = _normalize_string_list(design_feedback.get("user_judgment"))
+    if judgments:
+        lines.append(f"- user judgment: {' | '.join(judgments[:3])}")
+    priority_parts: list[str] = []
+    if message_priority:
+        for key in ("lead", "summary", "defer"):
+            value = _collapse_whitespace(message_priority.get(key) or "")
+            if value:
+                priority_parts.append(f"{key}: {value}")
+    else:
+        priority_parts = _design_feedback_priority_lines(design_feedback.get("message_priority"))
+    if priority_parts:
+        lines.append(f"- message priority: {' | '.join(priority_parts[:3])}")
+    required_inputs = _normalize_string_list(design_feedback.get("required_inputs"))
+    if required_inputs:
+        lines.append(f"- required inputs: {' | '.join(required_inputs[:3])}")
+    acceptance_criteria = _normalize_string_list(design_feedback.get("acceptance_criteria"))
+    if acceptance_criteria:
+        lines.append(f"- acceptance criteria: {' | '.join(acceptance_criteria[:3])}")
+    surface_contract = design_feedback.get("surface_contract")
+    surface_lines = extract_semantic_leaf_lines(surface_contract, prefix="", skip_keys=set())
+    if surface_lines:
+        lines.append(f"- surface contract: {' | '.join(surface_lines[:3])}")
+    if raw_proposals:
+        lines.append(
+            "- raw non-routing designer proposals: "
+            + json.dumps(raw_proposals, ensure_ascii=False, sort_keys=True)
+        )
+    transition = designer_context.get("source_workflow_transition")
+    if isinstance(transition, dict) and _collapse_whitespace(transition.get("reason") or ""):
+        lines.append(f"- source workflow-transition reason: {_collapse_whitespace(transition.get('reason') or '')}")
+    lines.append("")
+    return lines
+
+
 def format_role_request_snapshot_markdown(
     service: Any,
     *,
@@ -1657,6 +1792,7 @@ def format_role_request_snapshot_markdown(
         f"- Always trust `{canonical_request}` over relay text or this snapshot if they differ.",
         "",
     ]
+    lines.extend(_format_designer_contract_snapshot_lines(dict(delegation_context.get("designer_context") or {})))
     return "\n".join(lines)
 
 
@@ -2305,6 +2441,10 @@ async def delegate_request(service: Any, request_record: dict[str, Any], next_ro
     if snapshot_path:
         delegation_context["snapshot_path"] = snapshot_path
     request_record["delegation_context"] = dict(delegation_context)
+    if delegation_context.get("designer_context"):
+        request_record["designer_context"] = dict(delegation_context.get("designer_context") or {})
+    else:
+        request_record.pop("designer_context", None)
     service._save_request(request_record)
     envelope = build_delegate_envelope(
         service,

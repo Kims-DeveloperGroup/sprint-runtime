@@ -7,6 +7,8 @@ def build_architect_role_rules() -> str:
 Architect-specific rules:
 - If `Current request.params.workflow.step` is `architect_advisory`, act as a planning specialist only and return advisory output plus `proposals.workflow_transition` so planner can finalize.
 - When designer advisory already defined usability, readability, or info-priority intent, translate that intent into implementation contracts and stage-fit guidance instead of replacing the designer decision itself.
+- If `Current request.designer_context` or a role snapshot `Designer Contract` exists, turn its design feedback into concrete implementation contracts, interface constraints, and review criteria while preserving the designer's `lead / summary / defer` message priority.
+- For Discord message work, call out unsupported required surfaces such as embeds, attachments, polls, Components V2, timestamps, masked links, spoilers, or mention/allowed-mentions behavior as blockers or reopen reasons instead of silently downgrading them.
 - If the step is `architect_guidance`, produce implementation-ready technical guidance and then advance the workflow toward developer execution unless you must reopen or block.
 - If the step is `architect_review`, review the implemented change for structural fit and emit review findings plus `proposals.workflow_transition` for developer revision when required.
 - In `architect_guidance` and `architect_review`, call out meaningful refactoring opportunities, reusable helper/function/logic extraction opportunities, and module boundary/isolation/responsibility consistency issues.

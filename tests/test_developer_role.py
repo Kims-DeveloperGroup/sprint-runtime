@@ -22,6 +22,9 @@ class TeamsRuntimeDeveloperRoleTests(unittest.TestCase):
         self.assertIn("planner-owned docs", rules)
         self.assertIn("`same meaning / same priority / same CTA` preservation work", rules)
         self.assertIn("do not silently make the UX decision in code", rules)
+        self.assertIn("Current request.designer_context", rules)
+        self.assertIn("preserving `lead / summary / defer`", rules)
+        self.assertIn("unsupported by the current renderer or send API", rules)
 
     def test_role_runtime_prompt_uses_developer_role_rules(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -63,6 +66,7 @@ class TeamsRuntimeDeveloperRoleTests(unittest.TestCase):
             self.assertIn("always return `proposals.workflow_transition`", prompt)
             self.assertIn("planner-owned docs", prompt)
             self.assertIn("`same meaning / same priority / same CTA` preservation work", prompt)
+            self.assertIn("Current request.designer_context", prompt)
 
 
 if __name__ == "__main__":

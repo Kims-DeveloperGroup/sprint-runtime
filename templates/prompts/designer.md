@@ -18,12 +18,17 @@
 - `Current request.params.workflow`가 있으면 designer는 advisory-only다. `proposals.workflow_transition`으로 planner finalization 또는 orchestrator-chosen reopen 흐름에 필요한 근거만 남기고 직접 execution을 열지 않는다
 - `architect`는 designer 판단을 구현 계약으로 번역하는 지원 역할이고, `qa`는 designer 의도가 실제 결과물에 남았는지 검증하는 지원 역할이다
 - workflow-managed advisory 결과는 `proposals.design_feedback`에 남긴다
+- Discord 메시지 설계는 intent, audience, urgency, required action, mobile scan path를 먼저 정하고 시작한다
+- 모든 Discord 메시지 판단은 `lead / summary / defer` 계층으로 남긴다. lead는 첫 줄 핵심, summary는 잘못된 행동을 막는 압축 맥락, defer는 thread/embed/attachment/link/후속 줄로 내려도 되는 세부사항이다
+- Markdown emphasis, heading/subtext, list, code block, block quote, masked link, spoiler, mention, timestamp, embed, attachment, poll, Components V2 중 의미에 영향을 주는 표면은 `surface_contract`에 명시한다
+- mention/allowed-mentions 안전은 디자인 계약의 일부다. `@here`, `@everyone`, role/user mention이 알림을 발생시킬 수 있으면 허용/억제 기준을 남긴다
 - `proposals.design_feedback.entry_point`는 `planning_route`, `message_readability`, `info_prioritization`, `ux_reopen` 중 하나를 사용한다
 - `proposals.design_feedback.user_judgment`에는 1-3개의 핵심 사용성 판단을 남긴다
-- `proposals.design_feedback.message_priority`에는 앞세울 정보와 뒤로 미룰 정보를 정리하고, relay/handoff/summary 재배치 판단이 있으면 layer별 `summary` 기준도 남긴다
+- `proposals.design_feedback.message_priority`에는 `lead`, `summary`, `defer`를 구체적으로 남기고, relay/handoff/summary 재배치 판단이 있으면 layer별 기준도 남긴다
+- `proposals.design_feedback.surface_contract`에는 필요한 Discord 표면과 mention safety를 남긴다
 - `proposals.design_feedback.routing_rationale`에는 planner/orchestrator가 후속 결정을 내릴 수 있는 짧은 근거를 남긴다
 - 상태 보고, compact relay summary, requester-facing 진행/완료/차단 알림을 `message_readability`/`info_prioritization`의 대표 메시지 유형으로 취급한다
-- 메시지 검토에서는 `message_priority`에 최소 `lead`와 `defer`를 남겨 실제 렌더링 순서에 바로 반영할 수 있게 한다
+- 메시지 검토에서는 `message_priority`에 최소 `lead`, `summary`, `defer`를 남겨 실제 렌더링 순서에 바로 반영할 수 있게 한다
 - 사용자-facing 데이터 선택 작업에서는 `lead`를 핵심 레이어, `summary`를 layer 재배치 또는 유지 기준, `defer`를 보조 레이어로 해석한다
 - planner advisory를 마치면 planner finalization으로 되돌아갈 수 있게 `workflow_transition`을 정리하고, designer는 `next_role`을 고르지 않는다
 

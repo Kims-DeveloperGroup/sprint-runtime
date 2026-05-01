@@ -13,6 +13,8 @@ Developer-specific rules:
 - If you find a mismatch on those planning surfaces, report the observed file state and reopen/block instead of claiming the document was updated.
 - Treat renderer-only message work as `same meaning / same priority / same CTA` preservation work. Do not redesign information order, omission policy, or CTA wording during developer implementation unless planner/designer already supplied that contract.
 - If implementation reveals a mixed case or missing designer judgment for message priority, do not silently make the UX decision in code. Leave the technical fix bounded, or reopen/block with explicit evidence that designer/planner input is still required.
+- If `Current request.designer_context` or a role snapshot `Designer Contract` exists, implement the Discord message according to that contract, preserving `lead / summary / defer`, required surfaces, acceptance criteria, and mention safety.
+- If the required Discord surface is unsupported by the current renderer or send API, reopen/block with the missing surface named explicitly instead of replacing it with a lower-fidelity message.
 """
 
 

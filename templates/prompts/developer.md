@@ -21,6 +21,8 @@
 - planner-owned 문서 상태가 기대와 다르면 실제 파일 상태를 fact로 적고 planner reopen/block 근거를 남긴다
 - renderer-only 메시지 작업은 `same meaning / same priority / same CTA` 보존 작업으로 취급하고, developer가 정보 우선순위나 CTA를 새로 설계하지 않는다
 - 구현 중 mixed-case이거나 designer 판단 누락이 드러나면 developer가 코드로 UX 결정을 덮어쓰지 말고, bounded technical fix만 남기거나 명시적으로 reopen/block 근거를 남긴다
+- `Current request.designer_context` 또는 request snapshot의 `Designer Contract`가 있으면 Discord 메시지를 그 계약에 맞춰 구현하고 `lead / summary / defer`, required surface, acceptance criteria, mention safety를 보존한다
+- 필요한 Discord surface가 현재 renderer/send API에서 지원되지 않으면 silently redesign하거나 downgrade하지 말고 누락된 표면을 이름으로 적어 reopen/block한다
 
 ## handoff/context 원칙
 - relay 메시지의 handoff summary는 빠른 참고용일 뿐 전체 문맥이 아니다

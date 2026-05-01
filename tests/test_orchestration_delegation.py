@@ -783,6 +783,136 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                 snapshot_text = snapshot_file.read_text(encoding="utf-8")
                 self.assertIn("what_summary: info prioritization 관점 UX 판단 2건을 정리했습니다.", snapshot_text)
                 self.assertIn("how_summary: 핵심 레이어: 현재 상태, 다음 액션", snapshot_text)
+                self.assertIn("## Designer Contract", snapshot_text)
+                self.assertIn("- entry point: info prioritization", snapshot_text)
+                self.assertIn("- user judgment: 현재 상태와 다음 액션을 첫 줄에 고정해야 합니다.", snapshot_text)
+                self.assertIn("- message priority: lead: 현재 상태, 다음 액션", snapshot_text)
+                self.assertIn("raw non-routing designer proposals", snapshot_text)
+                self.assertNotIn('"workflow_transition"', snapshot_text)
+
+    def test_designer_context_survives_after_later_result_via_event_history(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                designer_result = {
+                    "request_id": "20260410-designer-history-1",
+                    "role": "designer",
+                    "status": "completed",
+                    "summary": "Discord status message hierarchy를 정했습니다.",
+                    "insights": ["멘션은 실제 차단 상황에서만 허용합니다."],
+                    "proposals": {
+                        "design_feedback": {
+                            "entry_point": "message_readability",
+                            "user_judgment": ["모바일 첫 화면에는 상태와 담당자만 보여야 합니다."],
+                            "message_priority": {
+                                "lead": "상태와 담당자",
+                                "summary": "다음 액션과 마감",
+                                "defer": "로그와 배경",
+                            },
+                            "required_inputs": ["현재 renderer 지원 표면"],
+                            "acceptance_criteria": ["lead/summary/defer 순서가 스냅샷에 남는다."],
+                            "surface_contract": {"mentions": "allowed_mentions로 role ping 억제"},
+                        },
+                        "workflow_transition": {
+                            "outcome": "advance",
+                            "target_step": "planner_finalize",
+                            "reason": "designer contract를 planner가 흡수해야 합니다.",
+                        },
+                    },
+                    "artifacts": ["shared_workspace/sprints/spec.md"],
+                }
+                request_record = {
+                    "request_id": "20260410-designer-history-1",
+                    "status": "delegated",
+                    "intent": "route",
+                    "urgency": "normal",
+                    "scope": "designer history handoff",
+                    "body": "designer history handoff",
+                    "artifacts": [],
+                    "params": {"workflow": {"phase": "implementation", "step": "architect_guidance"}},
+                    "current_role": "architect",
+                    "next_role": "architect",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-04-10T00:00:00+09:00",
+                    "updated_at": "2026-04-10T00:00:00+09:00",
+                    "fingerprint": "designer-history",
+                    "reply_route": {},
+                    "events": [
+                        {
+                            "type": "role_report",
+                            "actor": "designer",
+                            "summary": "designer done",
+                            "payload": designer_result,
+                        }
+                    ],
+                    "result": {
+                        "request_id": "20260410-designer-history-1",
+                        "role": "planner",
+                        "status": "completed",
+                        "summary": "planner finalized after designer.",
+                        "proposals": {"workflow_transition": {"reason": "architect guidance next"}},
+                        "artifacts": [],
+                    },
+                }
+
+                asyncio.run(service._delegate_request(request_record, "architect"))
+
+                updated = service._load_request("20260410-designer-history-1")
+                self.assertEqual(updated["designer_context"]["source"], "event_history")
+                self.assertEqual(updated["designer_context"]["summary"], "Discord status message hierarchy를 정했습니다.")
+                self.assertIn("design_feedback", updated["designer_context"])
+                snapshot_file = service.paths.role_request_snapshot_file("architect", "20260410-designer-history-1")
+                snapshot_text = snapshot_file.read_text(encoding="utf-8")
+                self.assertIn("## Designer Contract", snapshot_text)
+                self.assertIn("lead: 상태와 담당자", snapshot_text)
+                self.assertIn("summary: 다음 액션과 마감", snapshot_text)
+                self.assertIn("defer: 로그와 배경", snapshot_text)
+                self.assertIn("surface contract: mentions: allowed_mentions로 role ping 억제", snapshot_text)
+
+    def test_designer_context_target_filtering(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                base_record = {
+                    "request_id": "20260410-designer-filter-1",
+                    "status": "delegated",
+                    "intent": "route",
+                    "urgency": "normal",
+                    "scope": "designer target filtering",
+                    "body": "designer target filtering",
+                    "artifacts": [],
+                    "params": {},
+                    "current_role": "designer",
+                    "next_role": "designer",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-04-10T00:00:00+09:00",
+                    "updated_at": "2026-04-10T00:00:00+09:00",
+                    "fingerprint": "designer-filter",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {
+                        "request_id": "20260410-designer-filter-1",
+                        "role": "designer",
+                        "status": "completed",
+                        "summary": "designer context",
+                        "proposals": {
+                            "design_feedback": {
+                                "entry_point": "info_prioritization",
+                                "message_priority": {"lead": "상태"},
+                            }
+                        },
+                    },
+                }
+
+                for target in ("planner", "architect", "developer"):
+                    context = service._build_delegation_context(dict(base_record), target)
+                    self.assertIn("designer_context", context)
+                    self.assertEqual(context["designer_context"]["source"], "current_result")
+
+                qa_context = service._build_delegation_context(dict(base_record), "qa")
+                self.assertEqual(qa_context.get("designer_context"), {})
 
     def test_delegate_request_surfaces_planner_support_roles_in_handoff(self):
         with tempfile.TemporaryDirectory() as tmpdir:

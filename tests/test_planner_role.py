@@ -103,6 +103,8 @@ class TeamsRuntimePlannerRoleTests(unittest.TestCase):
         self.assertIn("proposals.workflow_transition", rules)
         self.assertIn("sprint_closeout_report", rules)
         self.assertIn("./shared_workspace", rules)
+        self.assertIn("Current request.designer_context", rules)
+        self.assertIn("Preserve the designer's `lead / summary / defer` priority", rules)
 
 
 if __name__ == "__main__":
