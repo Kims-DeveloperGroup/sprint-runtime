@@ -129,26 +129,56 @@ def preview_sprint_artifact_path(
     workspace_root: Path,
     full_detail: bool = False,
 ) -> str:
+    return display_sprint_report_path(
+        sprint_state,
+        value,
+        workspace_root=workspace_root,
+        full_detail=full_detail,
+    )
+
+
+def display_sprint_report_path(
+    sprint_state: dict[str, Any],
+    value: str | Path,
+    *,
+    workspace_root: Path,
+    full_detail: bool = False,
+) -> str:
     normalized = str(value or "").strip().replace("\\", "/")
     if not normalized:
         return ""
     if normalized.startswith("./"):
         normalized = normalized[2:]
     sprint_folder_name = str(sprint_state.get("sprint_folder_name") or "").strip()
+    sprint_folder_path = str(sprint_state.get("sprint_folder") or "").strip().replace("\\", "/")
+    if sprint_folder_path:
+        try:
+            folder = Path(sprint_folder_path).expanduser().resolve()
+            candidate = Path(normalized).expanduser().resolve() if Path(normalized).is_absolute() else None
+            if candidate is not None:
+                normalized = candidate.relative_to(folder).as_posix()
+        except Exception:
+            pass
     if sprint_folder_name:
         sprint_prefix = f"shared_workspace/sprints/{sprint_folder_name}/"
         if sprint_prefix in normalized:
             normalized = normalized.split(sprint_prefix, 1)[1].lstrip("/")
+    normalized_workspace_root = str(workspace_root.expanduser().resolve()).replace("\\", "/")
+    if Path(normalized).is_absolute():
+        try:
+            normalized = Path(normalized).expanduser().resolve().relative_to(workspace_root).as_posix()
+        except Exception:
+            parts = [part for part in Path(normalized).parts if part not in {"/", ""}]
+            return "/".join(parts[-2:]) if len(parts) >= 2 else (Path(normalized).name or normalized)
     if normalized.startswith("workspace/teams_generated/"):
         normalized = normalized.removeprefix("workspace/teams_generated/").lstrip("/")
     elif normalized.startswith("workspace/"):
         normalized = normalized.removeprefix("workspace/").lstrip("/")
-    normalized_workspace_root = str(workspace_root).replace("\\", "/")
     if normalized.startswith(normalized_workspace_root):
         try:
             normalized = Path(normalized).resolve().relative_to(workspace_root).as_posix()
         except Exception:
-            normalized = normalized if full_detail else (Path(normalized).name or normalized)
+            normalized = Path(normalized).name or normalized
     if full_detail:
         return normalized
     if len(normalized) <= 72:
@@ -1745,6 +1775,12 @@ def build_sprint_report_snapshot(
         ),
         "commit_count": int(closeout_result.get("commit_count") or sprint_state.get("commit_count") or 0),
         "commit_sha": str(closeout_result.get("representative_commit_sha") or sprint_state.get("commit_sha") or "").strip(),
+        "commits": [
+            dict(item)
+            for item in (closeout_result.get("commits") or sprint_state.get("commits") or [])
+            if isinstance(item, dict)
+        ],
+        "sprint_tagged_commit_count": int(closeout_result.get("sprint_tagged_commit_count") or 0),
         "closeout_status": str(closeout_result.get("status") or sprint_state.get("closeout_status") or "").strip(),
         "closeout_message": str(closeout_result.get("message") or "").strip(),
         "uncommitted_paths": [
@@ -1857,7 +1893,7 @@ def build_planner_closeout_envelope_payload(
 
 
 def build_sprint_report_path_text(report_path: Path, workspace_root: Path) -> str:
-    return relative_workspace_path(report_path, workspace_root)
+    return display_sprint_report_path({}, report_path, workspace_root=workspace_root, full_detail=True)
 
 
 def collect_sprint_report_artifacts(
@@ -2035,6 +2071,11 @@ def build_sprint_closeout_state_update(
             for item in (closeout_result.get("commit_shas") or [])
             if str(item).strip()
         ],
+        "commits": [
+            dict(item)
+            for item in (closeout_result.get("commits") or [])
+            if isinstance(item, dict)
+        ],
         "commit_count": int(closeout_result.get("commit_count") or 0),
         "uncommitted_paths": [
             str(item).strip()
@@ -2057,6 +2098,7 @@ def build_sprint_closeout_result(
     commit_count: int | None = None,
     commit_shas: list[str] | None = None,
     representative_commit_sha: str | None = None,
+    commits: list[dict[str, Any]] | None = None,
     uncommitted_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     normalized_commit_shas = [
@@ -2074,6 +2116,11 @@ def build_sprint_closeout_result(
         "message": str(message or "").strip(),
         "commit_count": int(commit_count if commit_count is not None else sprint_state.get("commit_count") or 0),
         "commit_shas": normalized_commit_shas,
+        "commits": [
+            dict(item)
+            for item in (commits if commits is not None else sprint_state.get("commits") or [])
+            if isinstance(item, dict)
+        ],
         "representative_commit_sha": str(
             representative_commit_sha
             if representative_commit_sha is not None
@@ -2694,6 +2741,104 @@ def build_sprint_artifact_lines(
     return ["- 참고 아티팩트 없음"]
 
 
+def build_sprint_planned_todo_lines(
+    sprint_state: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    format_text: Callable[..., str],
+    full_detail: bool = False,
+) -> list[str]:
+    todos = [dict(item) for item in (snapshot.get("todos") or sprint_state.get("todos") or []) if isinstance(item, dict)]
+    if not todos:
+        return ["- 계획된 todo 없음"]
+    indexed: list[tuple[int, int, dict[str, Any]]] = []
+    for index, todo in enumerate(todos):
+        indexed.append((priority_rank_sort_value(todo.get("priority_rank")), index, todo))
+    indexed.sort(key=lambda item: (item[0], item[1]))
+    lines: list[str] = []
+    for rank, _index, todo in indexed:
+        status = str(todo.get("status") or "").strip() or "unknown"
+        owner = str(todo.get("owner_role") or "").strip() or "N/A"
+        title = _render_text(format_text, todo.get("title") or "Untitled", full_detail=full_detail, limit=96)
+        ids = [
+            f"todo_id={str(todo.get('todo_id') or '').strip() or 'N/A'}",
+            f"backlog_id={str(todo.get('backlog_id') or '').strip() or 'N/A'}",
+            f"request_id={str(todo.get('request_id') or '').strip() or 'N/A'}",
+        ]
+        carry = str(todo.get("carry_over_backlog_id") or "").strip()
+        carry_text = " | carry-over" + (f"={carry}" if carry else "")
+        priority_text = f"P{rank}" if rank < 999999 else "P-"
+        lines.append(f"- [{status}] {priority_text} {title} | owner={owner} | {' | '.join(ids)}{carry_text if carry else ''}")
+    return lines
+
+
+def build_sprint_commit_lines(snapshot: dict[str, Any]) -> list[str]:
+    commits = [dict(item) for item in (snapshot.get("commits") or []) if isinstance(item, dict)]
+    commit_count = int(snapshot.get("commit_count") or len(commits) or 0)
+    lines = [f"- closeout commit: {commit_count}건"]
+    if not commits:
+        return lines + ["- 커밋 상세 없음"]
+    for commit in commits:
+        short_sha = str(commit.get("short_sha") or commit.get("sha") or "").strip()[:7] or "unknown"
+        subject = str(commit.get("subject") or "").strip() or "(no subject)"
+        warning = "" if bool(commit.get("sprint_tagged")) else " | sprint_id 태그 없음"
+        lines.append(f"- `{short_sha}` {subject}{warning}")
+    if int(snapshot.get("sprint_tagged_commit_count") or 0) == 0 and commit_count > 0:
+        lines.append("- 경고: sprint_id 태그가 포함된 closeout commit을 찾지 못했습니다.")
+    return lines
+
+
+def build_sprint_followup_lines(
+    sprint_state: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    format_text: Callable[..., str],
+    preview_artifact: Callable[[dict[str, Any], str], str],
+    full_detail: bool = False,
+) -> list[str]:
+    lines: list[str] = []
+    for todo in snapshot.get("todos") or sprint_state.get("todos") or []:
+        if not isinstance(todo, dict):
+            continue
+        status = str(todo.get("status") or "").strip().lower()
+        if status not in {"queued", "blocked", "failed", "uncommitted"}:
+            continue
+        title = _render_text(format_text, todo.get("title") or "Untitled", full_detail=full_detail, limit=96)
+        reason = _render_text(
+            format_text,
+            _first_meaningful_text(todo.get("summary"), todo.get("blocked_reason"), todo.get("carry_over_backlog_id"), "후속 확인 필요"),
+            full_detail=full_detail,
+            limit=120,
+        )
+        lines.append(f"- [{status}] {title} | request_id={str(todo.get('request_id') or 'N/A')} | {reason}")
+    for raw_path in snapshot.get("uncommitted_paths") or []:
+        preview = str(preview_artifact(sprint_state, str(raw_path)) or "").strip()
+        if preview:
+            lines.append(f"- [uncommitted_path] {preview}")
+    return _dedupe_preserving_order(lines) or ["- 후속 조치 없음"]
+
+
+def build_sprint_completion_embed(
+    *,
+    title: str,
+    sprint_state: dict[str, Any],
+    snapshot: dict[str, Any],
+    headline: str,
+) -> dict[str, Any]:
+    return {
+        "title": decorate_sprint_report_title(title),
+        "description": _truncate_report_text(headline, limit=220),
+        "color": 0x2ECC71 if str(sprint_state.get("status") or "").strip().lower() == "completed" else 0xF1C40F,
+        "fields": [
+            {"name": "Sprint", "value": str(sprint_state.get("sprint_id") or "N/A"), "inline": True},
+            {"name": "Status", "value": str(snapshot.get("status_label") or "N/A"), "inline": True},
+            {"name": "Todo", "value": str(snapshot.get("todo_summary") or "N/A"), "inline": False},
+            {"name": "Commits", "value": str(int(snapshot.get("commit_count") or 0)), "inline": True},
+            {"name": "Follow-up", "value": "없음" if build_sprint_followup_lines(sprint_state, snapshot, format_text=format_sprint_report_text, preview_artifact=lambda _state, path: str(path), full_detail=False) == ["- 후속 조치 없음"] else "확인 필요", "inline": True},
+        ],
+    }
+
+
 def render_sprint_completion_user_report(
     *,
     title: str,
@@ -2703,6 +2848,9 @@ def render_sprint_completion_user_report(
     decorate_title: Callable[[str], str],
     build_headline: Callable[[dict[str, Any], dict[str, Any], bool], str],
     build_change_summary_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
+    build_planned_todo_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
+    build_commit_lines: Callable[[dict[str, Any]], list[str]],
+    build_followup_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_timeline_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_agent_contribution_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_issue_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
@@ -2728,6 +2876,15 @@ def render_sprint_completion_user_report(
         "",
         "🔄 변경 요약",
         *build_change_summary_lines(sprint_state, snapshot, True),
+        "",
+        "📋 계획된 TODO",
+        *build_planned_todo_lines(sprint_state, snapshot, True),
+        "",
+        "🔖 커밋",
+        *build_commit_lines(snapshot),
+        "",
+        "➡️ 후속 조치",
+        *build_followup_lines(sprint_state, snapshot, True),
         "",
         "🧭 흐름",
         *build_timeline_lines(sprint_state, snapshot, True),
@@ -2755,6 +2912,9 @@ def build_terminal_sprint_report_sections(
     *,
     build_overview_lines: Callable[..., list[str]],
     build_change_summary_lines: Callable[..., list[str]],
+    build_planned_todo_lines: Callable[..., list[str]],
+    build_commit_lines: Callable[..., list[str]],
+    build_followup_lines: Callable[..., list[str]],
     build_timeline_lines: Callable[..., list[str]],
     build_agent_contribution_lines: Callable[..., list[str]],
     build_issue_lines: Callable[..., list[str]],
@@ -2764,6 +2924,9 @@ def build_terminal_sprint_report_sections(
     return [
         report_section("한눈에 보기", build_overview_lines(sprint_state, snapshot, full_detail=True)),
         report_section("변경 요약", build_change_summary_lines(sprint_state, snapshot, full_detail=True)),
+        report_section("계획된 TODO", build_planned_todo_lines(sprint_state, snapshot, full_detail=True)),
+        report_section("커밋", build_commit_lines(snapshot)),
+        report_section("후속 조치", build_followup_lines(sprint_state, snapshot, full_detail=True)),
         report_section("Sprint A to Z", build_timeline_lines(sprint_state, snapshot, full_detail=True)),
         report_section("에이전트 기여", build_agent_contribution_lines(sprint_state, snapshot, full_detail=True)),
         report_section("핵심 이슈", build_issue_lines(sprint_state, snapshot, full_detail=True)),
@@ -2937,6 +3100,9 @@ def render_sprint_report_body(
     *,
     build_overview_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_change_summary_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
+    build_planned_todo_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
+    build_commit_lines: Callable[[dict[str, Any]], list[str]],
+    build_followup_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_timeline_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_agent_contribution_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
     build_issue_lines: Callable[[dict[str, Any], dict[str, Any], bool], list[str]],
@@ -2954,6 +3120,18 @@ def render_sprint_report_body(
         "## 변경 요약",
         "",
         *build_change_summary_lines(sprint_state, snapshot, True),
+        "",
+        "## 계획된 TODO",
+        "",
+        *build_planned_todo_lines(sprint_state, snapshot, True),
+        "",
+        "## 커밋",
+        "",
+        *build_commit_lines(snapshot),
+        "",
+        "## 후속 조치",
+        "",
+        *build_followup_lines(sprint_state, snapshot, True),
         "",
         "## Sprint A to Z",
         "",
@@ -3185,6 +3363,10 @@ def build_machine_sprint_report_lines(
         for item in (closeout_result.get("uncommitted_paths") or sprint_state.get("uncommitted_paths") or [])
         if str(item).strip()
     ]
+    display_uncommitted_paths = [
+        display_sprint_report_path(sprint_state, item, workspace_root=Path.cwd(), full_detail=True)
+        for item in uncommitted_paths
+    ]
     lines = [
         f"sprint_id={sprint_state.get('sprint_id') or ''}",
         f"sprint_name={sprint_state.get('sprint_name') or sprint_state.get('sprint_display_name') or 'N/A'}",
@@ -3204,6 +3386,7 @@ def build_machine_sprint_report_lines(
         f"commit_shas={', '.join(commit_shas) if commit_shas else 'N/A'}",
         f"sprint_tagged_commit_shas={', '.join(sprint_tagged_commit_shas) if sprint_tagged_commit_shas else 'N/A'}",
         f"uncommitted_paths={', '.join(uncommitted_paths) if uncommitted_paths else 'N/A'}",
+        f"display_uncommitted_paths={', '.join(display_uncommitted_paths) if display_uncommitted_paths else 'N/A'}",
         (
             "todo_status_counts="
             + format_count_summary(
@@ -3334,6 +3517,8 @@ async def send_sprint_completion_user_report_for_service(
     sprint_state: dict[str, Any],
     closeout_result: dict[str, Any],
 ) -> bool:
+    snapshot = service._collect_sprint_report_snapshot(sprint_state, closeout_result)
+    headline = service._build_sprint_headline(sprint_state, snapshot, full_detail=False)
     return await service.notification_service.send_sprint_completion_user_report(
         report_channel_id=str(service.discord_config.report_channel_id or ""),
         sprint_id=str(sprint_state.get("sprint_id") or ""),
@@ -3342,6 +3527,13 @@ async def send_sprint_completion_user_report_for_service(
             closeout_result,
             title=title,
         ),
+        embed=build_sprint_completion_embed(
+            title=title,
+            sprint_state=sprint_state,
+            snapshot=snapshot,
+            headline=headline,
+        ),
+        report_file_path=str(sprint_state.get("report_path") or ""),
     )
 
 

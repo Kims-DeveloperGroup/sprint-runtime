@@ -176,6 +176,14 @@ class DiscordMessage:
     attachments: tuple[DiscordAttachment, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class DiscordEmbedPayload:
+    title: str = ""
+    description: str = ""
+    fields: tuple[dict[str, Any], ...] = ()
+    color: int | None = None
+
+
 def _encode_attachment_filename(filename: str) -> str:
     normalized = Path(str(filename or "").strip() or "attachment").name
     encoded = quote(normalized, safe=" -_.()[]{}")
@@ -463,6 +471,90 @@ class DiscordClient:
             target_id=str(channel_snowflake),
             content=message_content,
             message=result,
+        )
+        return result
+
+    async def send_channel_rich_message(
+        self,
+        channel_id: str | int,
+        *,
+        content: str = "",
+        embed: dict[str, Any] | DiscordEmbedPayload | None = None,
+        files: list[str | Path] | tuple[str | Path, ...] | None = None,
+        allowed_mentions: Any | None = None,
+    ) -> DiscordMessage:
+        channel_snowflake = self._normalize_snowflake(channel_id, "channel_id")
+        message_content = str(content or "").strip()
+        if message_content:
+            message_content = self._validate_content(message_content)
+        normalized_files = [self._normalize_attachment_path(item) for item in (files or [])]
+        sdk_embed = self._build_sdk_embed(embed) if embed is not None else None
+        sdk_allowed_mentions = self._build_allowed_mentions(allowed_mentions)
+        if not message_content and sdk_embed is None and not normalized_files:
+            raise DiscordValidationError("rich message must include content, embed, or files.")
+
+        async def operation(client: Any) -> DiscordMessage:
+            try:
+                channel = await client.fetch_channel(channel_snowflake)
+            except Exception as exc:
+                raise self._wrap_send_exception(
+                    phase=f"fetch_channel({channel_snowflake})",
+                    exc=exc,
+                ) from exc
+            if not hasattr(channel, "send"):
+                raise DiscordSendError(f"Channel {channel_snowflake} does not support sending messages.")
+            opened_files: list[Any] = []
+            try:
+                opened_files = [discord.File(str(path)) for path in normalized_files]
+                send_kwargs: dict[str, Any] = {}
+                if message_content:
+                    send_kwargs["content"] = message_content
+                if sdk_embed is not None:
+                    send_kwargs["embed"] = sdk_embed
+                if opened_files:
+                    send_kwargs["files"] = opened_files
+                if sdk_allowed_mentions is not None:
+                    send_kwargs["allowed_mentions"] = sdk_allowed_mentions
+                sent_message = await channel.send(**send_kwargs)
+            except Exception as exc:
+                raise self._wrap_send_exception(
+                    phase=f"channel.send({channel_snowflake})",
+                    exc=exc,
+                ) from exc
+            finally:
+                for file_obj in opened_files:
+                    close = getattr(file_obj, "close", None)
+                    if callable(close):
+                        close()
+            return self._to_discord_message(sent_message)
+
+        metadata = {
+            "rich": True,
+            "embed": bool(embed),
+            "files": [path.name for path in normalized_files],
+            "allowed_mentions": self._describe_allowed_mentions(allowed_mentions),
+        }
+        try:
+            result = await self._execute_send(operation)
+        except DiscordSendError as exc:
+            self._append_transcript_event(
+                direction="outbound",
+                transport="channel",
+                status="failed",
+                target_id=str(channel_snowflake),
+                content=message_content,
+                error=str(exc),
+                metadata={**metadata, **self._build_send_error_metadata(exc)},
+            )
+            raise
+        self._append_transcript_event(
+            direction="outbound",
+            transport="channel",
+            status="sent",
+            target_id=str(channel_snowflake),
+            content=message_content,
+            message=result,
+            metadata=metadata,
         )
         return result
 
@@ -992,6 +1084,53 @@ class DiscordClient:
         if not path.is_file():
             raise DiscordValidationError("file_path must point to an existing file.")
         return path
+
+    @staticmethod
+    def _build_sdk_embed(embed: dict[str, Any] | DiscordEmbedPayload) -> Any:
+        if discord is None:
+            raise DiscordConfigurationError("discord.py is not installed. Install teams_runtime/requirements.txt.")
+        payload = embed if isinstance(embed, dict) else {
+            "title": embed.title,
+            "description": embed.description,
+            "fields": list(embed.fields),
+            "color": embed.color,
+        }
+        sdk_embed = discord.Embed(
+            title=str(payload.get("title") or "") or None,
+            description=str(payload.get("description") or "") or None,
+            color=payload.get("color"),
+        )
+        for field in payload.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            sdk_embed.add_field(
+                name=str(field.get("name") or "Field"),
+                value=str(field.get("value") or "N/A"),
+                inline=bool(field.get("inline", False)),
+            )
+        return sdk_embed
+
+    @staticmethod
+    def _build_allowed_mentions(value: Any | None) -> Any | None:
+        if value is None:
+            return None
+        if discord is None:
+            return value
+        if value == "none":
+            return discord.AllowedMentions.none()
+        if isinstance(value, dict):
+            return discord.AllowedMentions(**value)
+        return value
+
+    @staticmethod
+    def _describe_allowed_mentions(value: Any | None) -> str:
+        if value is None:
+            return "default"
+        if value == "none":
+            return "none"
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return type(value).__name__
 
     def _append_transcript_event(
         self,

@@ -46,6 +46,35 @@ class _FakeSDKClient:
         return fn
 
 
+class _FakeEmbed:
+    def __init__(self, *, title=None, description=None, color=None):
+        self.title = title
+        self.description = description
+        self.color = color
+        self.fields = []
+
+    def add_field(self, *, name, value, inline=False):
+        self.fields.append({"name": name, "value": value, "inline": inline})
+
+
+class _FakeAllowedMentions:
+    @classmethod
+    def none(cls):
+        return cls()
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _FakeFile:
+    def __init__(self, path):
+        self.path = path
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class _ReadySDKClient:
     def __init__(self, intents=None):
         self.intents = intents
@@ -70,6 +99,9 @@ class _ReadySDKClient:
 class _FakeDiscordModule:
     Intents = _FakeIntents
     Client = _FakeSDKClient
+    Embed = _FakeEmbed
+    AllowedMentions = _FakeAllowedMentions
+    File = _FakeFile
 
 
 class _ReadyDiscordModule:
@@ -212,6 +244,68 @@ class DiscordClientIntentTests(unittest.TestCase):
                     self.assertEqual(entries[0]["status"], "sent")
                     self.assertTrue(entries[0]["timestamp"].endswith("+09:00"))
                     self.assertTrue(entries[0]["message"]["created_at"].endswith("+09:00"))
+
+    def test_send_channel_rich_message_passes_embed_files_allowed_mentions_and_logs_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            attachment = Path(tmpdir) / "report.md"
+            attachment.write_text("# Report\n", encoding="utf-8")
+            log_file = Path(tmpdir) / "planner.jsonl"
+            with patch("teams_runtime.discord.client.discord", _FakeDiscordModule):
+                with patch.dict(os.environ, {"DISCORD_TOKEN": "token"}, clear=False):
+                    client = DiscordClient(
+                        token_env=None,
+                        transcript_log_file=log_file,
+                        client_name="planner",
+                    )
+                    observed: dict[str, object] = {}
+
+                    async def fake_execute(operation):
+                        sent_channel = SimpleNamespace(
+                            id=200,
+                            guild=SimpleNamespace(id=300),
+                            send=AsyncMock(
+                                return_value=SimpleNamespace(
+                                    id="msg-rich",
+                                    channel=SimpleNamespace(id=200),
+                                    guild=SimpleNamespace(id=300),
+                                    author=SimpleNamespace(id="999", name="bot", display_name="bot"),
+                                    content="",
+                                    mentions=[],
+                                    attachments=[],
+                                    created_at=datetime.now(timezone.utc),
+                                )
+                            ),
+                        )
+                        sdk_client = SimpleNamespace(fetch_channel=AsyncMock(return_value=sent_channel))
+                        result = await operation(sdk_client)
+                        observed["send_kwargs"] = sent_channel.send.await_args.kwargs
+                        return result
+
+                    client._execute_send = fake_execute
+
+                    asyncio.run(
+                        client.send_channel_rich_message(
+                            "200",
+                            embed={
+                                "title": "Sprint done",
+                                "description": "summary",
+                                "fields": [{"name": "Todo", "value": "completed:1"}],
+                                "color": 123,
+                            },
+                            files=[attachment],
+                            allowed_mentions="none",
+                        )
+                    )
+
+                    kwargs = observed["send_kwargs"]
+                    self.assertEqual(kwargs["embed"].title, "Sprint done")
+                    self.assertEqual(kwargs["embed"].fields[0]["name"], "Todo")
+                    self.assertEqual(Path(kwargs["files"][0].path), attachment)
+                    self.assertIsInstance(kwargs["allowed_mentions"], _FakeAllowedMentions)
+                    entries = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line]
+                    self.assertTrue(entries[0]["metadata"]["rich"])
+                    self.assertEqual(entries[0]["metadata"]["files"], ["report.md"])
+                    self.assertEqual(entries[0]["metadata"]["allowed_mentions"], "none")
 
     def test_send_channel_message_retries_transient_fetch_channel_timeout_then_succeeds(self):
         with patch("teams_runtime.discord.client.discord", _FakeDiscordModule):

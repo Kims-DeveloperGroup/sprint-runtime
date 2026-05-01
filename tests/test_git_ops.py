@@ -190,6 +190,10 @@ class GitOpsCloseoutTests(unittest.TestCase):
             self.assertTrue(commit_result["commit_sha"])
             self.assertEqual(inspect_result["status"], "verified")
             self.assertEqual(inspect_result["commit_count"], 1)
+            self.assertEqual(inspect_result["commits"][0]["sha"], inspect_result["commit_shas"][0])
+            self.assertEqual(inspect_result["commits"][0]["short_sha"], inspect_result["commit_shas"][0][:7])
+            self.assertEqual(inspect_result["commits"][0]["subject"], f"[{sprint_id}] chore: sprint closeout")
+            self.assertTrue(inspect_result["commits"][0]["sprint_tagged"])
 
     def test_commit_sprint_changes_returns_no_changes_when_nothing_new(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -231,6 +235,8 @@ class GitOpsCloseoutTests(unittest.TestCase):
             self.assertEqual(len(result["commit_shas"]), 1)
             self.assertEqual(result["sprint_tagged_commit_count"], 0)
             self.assertEqual(result["sprint_tagged_commit_shas"], [])
+            self.assertEqual(result["commits"][0]["subject"], "unrelated change")
+            self.assertFalse(result["commits"][0]["sprint_tagged"])
 
     def test_inspect_sprint_closeout_accepts_sprint_tagged_commit(self):
         sprint_id = "2026-Sprint-01-20260324T123330Z"

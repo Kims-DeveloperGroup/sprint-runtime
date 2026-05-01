@@ -256,6 +256,8 @@ from teams_runtime.workflows.sprints.reporting import (
     build_sprint_achievement_lines as render_sprint_achievement_lines,
     build_sprint_agent_contribution_lines as render_sprint_agent_contribution_lines,
     build_sprint_artifact_lines as render_sprint_artifact_lines,
+    build_sprint_commit_lines as build_sprint_commit_lines_helper,
+    build_sprint_followup_lines as build_sprint_followup_lines_helper,
     build_generic_sprint_report_sections as build_generic_sprint_report_sections_helper,
     build_sprint_kickoff_preview_lines as build_sprint_kickoff_preview_lines_helper,
     build_sprint_kickoff_report_sections as build_sprint_kickoff_report_sections_helper,
@@ -283,6 +285,7 @@ from teams_runtime.workflows.sprints.reporting import (
     build_sprint_headline as render_sprint_headline,
     build_sprint_issue_lines as render_sprint_issue_lines,
     build_sprint_overview_lines as render_sprint_overview_lines,
+    build_sprint_planned_todo_lines as build_sprint_planned_todo_lines_helper,
     build_sprint_terminal_state_update as build_sprint_terminal_state_update_helper,
     should_refresh_sprint_history_archive as should_refresh_sprint_history_archive_helper,
     build_sprint_timeline_lines as render_sprint_timeline_lines,
@@ -3241,6 +3244,9 @@ class TeamService:
             snapshot,
             build_overview_lines=self._build_sprint_overview_lines,
             build_change_summary_lines=self._build_sprint_change_summary_lines,
+            build_planned_todo_lines=self._build_sprint_planned_todo_lines,
+            build_commit_lines=self._build_sprint_commit_lines,
+            build_followup_lines=self._build_sprint_followup_lines,
             build_timeline_lines=self._build_sprint_timeline_lines,
             build_agent_contribution_lines=self._build_sprint_agent_contribution_lines,
             build_issue_lines=self._build_sprint_issue_lines,
@@ -5091,6 +5097,42 @@ class TeamService:
             full_detail=full_detail,
         )
 
+    def _build_sprint_planned_todo_lines(
+        self,
+        sprint_state: dict[str, Any],
+        snapshot: dict[str, Any],
+        *,
+        full_detail: bool = False,
+    ) -> list[str]:
+        return build_sprint_planned_todo_lines_helper(
+            sprint_state,
+            snapshot,
+            format_text=self._format_sprint_report_text,
+            full_detail=full_detail,
+        )
+
+    def _build_sprint_commit_lines(self, snapshot: dict[str, Any]) -> list[str]:
+        return build_sprint_commit_lines_helper(snapshot)
+
+    def _build_sprint_followup_lines(
+        self,
+        sprint_state: dict[str, Any],
+        snapshot: dict[str, Any],
+        *,
+        full_detail: bool = False,
+    ) -> list[str]:
+        return build_sprint_followup_lines_helper(
+            sprint_state,
+            snapshot,
+            format_text=self._format_sprint_report_text,
+            preview_artifact=lambda state, path: self._preview_sprint_artifact_path(
+                state,
+                path,
+                full_detail=full_detail,
+            ),
+            full_detail=full_detail,
+        )
+
     def _build_sprint_agent_contribution_lines(
         self,
         sprint_state: dict[str, Any],
@@ -5208,6 +5250,17 @@ class TeamService:
                 snap,
                 full_detail=detail,
             ),
+            build_planned_todo_lines=lambda state, snap, detail: self._build_sprint_planned_todo_lines(
+                state,
+                snap,
+                full_detail=detail,
+            ),
+            build_commit_lines=self._build_sprint_commit_lines,
+            build_followup_lines=lambda state, snap, detail: self._build_sprint_followup_lines(
+                state,
+                snap,
+                full_detail=detail,
+            ),
             build_timeline_lines=lambda state, snap, detail: self._build_sprint_timeline_lines(state, snap, full_detail=detail),
             build_agent_contribution_lines=lambda state, snap, detail: self._build_sprint_agent_contribution_lines(
                 state,
@@ -5235,6 +5288,17 @@ class TeamService:
             closeout_result,
             build_overview_lines=lambda state, snap, detail: self._build_sprint_overview_lines(state, snap, full_detail=detail),
             build_change_summary_lines=lambda state, snap, detail: self._build_sprint_change_summary_lines(
+                state,
+                snap,
+                full_detail=detail,
+            ),
+            build_planned_todo_lines=lambda state, snap, detail: self._build_sprint_planned_todo_lines(
+                state,
+                snap,
+                full_detail=detail,
+            ),
+            build_commit_lines=self._build_sprint_commit_lines,
+            build_followup_lines=lambda state, snap, detail: self._build_sprint_followup_lines(
                 state,
                 snap,
                 full_detail=detail,

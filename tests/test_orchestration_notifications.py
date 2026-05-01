@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 from teams_runtime.core.config import load_discord_agents_config, load_team_runtime_config
@@ -281,6 +282,66 @@ class TeamsRuntimeOrchestrationNotificationsTests(unittest.TestCase):
             swallow_exceptions=True,
             log_traceback=False,
         )
+
+    def test_sprint_completion_user_report_sends_rich_payload_before_markdown_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = Path(tmpdir) / "report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            rich_send = AsyncMock()
+            discord_client = Mock(send_channel_rich_message=rich_send)
+            service = DiscordNotificationService(
+                paths=RuntimePaths.from_root(tmpdir),
+                role="orchestrator",
+                discord_config=Mock(),
+                runtime_config=Mock(),
+                discord_client=discord_client,
+            )
+            service.send_content = AsyncMock()
+
+            sent = asyncio.run(
+                service.send_sprint_completion_user_report(
+                    report_channel_id="123",
+                    sprint_id="sprint-1",
+                    content="markdown report",
+                    embed={"title": "done"},
+                    report_file_path=str(report),
+                )
+            )
+
+            self.assertTrue(sent)
+            rich_send.assert_awaited_once_with(
+                "123",
+                content="",
+                embed={"title": "done"},
+                files=[str(report)],
+                allowed_mentions="none",
+            )
+            service.send_content.assert_not_awaited()
+
+    def test_sprint_completion_user_report_falls_back_to_markdown_chunks_on_rich_failure(self) -> None:
+        discord_client = Mock(send_channel_rich_message=AsyncMock(side_effect=DiscordSendError("boom")))
+        service = DiscordNotificationService(
+            paths=RuntimePaths.from_root(tempfile.mkdtemp()),
+            role="orchestrator",
+            discord_config=Mock(),
+            runtime_config=Mock(),
+            discord_client=discord_client,
+        )
+        service.send_content = AsyncMock()
+
+        sent = asyncio.run(
+            service.send_sprint_completion_user_report(
+                report_channel_id="123",
+                sprint_id="sprint-1",
+                content="markdown report",
+                embed={"title": "done"},
+                report_file_path="/missing/report.md",
+            )
+        )
+
+        self.assertTrue(sent)
+        service.send_content.assert_awaited_once()
+        self.assertEqual(service.send_content.await_args.kwargs["content"], "markdown report")
 
     def test_announce_startup_notification_records_success(self) -> None:
         notification_service = DummyNotificationService()

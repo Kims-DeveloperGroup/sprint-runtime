@@ -939,10 +939,30 @@ class DiscordNotificationService:
         report_channel_id: str,
         sprint_id: str,
         content: str,
+        embed: dict[str, Any] | None = None,
+        report_file_path: str = "",
     ) -> bool:
         normalized_channel_id = str(report_channel_id or "").strip()
         if not normalized_channel_id:
             return False
+        rich_send = getattr(self.discord_client, "send_channel_rich_message", None)
+        if callable(rich_send) and (embed or report_file_path):
+            try:
+                await rich_send(
+                    normalized_channel_id,
+                    content="",
+                    embed=embed,
+                    files=[report_file_path] if str(report_file_path or "").strip() else [],
+                    allowed_mentions="none",
+                )
+                return True
+            except Exception as exc:
+                LOGGER.warning(
+                    "Failed to send rich user-facing sprint summary for sprint %s to report:%s; falling back to markdown chunks: %s",
+                    sprint_id or "unknown",
+                    normalized_channel_id,
+                    exc,
+                )
         try:
             await self.send_content(
                 content=content,

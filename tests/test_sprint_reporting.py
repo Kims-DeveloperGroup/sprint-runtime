@@ -42,6 +42,8 @@ from teams_runtime.workflows.sprints.reporting import (
     build_sprint_achievement_lines,
     build_sprint_agent_contribution_lines,
     build_sprint_artifact_lines,
+    build_sprint_commit_lines,
+    build_sprint_followup_lines,
     build_sprint_kickoff_preview_lines,
     build_sprint_kickoff_report_context,
     build_sprint_progress_report,
@@ -51,6 +53,7 @@ from teams_runtime.workflows.sprints.reporting import (
     build_sprint_issue_lines,
     build_sprint_kickoff_report_sections,
     build_sprint_overview_lines,
+    build_sprint_planned_todo_lines,
     build_sprint_spec_todo_report_body,
     build_sprint_spec_todo_report_sections,
     build_sprint_timeline_lines,
@@ -217,6 +220,9 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
             {},
             build_overview_lines=lambda *_args, **_kwargs: ["overview"],
             build_change_summary_lines=lambda *_args, **_kwargs: ["change"],
+            build_planned_todo_lines=lambda *_args, **_kwargs: ["planned"],
+            build_commit_lines=lambda *_args, **_kwargs: ["commit"],
+            build_followup_lines=lambda *_args, **_kwargs: ["followup"],
             build_timeline_lines=lambda *_args, **_kwargs: ["timeline"],
             build_agent_contribution_lines=lambda *_args, **_kwargs: ["agent"],
             build_issue_lines=lambda *_args, **_kwargs: ["issue"],
@@ -226,7 +232,7 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
 
         self.assertEqual(
             [section.title for section in sections],
-            ["한눈에 보기", "변경 요약", "Sprint A to Z", "에이전트 기여", "핵심 이슈", "성과", "참고 아티팩트"],
+            ["한눈에 보기", "변경 요약", "계획된 TODO", "커밋", "후속 조치", "Sprint A to Z", "에이전트 기여", "핵심 이슈", "성과", "참고 아티팩트"],
         )
         self.assertEqual(sections[0].lines, ("overview",))
 
@@ -234,6 +240,7 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir)
             artifact = workspace_root / "shared_workspace" / "sprints" / "sprint-a" / "nested" / "report.md"
+            external = Path(tmpdir).parent / "external" / "secret" / "trace.log"
 
             self.assertEqual(sprint_status_label("running"), "진행중")
             self.assertEqual(sprint_status_label("custom"), "custom")
@@ -257,8 +264,73 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
                 ),
                 "shared_workspace/report.md",
             )
+            self.assertEqual(
+                preview_sprint_artifact_path(
+                    {"sprint_folder_name": "sprint-a", "sprint_folder": str(workspace_root / "shared_workspace" / "sprints" / "sprint-a")},
+                    str(artifact),
+                    workspace_root=workspace_root,
+                    full_detail=True,
+                ),
+                "nested/report.md",
+            )
+            self.assertEqual(
+                preview_sprint_artifact_path({}, str(workspace_root / "libs" / "foo.py"), workspace_root=workspace_root),
+                "libs/foo.py",
+            )
+            self.assertEqual(
+                preview_sprint_artifact_path({}, str(external), workspace_root=workspace_root, full_detail=True),
+                "secret/trace.log",
+            )
             self.assertEqual(planner_closeout_request_id({"sprint_id": "Sprint A"}), "planner-closeout-report-sprint-a")
             self.assertEqual(relative_workspace_path(workspace_root / "shared_workspace" / "report.md", workspace_root), "shared_workspace/report.md")
+
+    def test_final_report_planned_todos_commits_and_followups(self):
+        sprint_state = {
+            "todos": [
+                {"title": "low", "status": "completed", "priority_rank": 20, "owner_role": "qa", "todo_id": "todo-2"},
+                {
+                    "title": "high",
+                    "status": "blocked",
+                    "priority_rank": 1,
+                    "owner_role": "developer",
+                    "todo_id": "todo-1",
+                    "backlog_id": "backlog-1",
+                    "request_id": "request-1",
+                    "summary": "waiting on decision",
+                    "carry_over_backlog_id": "backlog-carry",
+                },
+            ],
+            "sprint_folder_name": "sprint-a",
+        }
+        snapshot = {
+            "todos": sprint_state["todos"],
+            "commits": [
+                {"sha": "abcdef123456", "short_sha": "abcdef1", "subject": "add report", "sprint_tagged": True},
+                {"sha": "123456abcdef", "short_sha": "123456a", "subject": "misc", "sprint_tagged": False},
+            ],
+            "commit_count": 2,
+            "sprint_tagged_commit_count": 1,
+            "uncommitted_paths": ["/outside/build/output.txt"],
+        }
+
+        planned = "\n".join(build_sprint_planned_todo_lines(sprint_state, snapshot, format_text=_format_text))
+        commits = "\n".join(build_sprint_commit_lines(snapshot))
+        followups = "\n".join(
+            build_sprint_followup_lines(
+                sprint_state,
+                snapshot,
+                format_text=_format_text,
+                preview_artifact=lambda _state, path: Path(path).name,
+            )
+        )
+
+        self.assertLess(planned.index("high"), planned.index("low"))
+        self.assertIn("owner=developer", planned)
+        self.assertIn("carry-over=backlog-carry", planned)
+        self.assertIn("`abcdef1` add report", commits)
+        self.assertIn("`123456a` misc | sprint_id 태그 없음", commits)
+        self.assertIn("[blocked] high", followups)
+        self.assertIn("[uncommitted_path] output.txt", followups)
 
     def test_planner_initial_phase_report_helpers_preserve_contract(self):
         request_record = {
@@ -522,6 +594,9 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
             decorate_title=lambda title: f"✅ {title}",
             build_headline=lambda *_args: "headline",
             build_change_summary_lines=lambda *_args: ["- change"],
+            build_planned_todo_lines=lambda *_args: ["- planned"],
+            build_commit_lines=lambda *_args: ["- commit"],
+            build_followup_lines=lambda *_args: ["- followup"],
             build_timeline_lines=lambda *_args: ["- timeline"],
             build_agent_contribution_lines=lambda *_args: ["- contribution"],
             build_issue_lines=lambda *_args: ["- issue"],
@@ -533,6 +608,9 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         self.assertIn("**TL;DR** headline", report)
         self.assertIn("commits   : 1 (abcdef0)", report)
         self.assertIn("🔄 변경 요약", report)
+        self.assertIn("📋 계획된 TODO", report)
+        self.assertIn("🔖 커밋", report)
+        self.assertIn("➡️ 후속 조치", report)
         self.assertIn("🧭 흐름", report)
         self.assertIn("🤖 에이전트 기여", report)
         self.assertIn("⚠️ 핵심 이슈", report)
@@ -551,7 +629,7 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         )
 
         self.assertEqual(relative_path, "shared_workspace/sprints/demo/report.md")
-        self.assertEqual(absolute_path, "/tmp/demo/report.md")
+        self.assertEqual(absolute_path, "demo/report.md")
         self.assertTrue(
             should_refresh_sprint_history_archive(
                 {
@@ -694,6 +772,7 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
                 "message": "initial phase failed",
                 "commit_count": 3,
                 "commit_shas": ["abc123", "def456"],
+                "commits": [],
                 "representative_commit_sha": "",
                 "uncommitted_paths": ["left.py", "right.py"],
             },
@@ -716,6 +795,7 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
             {
                 "commit_sha": "warn123",
                 "commit_shas": ["warn123"],
+                "commits": [],
                 "commit_count": 1,
                 "uncommitted_paths": ["workspace/app.py"],
                 "status": "completed",
@@ -837,6 +917,9 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
             {},
             build_overview_lines=lambda *_args: ["- overview"],
             build_change_summary_lines=lambda *_args: ["- changes"],
+            build_planned_todo_lines=lambda *_args: ["- planned"],
+            build_commit_lines=lambda *_args: ["- commit"],
+            build_followup_lines=lambda *_args: ["- followup"],
             build_timeline_lines=lambda *_args: ["- timeline"],
             build_agent_contribution_lines=lambda *_args: ["- contribution"],
             build_issue_lines=lambda *_args: ["- issue"],
@@ -847,7 +930,10 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
 
         self.assertIn("# Sprint Report", body)
         self.assertLess(body.index("## 한눈에 보기"), body.index("## 변경 요약"))
-        self.assertLess(body.index("## 변경 요약"), body.index("## Sprint A to Z"))
+        self.assertLess(body.index("## 변경 요약"), body.index("## 계획된 TODO"))
+        self.assertLess(body.index("## 계획된 TODO"), body.index("## 커밋"))
+        self.assertLess(body.index("## 커밋"), body.index("## 후속 조치"))
+        self.assertLess(body.index("## 후속 조치"), body.index("## Sprint A to Z"))
         self.assertLess(body.index("## Sprint A to Z"), body.index("## 에이전트 기여"))
         self.assertLess(body.index("## 에이전트 기여"), body.index("## 핵심 이슈"))
         self.assertLess(body.index("## 핵심 이슈"), body.index("## 성과"))

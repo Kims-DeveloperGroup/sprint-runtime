@@ -399,6 +399,7 @@ def inspect_sprint_closeout(project_root: Path, baseline: dict[str, Any], sprint
             "repo_root": "",
             "commit_count": 0,
             "commit_shas": [],
+            "commits": [],
             "representative_commit_sha": "",
             "uncommitted_paths": [],
             "message": "git repository를 찾을 수 없습니다.",
@@ -413,6 +414,7 @@ def inspect_sprint_closeout(project_root: Path, baseline: dict[str, Any], sprint
                 "repo_root": str(repo_root),
                 "commit_count": 0,
                 "commit_shas": [],
+                "commits": [],
                 "representative_commit_sha": "",
                 "uncommitted_paths": uncommitted_paths,
                 "message": log_result.stderr.strip() or log_result.stdout.strip() or "git log failed",
@@ -432,6 +434,16 @@ def inspect_sprint_closeout(project_root: Path, baseline: dict[str, Any], sprint
     ]
     commit_shas = [sha for sha, _subject in commit_records]
     sprint_commit_shas = [sha for sha, _subject in sprint_commits]
+    sprint_commit_sha_set = set(sprint_commit_shas)
+    commits = [
+        {
+            "sha": sha,
+            "short_sha": sha[:7],
+            "subject": subject,
+            "sprint_tagged": sha in sprint_commit_sha_set,
+        }
+        for sha, subject in commit_records
+    ]
     status = "verified"
     message = "스프린트 closeout 검증을 완료했습니다."
     if uncommitted_paths:
@@ -448,6 +460,7 @@ def inspect_sprint_closeout(project_root: Path, baseline: dict[str, Any], sprint
         "repo_root": str(repo_root),
         "commit_count": len(commit_shas),
         "commit_shas": commit_shas,
+        "commits": commits,
         "representative_commit_sha": commit_shas[-1] if commit_shas else "",
         "sprint_tagged_commit_count": len(sprint_commit_shas),
         "sprint_tagged_commit_shas": sprint_commit_shas,
