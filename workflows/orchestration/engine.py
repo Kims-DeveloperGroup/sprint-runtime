@@ -247,7 +247,14 @@ def workflow_should_close_in_planning(
         for key in ("root_cause_contract", "todo_brief", "planning_note")
     )
     transition_outcome = str((transition or {}).get("outcome") or "").strip().lower()
+    transition_target_phase = str((transition or {}).get("target_phase") or "").strip().lower()
     explicit_continuation = workflow_transition_requests_explicit_continuation(transition or {})
+    explicit_implementation_handoff = (
+        transition_outcome in {"advance", "continue"}
+        and transition_target_phase == WORKFLOW_PHASE_IMPLEMENTATION
+    )
+    if explicit_implementation_handoff:
+        return False
     explicit_planning_close = transition_outcome == "complete" or (
         bool((transition or {}).get("finalize_phase")) and not explicit_continuation
     )

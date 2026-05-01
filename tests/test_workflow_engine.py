@@ -120,6 +120,42 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
             )
         )
 
+    def test_workflow_should_close_in_planning_rejects_implementation_handoff_without_execution_signal(self):
+        workflow_state = default_workflow_state()
+        transition = workflow_transition(
+            {
+                "proposals": {
+                    "workflow_transition": {
+                        "outcome": "advance",
+                        "target_phase": "implementation",
+                    }
+                }
+            }
+        )
+
+        should_close = workflow_should_close_in_planning(
+            workflow_state=workflow_state,
+            current_role="planner",
+            transition=transition,
+            proposals={},
+            artifacts=["shared_workspace/sprints/example/spec.md"],
+            request_indicates_execution_flag=False,
+        )
+
+        self.assertFalse(should_close)
+        decision = derive_workflow_routing_decision(
+            workflow_state,
+            transition,
+            current_role="planner",
+            reason="planner 문서만 남겼지만 implementation handoff를 명시했습니다.",
+            should_close_in_planning=should_close,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["next_role"], "architect")
+        self.assertEqual(decision["workflow_state"]["phase"], "implementation")
+        self.assertEqual(decision["workflow_state"]["step"], "architect_guidance")
+
     def test_workflow_should_close_in_planning_rejects_execution_artifact(self):
         workflow_state = default_workflow_state()
         transition = workflow_transition({})
