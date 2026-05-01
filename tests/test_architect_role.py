@@ -19,8 +19,15 @@ class TeamsRuntimeArchitectRoleTests(unittest.TestCase):
         self.assertIn("translate that intent into implementation contracts", rules)
         self.assertIn("`architect_guidance`", rules)
         self.assertIn("`architect_review`", rules)
+        self.assertIn("refactoring opportunities", rules)
+        self.assertIn("reusable helper/function/logic extraction opportunities", rules)
+        self.assertIn("module boundary/isolation/responsibility consistency issues", rules)
         self.assertIn("read-only planning evidence", rules)
         self.assertIn('target_step = "qa_validation"', rules)
+        self.assertIn("`review_cycle_count >= review_cycle_limit`", rules)
+        self.assertIn("do not force optional refactor/reuse/module-structure improvements", rules)
+        self.assertIn("correctness, interface contracts, regressions", rules)
+        self.assertIn("advisory insights or follow-up context", rules)
         self.assertIn("top-level `status=\"completed\"`", rules)
         self.assertIn("top-level `blocked`", rules)
 
@@ -62,6 +69,10 @@ class TeamsRuntimeArchitectRoleTests(unittest.TestCase):
             self.assertIn("translate that intent into implementation contracts", prompt)
             self.assertIn("`architect_review` passes without further developer work", prompt)
             self.assertIn('target_step = "qa_validation"', prompt)
+            self.assertIn("reusable helper/function/logic extraction opportunities", prompt)
+            self.assertIn("module boundary/isolation/responsibility consistency issues", prompt)
+            self.assertIn("`review_cycle_count >= review_cycle_limit`", prompt)
+            self.assertIn("do not force optional refactor/reuse/module-structure improvements", prompt)
             self.assertIn("top-level `blocked`", prompt)
 
 

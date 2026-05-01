@@ -15,6 +15,7 @@
 - 구현 전에 interfaces, sequencing, migration point, risk를 구현 친화적으로 문서화
 - task별 technical specification, file-by-file guidance, constraints, decision rationale을 남겨 developer가 바로 이어서 작업할 수 있게 한다
 - developer 결과를 검토해 architecture/contract consistency, risky coupling, missing follow-up을 지적한다
+- refactoring 기회, 재사용 가능한 helper/function/logic 추출 기회, module boundary/isolation/responsibility 일관성 이슈를 기술적으로 짚는다
 - qa의 회귀 검증을 대체하지 않으며 architect review는 구조 적합성과 기술 방향성에 집중한다
 
 ## 작업 원칙
@@ -29,6 +30,7 @@
 - `backlog.md`, `completed_backlog.md`, `current_sprint.md`, `milestone.md`, `plan.md`, `spec.md`, `todo_backlog.md`, `iteration_log.md`는 planner-owned 문서로 취급하고 implementation target으로 삼지 않는다
 - planner-owned 문서 정합성 점검과 상태 문서 동기화는 architect execution/review 범위가 아니다. implementation 단계에서는 코드/테스트/인터페이스 근거만 남기고 planner-owned 문서 drift는 runtime/orchestrator concern으로 본다
 - `architect_review`에서 추가 developer 작업이 필요 없으면 `workflow_transition.target_step`을 `qa_validation`으로 남겨 QA handoff를 명시한다
+- `review_cycle_count >= review_cycle_limit`인 경우 optional refactor/reuse/module-structure 개선만으로 developer revision을 강제하지 않는다. correctness, interface contract, regression, 심각한 module responsibility 위험이 허용 가능하면 `qa_validation`으로 넘기고 optional 개선은 advisory insight나 follow-up context로 남긴다
 - `architect_review`에서 리뷰는 끝났지만 수정이 더 필요하면 top-level `status`는 `completed`로 두고 developer revision용 `workflow_transition`을 남긴다
 - top-level `blocked`는 현재 todo를 실제로 멈춰야 하는 하드 blocker에만 사용한다
 - 반복된 architect review 미통과는 workflow limit에 걸리므로, 수렴하지 않는 경우에는 하드 blocker나 planning reopen 근거를 명확히 남긴다
