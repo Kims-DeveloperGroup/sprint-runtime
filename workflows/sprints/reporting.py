@@ -2847,19 +2847,94 @@ def build_sprint_completion_embed(
     sprint_state: dict[str, Any],
     snapshot: dict[str, Any],
     headline: str,
-) -> dict[str, Any]:
-    return {
-        "title": decorate_sprint_report_title(title),
-        "description": _truncate_report_text(headline, limit=220),
-        "color": 0x2ECC71 if str(sprint_state.get("status") or "").strip().lower() == "completed" else 0xF1C40F,
-        "fields": [
-            {"name": "Sprint", "value": str(sprint_state.get("sprint_id") or "N/A"), "inline": True},
-            {"name": "Status", "value": str(snapshot.get("status_label") or "N/A"), "inline": True},
-            {"name": "Todo", "value": str(snapshot.get("todo_summary") or "N/A"), "inline": False},
-            {"name": "Commits", "value": str(int(snapshot.get("commit_count") or 0)), "inline": True},
-            {"name": "Follow-up", "value": "없음" if build_sprint_followup_lines(sprint_state, snapshot, format_text=format_sprint_report_text, preview_artifact=lambda _state, path: str(path), full_detail=False) == ["- 후속 조치 없음"] else "확인 필요", "inline": True},
-        ],
-    }
+    change_summary_lines: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    color = 0x2ECC71 if str(sprint_state.get("status") or "").strip().lower() == "completed" else 0xF1C40F
+    followup_value = (
+        "없음"
+        if build_sprint_followup_lines(
+            sprint_state,
+            snapshot,
+            format_text=format_sprint_report_text,
+            preview_artifact=lambda _state, path: str(path),
+            full_detail=False,
+        )
+        == ["- 후속 조치 없음"]
+        else "확인 필요"
+    )
+    metadata_fields = [
+        {"name": "Sprint", "value": str(sprint_state.get("sprint_id") or "N/A"), "inline": True},
+        {"name": "Status", "value": str(snapshot.get("status_label") or "N/A"), "inline": True},
+        {"name": "Todo", "value": str(snapshot.get("todo_summary") or "N/A"), "inline": False},
+        {"name": "Commits", "value": str(int(snapshot.get("commit_count") or 0)), "inline": True},
+        {"name": "Follow-up", "value": followup_value, "inline": True},
+    ]
+    content_fields: list[dict[str, Any]] = []
+    for index, chunk in enumerate(_split_discord_embed_field_text(headline or "N/A")):
+        content_fields.append(
+            {"name": "TL;DR" if index == 0 else f"TL;DR 계속 {index + 1}", "value": chunk, "inline": False}
+        )
+    change_summary = "\n".join(str(line or "").rstrip() for line in (change_summary_lines or [])).strip() or "- 변경 요약 없음"
+    for index, chunk in enumerate(_split_discord_embed_field_text(change_summary)):
+        content_fields.append(
+            {"name": "변경 요약" if index == 0 else f"변경 요약 계속 {index + 1}", "value": chunk, "inline": False}
+        )
+
+    embeds: list[dict[str, Any]] = []
+    max_fields_per_embed = 25
+    first_content_capacity = max_fields_per_embed - len(metadata_fields)
+    content_offset = 0
+    while content_offset < len(content_fields) or not embeds:
+        is_first = not embeds
+        capacity = first_content_capacity if is_first else max_fields_per_embed
+        fields = (metadata_fields if is_first else []) + content_fields[content_offset : content_offset + capacity]
+        embeds.append(
+            {
+                "title": decorate_sprint_report_title(title)
+                if is_first
+                else f"{decorate_sprint_report_title(title)} 계속 {len(embeds) + 1}",
+                "color": color,
+                "fields": fields,
+            }
+        )
+        content_offset += capacity
+    return embeds
+
+
+def _split_discord_embed_field_text(value: Any, *, limit: int = 1024) -> list[str]:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ["N/A"]
+    chunks: list[str] = []
+    current = ""
+    for line in normalized.splitlines() or [normalized]:
+        pending = line.rstrip()
+        if not pending:
+            candidate = f"{current}\n" if current else ""
+            if len(candidate) <= limit:
+                current = candidate
+                continue
+        while pending:
+            available = limit - len(current) - (1 if current else 0)
+            if available <= 0:
+                chunks.append(current)
+                current = ""
+                available = limit
+            piece = pending[:available]
+            if current:
+                current = f"{current}\n{piece}"
+            else:
+                current = piece
+            pending = pending[available:]
+            if pending:
+                chunks.append(current)
+                current = ""
+        if not pending and len(current) == limit:
+            chunks.append(current)
+            current = ""
+    if current:
+        chunks.append(current)
+    return chunks or ["N/A"]
 
 
 def render_sprint_completion_user_report(
@@ -3503,7 +3578,8 @@ async def send_sprint_completion_user_report_for_service(
     closeout_result: dict[str, Any],
 ) -> bool:
     snapshot = service._collect_sprint_report_snapshot(sprint_state, closeout_result)
-    headline = service._build_sprint_headline(sprint_state, snapshot, full_detail=False)
+    headline = service._build_sprint_headline(sprint_state, snapshot, full_detail=True)
+    change_summary_lines = service._build_sprint_change_summary_lines(sprint_state, snapshot, full_detail=True)
     return await service.notification_service.send_sprint_completion_user_report(
         report_channel_id=str(service.discord_config.report_channel_id or ""),
         sprint_id=str(sprint_state.get("sprint_id") or ""),
@@ -3517,6 +3593,7 @@ async def send_sprint_completion_user_report_for_service(
             sprint_state=sprint_state,
             snapshot=snapshot,
             headline=headline,
+            change_summary_lines=change_summary_lines,
         ),
         report_file_path=str(sprint_state.get("report_path") or ""),
     )

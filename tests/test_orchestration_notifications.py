@@ -318,6 +318,40 @@ class TeamsRuntimeOrchestrationNotificationsTests(unittest.TestCase):
             )
             service.send_content.assert_not_awaited()
 
+    def test_sprint_completion_user_report_sends_multiple_embeds_with_single_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = Path(tmpdir) / "report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            rich_send = AsyncMock()
+            discord_client = Mock(send_channel_rich_message=rich_send)
+            service = DiscordNotificationService(
+                paths=RuntimePaths.from_root(tmpdir),
+                role="orchestrator",
+                discord_config=Mock(),
+                runtime_config=Mock(),
+                discord_client=discord_client,
+            )
+            service.send_content = AsyncMock()
+
+            sent = asyncio.run(
+                service.send_sprint_completion_user_report(
+                    report_channel_id="123",
+                    sprint_id="sprint-1",
+                    content="markdown report",
+                    embed=[{"title": "done 1"}, {"title": "done 2"}],
+                    report_file_path=str(report),
+                )
+            )
+
+            self.assertTrue(sent)
+            self.assertEqual(rich_send.await_count, 2)
+            first_call, second_call = rich_send.await_args_list
+            self.assertEqual(first_call.kwargs["embed"], {"title": "done 1"})
+            self.assertEqual(first_call.kwargs["files"], [str(report)])
+            self.assertEqual(second_call.kwargs["embed"], {"title": "done 2"})
+            self.assertEqual(second_call.kwargs["files"], [])
+            service.send_content.assert_not_awaited()
+
     def test_sprint_completion_user_report_falls_back_to_markdown_chunks_on_rich_failure(self) -> None:
         discord_client = Mock(send_channel_rich_message=AsyncMock(side_effect=DiscordSendError("boom")))
         service = DiscordNotificationService(

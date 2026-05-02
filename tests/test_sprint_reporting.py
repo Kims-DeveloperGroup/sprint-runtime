@@ -15,6 +15,7 @@ from teams_runtime.workflows.sprints.reporting import (
     build_closeout_terminal_report_context,
     build_sprint_closeout_result,
     build_sprint_closeout_state_update,
+    build_sprint_completion_embed,
     build_sprint_terminal_state_update,
     build_terminal_sprint_report_context,
     build_sprint_history_archive_payload,
@@ -1673,6 +1674,45 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         self.assertIn("  - 참고 아티팩트: teams_runtime/core/sprint_reporting.py", delivered_rendered)
         self.assertIn("delivered change는 없었습니다", fallback_rendered)
         self.assertIn("closeout verified", fallback_rendered)
+
+    def test_build_sprint_completion_embed_keeps_full_headline_and_change_summary(self):
+        long_headline = "상세 TLDR " + ("abcdef " * 80)
+        change_line = "- 무엇이 달라졌나: " + ("change-detail " * 50)
+
+        embeds = build_sprint_completion_embed(
+            title="스프린트 완료",
+            sprint_state={"sprint_id": "sprint-1", "status": "completed"},
+            snapshot={"status_label": "완료", "todo_summary": "completed=1", "commit_count": 2},
+            headline=long_headline,
+            change_summary_lines=["### 긴 변경", change_line],
+        )
+
+        rendered_fields = "\n".join(
+            str(field["value"]) for embed in embeds for field in embed.get("fields", [])
+        )
+        self.assertIn(long_headline.rstrip(), rendered_fields)
+        self.assertIn(change_line.rstrip(), rendered_fields)
+        self.assertNotIn("…", rendered_fields)
+        self.assertIn("변경 요약", [field["name"] for embed in embeds for field in embed.get("fields", [])])
+
+    def test_build_sprint_completion_embed_overflow_uses_continuation_embeds(self):
+        long_change = "- 변경: " + ("overflow-content " * 2200)
+
+        embeds = build_sprint_completion_embed(
+            title="스프린트 완료",
+            sprint_state={"sprint_id": "sprint-1", "status": "completed"},
+            snapshot={"status_label": "완료", "todo_summary": "completed=1", "commit_count": 2},
+            headline="짧은 TLDR",
+            change_summary_lines=[long_change],
+        )
+
+        rendered_fields = "".join(
+            str(field["value"]) for embed in embeds for field in embed.get("fields", [])
+        )
+        self.assertGreater(len(embeds), 1)
+        self.assertIn("overflow-content", rendered_fields)
+        self.assertEqual(rendered_fields.count("overflow-content"), long_change.count("overflow-content"))
+        self.assertTrue(any(str(embed.get("title", "")).endswith("계속 2") for embed in embeds))
 
 
 if __name__ == "__main__":
