@@ -939,7 +939,7 @@ class DiscordNotificationService:
         report_channel_id: str,
         sprint_id: str,
         content: str,
-        embed: dict[str, Any] | None = None,
+        embed: dict[str, Any] | list[dict[str, Any]] | None = None,
         report_file_path: str = "",
     ) -> bool:
         normalized_channel_id = str(report_channel_id or "").strip()
@@ -948,13 +948,15 @@ class DiscordNotificationService:
         rich_send = getattr(self.discord_client, "send_channel_rich_message", None)
         if callable(rich_send) and (embed or report_file_path):
             try:
-                await rich_send(
-                    normalized_channel_id,
-                    content="",
-                    embed=embed,
-                    files=[report_file_path] if str(report_file_path or "").strip() else [],
-                    allowed_mentions="none",
-                )
+                embeds = embed if isinstance(embed, list) else [embed] if embed else [None]
+                for index, payload in enumerate(embeds):
+                    await rich_send(
+                        normalized_channel_id,
+                        content="",
+                        embed=payload,
+                        files=[report_file_path] if index == 0 and str(report_file_path or "").strip() else [],
+                        allowed_mentions="none",
+                    )
                 return True
             except Exception as exc:
                 LOGGER.warning(
