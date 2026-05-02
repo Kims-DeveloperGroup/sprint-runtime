@@ -42,6 +42,7 @@ from teams_runtime.workflows.orchestration.team_service import (
     RELAY_TRANSPORT_INTERNAL,
     TeamService,
 )
+from teams_runtime.workflows.sprints.github_issue_publisher import load_github_token_dotenv
 from teams_runtime.workflows.sprints.lifecycle import build_sprint_artifact_folder_name
 from teams_runtime.core.template import refresh_workspace_prompt_assets, scaffold_workspace
 from teams_runtime.shared.models import ALL_RUNTIME_AGENTS, INTERNAL_TEAM_AGENTS, TEAM_ROLES
@@ -298,6 +299,7 @@ def cmd_init(workspace_root: Path, *, refresh_prompts: bool = False, reset: bool
         workspace_root,
         scaffold_workspace=scaffold_workspace_for_init,
         refresh_workspace_prompts=refresh_workspace_prompt_assets,
+        load_github_token_env=lambda root: load_github_token_dotenv(RuntimePaths.from_root(root)),
         refresh_prompts=refresh_prompts,
         reset=reset,
     )

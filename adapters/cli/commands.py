@@ -313,6 +313,7 @@ def cmd_init_impl(
     *,
     scaffold_workspace: Callable[[Path], list[Path]],
     refresh_workspace_prompts: Callable[[Path], list[Path]] | None = None,
+    load_github_token_env: Callable[[Path], object] | None = None,
     refresh_prompts: bool = False,
     reset: bool = False,
     printer: Printer = print,
@@ -326,11 +327,15 @@ def cmd_init_impl(
             raise ValueError("refresh_workspace_prompts callback is required when refreshing workspace prompts")
         updated = refresh_workspace_prompts(workspace_root)
         printer(f"Refreshed {len(updated)} workspace prompt files at {workspace_root}")
+        if load_github_token_env is not None:
+            load_github_token_env(workspace_root)
         _notify_missing_gh(printer)
         _notify_missing_github_token(printer)
         return 0
     created = scaffold_workspace(workspace_root)
     printer(f"Scaffolded {len(created)} workspace files at {workspace_root}")
+    if load_github_token_env is not None:
+        load_github_token_env(workspace_root)
     _notify_missing_gh(printer)
     _notify_missing_github_token(printer)
     return 0

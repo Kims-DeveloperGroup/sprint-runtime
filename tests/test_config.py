@@ -1141,6 +1141,21 @@ agents:
             self.assertEqual(exit_code, 0)
             self.assertNotIn("GitHub token missing", output.getvalue())
 
+    def test_init_skips_github_token_notice_when_gh_token_exists_in_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+            (workspace_root / ".env").write_text("GH_TOKEN=from-dotenv\n", encoding="utf-8")
+
+            output = io.StringIO()
+            with patch("teams_runtime.adapters.cli.commands.shutil.which", return_value="/usr/bin/gh"), patch.dict(os.environ, {}, clear=True):
+                with redirect_stdout(output):
+                    exit_code = main(["init", "--workspace-root", str(workspace_root)])
+                self.assertEqual(os.environ.get("GH_TOKEN"), "from-dotenv")
+                self.assertEqual(os.environ.get("GITHUB_TOKEN"), "from-dotenv")
+
+            self.assertEqual(exit_code, 0)
+            self.assertNotIn("GitHub token missing", output.getvalue())
+
     def test_scaffold_workspace_preserves_sprint_history_and_rebuilds_index(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir)
