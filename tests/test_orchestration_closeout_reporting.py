@@ -453,8 +453,9 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertIn("## 머신 요약", report_body)
                 self.assertIn("실제로 완료/커밋된 delivered change는 없었습니다.", report_body)
                 self.assertIn("- 어떻게:\n  - closeout 정리: closeout generated", report_body)
-                self.assertIn("linked_artifacts:", report_body)
-                self.assertIn("artifact=kis_adoption_verification.md", report_body)
+                self.assertNotIn("linked_artifacts:", report_body)
+                self.assertNotIn("artifact=kis_adoption_verification.md", report_body)
+                self.assertIn("-> kis_adoption_verification.md", report_body)
                 self.assertIn("closeout_message=closeout generated", report_body)
 
     def test_live_sprint_report_body_surfaces_next_actions_before_full_todo_list(self):
@@ -761,13 +762,8 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                     report_body,
                 )
                 self.assertNotIn("- 어떻게: 핵심 로직은", report_body)
-                self.assertIn("- 개발자 (developer): todo 2건, 완료 2건.", report_body)
                 self.assertIn(
-                    "  - 근거 하이라이트: 김단타 진입 기준 재구성, 김단타 보고 근거 재구성 작업을 담당했습니다.",
-                    report_body,
-                )
-                self.assertIn(
-                    "  - 참고 산출물: libs/kis/domestic_stock_ws.py, libs/kis/_official_domestic_stock_ws.py, tests/test_kis_client.py",
+                    "| 개발자 (developer) | todo 2건, 완료 2건 | 김단타 진입 기준 재구성, 김단타 보고 근거 재구성 작업을 담당했습니다. | libs/kis/domestic_stock_ws.py, libs/kis/_official_domestic_stock_ws.py, tests/test_kis_client.py |",
                     report_body,
                 )
                 self.assertIn("## 참고 아티팩트", report_body)
@@ -779,13 +775,9 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                     "libs/kis/domestic_stock_ws.py",
                     report_body,
                 )
-                self.assertIn(
-                    "artifact=libs/kis/domestic_stock_ws.py",
-                    report_body,
-                )
-                self.assertIn("artifact=libs/kis/_official_domestic_stock_ws.py", report_body)
-                self.assertIn("artifact=libs/kis/domestic_stock_ws.py", report_body)
-                self.assertIn("artifact=tests/test_kis_client.py", report_body)
+                self.assertNotIn("artifact=libs/kis/domestic_stock_ws.py", report_body)
+                self.assertNotIn("artifact=libs/kis/_official_domestic_stock_ws.py", report_body)
+                self.assertNotIn("artifact=tests/test_kis_client.py", report_body)
                 self.assertNotIn("... 외", report_body)
                 self.assertNotIn("외 1건", report_body)
 
