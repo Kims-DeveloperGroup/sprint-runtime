@@ -1103,6 +1103,44 @@ agents:
             self.assertEqual(exit_code, 0)
             self.assertIn("Refreshed", output.getvalue())
 
+    def test_init_notifies_when_github_cli_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+
+            output = io.StringIO()
+            with patch("teams_runtime.adapters.cli.commands.shutil.which", return_value=None), patch.dict(os.environ, {"GH_TOKEN": "token"}, clear=True):
+                with redirect_stdout(output):
+                    exit_code = main(["init", "--workspace-root", str(workspace_root)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("GitHub CLI `gh` is not installed", output.getvalue())
+            self.assertIn("gh auth login", output.getvalue())
+
+    def test_init_notifies_when_github_token_is_missing_from_env(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+
+            output = io.StringIO()
+            with patch("teams_runtime.adapters.cli.commands.shutil.which", return_value="/usr/bin/gh"), patch.dict(os.environ, {}, clear=True):
+                with redirect_stdout(output):
+                    exit_code = main(["init", "--workspace-root", str(workspace_root)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("GitHub token missing", output.getvalue())
+            self.assertIn("GH_TOKEN/GITHUB_TOKEN", output.getvalue())
+
+    def test_init_skips_github_token_notice_when_gh_token_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+
+            output = io.StringIO()
+            with patch("teams_runtime.adapters.cli.commands.shutil.which", return_value="/usr/bin/gh"), patch.dict(os.environ, {"GH_TOKEN": "token"}, clear=True):
+                with redirect_stdout(output):
+                    exit_code = main(["init", "--workspace-root", str(workspace_root)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertNotIn("GitHub token missing", output.getvalue())
+
     def test_scaffold_workspace_preserves_sprint_history_and_rebuilds_index(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir)

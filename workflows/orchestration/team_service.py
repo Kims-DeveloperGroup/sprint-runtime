@@ -334,6 +334,10 @@ from teams_runtime.workflows.sprints.reporting import (
     collect_sprint_todo_artifact_entries,
     render_sprint_artifact_index_markdown,
 )
+from teams_runtime.workflows.sprints.github_issue_publisher import (
+    SprintIssuePublishError,
+    publish_sprint_issue_async,
+)
 from teams_runtime.workflows.state.sprint_store import (
     append_sprint_event,
     iter_sprint_event_entries,
@@ -980,6 +984,7 @@ class TeamService:
         self._role_resume_lock = asyncio.Lock()
         self._pending_role_request_resume_task: asyncio.Task[None] | None = None
         self._internal_relay_consumer_task: asyncio.Task[None] | None = None
+        self._sprint_issue_publish_tasks: set[asyncio.Task[None]] = set()
         self._backlog_sourcing_lock = threading.Lock()
         self._last_backlog_sourcing_activity: dict[str, Any] = {}
         self._malformed_relay_log_times: dict[str, float] = {}
@@ -4412,6 +4417,65 @@ class TeamService:
             related_artifacts=related_artifacts,
         )
 
+    def _schedule_sprint_issue_publish(self, sprint_state: dict[str, Any]) -> None:
+        sprint_id = str(sprint_state.get("sprint_id") or "").strip()
+        if not sprint_id:
+            return
+        task = asyncio.create_task(self._publish_sprint_issue_best_effort(dict(sprint_state)))
+        if task is None:
+            return
+        self._sprint_issue_publish_tasks.add(task)
+        task.add_done_callback(self._sprint_issue_publish_tasks.discard)
+
+    async def _publish_sprint_issue_best_effort(self, sprint_state: dict[str, Any]) -> None:
+        sprint_id = str(sprint_state.get("sprint_id") or "").strip() or "unknown"
+        try:
+            await publish_sprint_issue_async(self.paths, sprint_state)
+        except SprintIssuePublishError as exc:
+            await self._notify_sprint_issue_publish_failure(
+                sprint_id=sprint_id,
+                stage=exc.stage,
+                message=str(exc),
+                next_action=exc.next_action,
+            )
+        except Exception as exc:
+            LOGGER.warning("Sprint GitHub issue publishing failed for %s: %s", sprint_id, exc)
+            await self._notify_sprint_issue_publish_failure(
+                sprint_id=sprint_id,
+                stage="unexpected",
+                message=f"{type(exc).__name__}: {exc}",
+                next_action="Check GitHub CLI configuration and retry publishing.",
+            )
+
+    async def _notify_sprint_issue_publish_failure(
+        self,
+        *,
+        sprint_id: str,
+        stage: str,
+        message: str,
+        next_action: str,
+    ) -> None:
+        channel_id = str(self.discord_config.report_channel_id or "").strip()
+        if not channel_id:
+            return
+        content = (
+            "[GitHub issue publishing failed]\n"
+            f"- sprint_id: {sprint_id or 'unknown'}\n"
+            f"- stage: {stage or 'unknown'}\n"
+            f"- error: {message or 'unknown error'}\n"
+            f"- next_action: {next_action or 'Check gh configuration and retry.'}"
+        )
+        try:
+            await self._send_discord_content(
+                content=content,
+                send=lambda chunk: self.discord_client.send_channel_message(channel_id, chunk),
+                target_description=f"sprint-github-issue-publish:{sprint_id}",
+                swallow_exceptions=False,
+                log_traceback=False,
+            )
+        except Exception as exc:
+            LOGGER.warning("Failed to send sprint GitHub issue publishing failure notification for %s: %s", sprint_id, exc)
+
     async def _send_sprint_report(
         self,
         *,
@@ -4903,6 +4967,7 @@ class TeamService:
         )
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
+        self._schedule_sprint_issue_publish(sprint_state)
         await self._send_terminal_sprint_reports(
             title=terminal_title,
             sprint_state=sprint_state,
@@ -4927,6 +4992,7 @@ class TeamService:
         )
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
+        self._schedule_sprint_issue_publish(sprint_state)
         await self._send_terminal_sprint_reports(
             title=terminal_title,
             sprint_state=sprint_state,
