@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -9,6 +11,23 @@ from typing import Any, Callable
 DispatchRunCallback = Callable[[Path, str | None], object]
 DispatchSyncCallback = Callable[..., int]
 Printer = Callable[[object], object]
+
+
+def _notify_missing_gh(printer: Printer) -> None:
+    if shutil.which("gh") is not None:
+        return
+    printer(
+        "GitHub CLI `gh` is not installed. Sprint GitHub issue publishing will be skipped until you install gh "
+        "and authenticate with `gh auth login` or GH_TOKEN/GITHUB_TOKEN."
+    )
+
+
+def _notify_missing_github_token(printer: Printer) -> None:
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return
+    printer(
+        "GitHub token missing. Run `gh auth login` or set GH_TOKEN/GITHUB_TOKEN before sprint GitHub issue publishing."
+    )
 
 
 def build_parser(
@@ -307,9 +326,13 @@ def cmd_init_impl(
             raise ValueError("refresh_workspace_prompts callback is required when refreshing workspace prompts")
         updated = refresh_workspace_prompts(workspace_root)
         printer(f"Refreshed {len(updated)} workspace prompt files at {workspace_root}")
+        _notify_missing_gh(printer)
+        _notify_missing_github_token(printer)
         return 0
     created = scaffold_workspace(workspace_root)
     printer(f"Scaffolded {len(created)} workspace files at {workspace_root}")
+    _notify_missing_gh(printer)
+    _notify_missing_github_token(printer)
     return 0
 
 
