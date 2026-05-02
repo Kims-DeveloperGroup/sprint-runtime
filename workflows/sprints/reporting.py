@@ -103,6 +103,13 @@ def format_sprint_report_text(value: Any, *, full_detail: bool = False, limit: i
     return _truncate_report_text(normalized, limit=limit)
 
 
+def _markdown_table_cell(value: Any) -> str:
+    normalized = _collapse_whitespace(value)
+    if not normalized:
+        return "-"
+    return normalized.replace("|", "\\|")
+
+
 def sprint_status_label(status: str) -> str:
     normalized = str(status or "").strip().lower()
     return {
@@ -2407,25 +2414,45 @@ def build_sprint_agent_contribution_lines(
     team_roles: tuple[str, ...] | list[str],
     full_detail: bool = False,
 ) -> list[str]:
+    def role_cell(role: str) -> str:
+        normalized_role = str(role or "").strip()
+        if not normalized_role:
+            return "역할"
+        return f"{role_display_name(normalized_role)} ({normalized_role})"
+
+    def table_lines(rows: list[tuple[str, str, str, str]]) -> list[str]:
+        if not rows:
+            return ["- 역할별 기여 기록 없음"]
+        lines = [
+            "| 역할 | 활동 | 근거/요약 | 참고 산출물 |",
+            "| --- | --- | --- | --- |",
+        ]
+        for role, activity, summary, artifacts in rows:
+            lines.append(
+                "| {role} | {activity} | {summary} | {artifacts} |".format(
+                    role=_markdown_table_cell(role),
+                    activity=_markdown_table_cell(activity),
+                    summary=_markdown_table_cell(summary),
+                    artifacts=_markdown_table_cell(artifacts),
+                )
+            )
+        return lines
+
     normalized_draft = dict(draft or {})
     draft_contributions = list(normalized_draft.get("agent_contributions") or [])
     if draft_contributions:
-        lines: list[str] = []
+        rows: list[tuple[str, str, str, str]] = []
         for item in draft_contributions:
             role = str(item.get("role") or "").strip()
-            role_label = role_display_name(role) if role else "역할"
             summary = _render_text(
                 format_text,
                 item.get("summary") or "스프린트 진행을 지원했습니다.",
                 full_detail=full_detail,
                 limit=140,
             )
-            line = f"- {role_label}" + (f" ({role})" if role else "") + f": {summary}"
             artifacts = [str(value).strip() for value in (item.get("artifacts") or []) if str(value).strip()]
-            if artifacts:
-                line += " 주요 산출물: " + ", ".join(artifacts)
-            lines.append(line)
-        return lines
+            rows.append((role_cell(role), "기여 기록", summary, ", ".join(artifacts) or "-"))
+        return table_lines(rows)
     contributions: dict[str, dict[str, Any]] = {}
 
     def ensure_role(role: str) -> dict[str, Any]:
@@ -2508,7 +2535,7 @@ def build_sprint_agent_contribution_lines(
         "version_controller",
         *sorted(role for role in contributions if role not in team_role_set),
     ]
-    lines: list[str] = []
+    rows: list[tuple[str, str, str, str]] = []
     for role in ordered_roles:
         data = contributions.get(role)
         if not data:
@@ -2533,17 +2560,6 @@ def build_sprint_agent_contribution_lines(
                 (f"{data['titles'][0]} 등 {int(data['todo_count'])}건을 담당했습니다." if data.get("titles") else ""),
                 "스프린트 진행을 지원했습니다.",
             )
-        lines.append(f"- {role_display_name(role)} ({role}): {', '.join(stats) or '활동 기록'}.")
-        if highlight:
-            lines.append(
-                "  - 근거 하이라이트: "
-                + _render_text(
-                    format_text,
-                    highlight,
-                    full_detail=full_detail,
-                    limit=120,
-                )
-            )
         artifact_items = [str(item).strip() for item in (data.get("artifacts") or []) if str(item).strip()]
         if full_detail:
             artifact_preview = ", ".join(artifact_items).strip()
@@ -2553,8 +2569,15 @@ def build_sprint_agent_contribution_lines(
             remaining = max(0, len(artifact_items) - 2)
             if not full_detail and remaining > 0:
                 artifact_preview += f" 외 {remaining}건"
-            lines.append(f"  - 참고 산출물: {artifact_preview}")
-    return lines or ["- 역할별 기여 기록 없음"]
+        rows.append(
+            (
+                role_cell(role),
+                ", ".join(stats) or "활동 기록",
+                _render_text(format_text, highlight, full_detail=full_detail, limit=120),
+                artifact_preview or "-",
+            )
+        )
+    return table_lines(rows)
 
 
 def build_sprint_issue_lines(
@@ -2877,12 +2900,6 @@ def render_sprint_completion_user_report(
         "🔄 변경 요약",
         *build_change_summary_lines(sprint_state, snapshot, True),
         "",
-        "📋 계획된 TODO",
-        *build_planned_todo_lines(sprint_state, snapshot, True),
-        "",
-        "🔖 커밋",
-        *build_commit_lines(snapshot),
-        "",
         "➡️ 후속 조치",
         *build_followup_lines(sprint_state, snapshot, True),
         "",
@@ -2924,8 +2941,6 @@ def build_terminal_sprint_report_sections(
     return [
         report_section("한눈에 보기", build_overview_lines(sprint_state, snapshot, full_detail=True)),
         report_section("변경 요약", build_change_summary_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("계획된 TODO", build_planned_todo_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("커밋", build_commit_lines(snapshot)),
         report_section("후속 조치", build_followup_lines(sprint_state, snapshot, full_detail=True)),
         report_section("Sprint A to Z", build_timeline_lines(sprint_state, snapshot, full_detail=True)),
         report_section("에이전트 기여", build_agent_contribution_lines(sprint_state, snapshot, full_detail=True)),
@@ -3120,14 +3135,6 @@ def render_sprint_report_body(
         "## 변경 요약",
         "",
         *build_change_summary_lines(sprint_state, snapshot, True),
-        "",
-        "## 계획된 TODO",
-        "",
-        *build_planned_todo_lines(sprint_state, snapshot, True),
-        "",
-        "## 커밋",
-        "",
-        *build_commit_lines(snapshot),
         "",
         "## 후속 조치",
         "",
@@ -3416,29 +3423,7 @@ def build_machine_sprint_report_lines(
                 or "N/A"
             )
         ),
-        "",
-        "todo_summary:",
     ]
-    for todo in sprint_state.get("todos") or []:
-        lines.append(
-            "- [{status}] {title} | request_id={request_id} | carry_over={carry}".format(
-                status=str(todo.get("status") or ""),
-                title=str(todo.get("title") or ""),
-                request_id=str(todo.get("request_id") or "N/A"),
-                carry=str(todo.get("carry_over_backlog_id") or "N/A"),
-            )
-        )
-    if linked_artifacts:
-        lines.extend(["", "linked_artifacts:"])
-        for entry in linked_artifacts:
-            lines.append(
-                "- [{status}] {title} | request_id={request_id} | artifact={path}".format(
-                    status=entry["status"],
-                    title=entry["title"],
-                    request_id=entry["request_id"],
-                    path=entry["path"],
-                )
-            )
     if closeout_result.get("message"):
         lines.extend(["", f"closeout_message={closeout_result.get('message') or ''}"])
     if sprint_state.get("version_control_message"):

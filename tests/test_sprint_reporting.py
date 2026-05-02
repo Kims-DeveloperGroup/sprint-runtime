@@ -232,7 +232,7 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
 
         self.assertEqual(
             [section.title for section in sections],
-            ["한눈에 보기", "변경 요약", "계획된 TODO", "커밋", "후속 조치", "Sprint A to Z", "에이전트 기여", "핵심 이슈", "성과", "참고 아티팩트"],
+            ["한눈에 보기", "변경 요약", "후속 조치", "Sprint A to Z", "에이전트 기여", "핵심 이슈", "성과", "참고 아티팩트"],
         )
         self.assertEqual(sections[0].lines, ("overview",))
 
@@ -517,11 +517,40 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
             team_roles=("planner", "developer", "qa"),
         )
 
-        self.assertIn("- 플래너 (planner): todo 1건, 완료 1건.", lines)
-        self.assertIn("  - 근거 하이라이트: planner finalized scope", lines)
-        self.assertIn("  - 참고 산출물: plan.md", lines)
-        self.assertIn("- 개발자 (developer): todo 1건, 이슈 1건.", lines)
-        self.assertIn("- version_controller (version_controller): 이벤트 1건.", [line.replace("버전 컨트롤러", "version_controller") for line in lines])
+        normalized_lines = [line.replace("버전 컨트롤러", "version_controller") for line in lines]
+        self.assertEqual(lines[0], "| 역할 | 활동 | 근거/요약 | 참고 산출물 |")
+        self.assertEqual(lines[1], "| --- | --- | --- | --- |")
+        self.assertIn("| 플래너 (planner) | todo 1건, 완료 1건 | planner finalized scope | plan.md |", lines)
+        self.assertIn("| 개발자 (developer) | todo 1건, 이슈 1건 | developer hit follow-up issue | fix.py |", lines)
+        self.assertIn(
+            "| version_controller (version_controller) | 이벤트 1건 | closeout commit created | shared_workspace/report.md |",
+            normalized_lines,
+        )
+
+    def test_build_sprint_agent_contribution_lines_renders_planner_draft_as_table(self):
+        lines = build_sprint_agent_contribution_lines(
+            {},
+            {},
+            draft={
+                "agent_contributions": [
+                    {
+                        "role": "planner",
+                        "summary": "draft summary with a | separator",
+                        "artifacts": ["plan.md", "report.md"],
+                    }
+                ]
+            },
+            format_text=_format_text,
+            role_display_name=_role_label,
+            preview_artifact=_preview_artifact,
+            team_roles=("planner", "developer", "qa"),
+        )
+
+        self.assertEqual(lines[0], "| 역할 | 활동 | 근거/요약 | 참고 산출물 |")
+        self.assertIn(
+            "| 플래너 (planner) | 기여 기록 | draft summary with a \\| separator | plan.md, report.md |",
+            lines,
+        )
 
     def test_build_sprint_issue_lines_surfaces_blocked_todos_uncommitted_paths_and_role_errors(self):
         lines = build_sprint_issue_lines(
@@ -608,8 +637,8 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         self.assertIn("**TL;DR** headline", report)
         self.assertIn("commits   : 1 (abcdef0)", report)
         self.assertIn("🔄 변경 요약", report)
-        self.assertIn("📋 계획된 TODO", report)
-        self.assertIn("🔖 커밋", report)
+        self.assertNotIn("📋 계획된 TODO", report)
+        self.assertNotIn("🔖 커밋", report)
         self.assertIn("➡️ 후속 조치", report)
         self.assertIn("🧭 흐름", report)
         self.assertIn("🤖 에이전트 기여", report)
@@ -930,9 +959,9 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
 
         self.assertIn("# Sprint Report", body)
         self.assertLess(body.index("## 한눈에 보기"), body.index("## 변경 요약"))
-        self.assertLess(body.index("## 변경 요약"), body.index("## 계획된 TODO"))
-        self.assertLess(body.index("## 계획된 TODO"), body.index("## 커밋"))
-        self.assertLess(body.index("## 커밋"), body.index("## 후속 조치"))
+        self.assertNotIn("## 계획된 TODO", body)
+        self.assertNotIn("## 커밋", body)
+        self.assertLess(body.index("## 변경 요약"), body.index("## 후속 조치"))
         self.assertLess(body.index("## 후속 조치"), body.index("## Sprint A to Z"))
         self.assertLess(body.index("## Sprint A to Z"), body.index("## 에이전트 기여"))
         self.assertLess(body.index("## 에이전트 기여"), body.index("## 핵심 이슈"))
@@ -941,6 +970,8 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         self.assertLess(body.index("## 참고 아티팩트"), body.index("## 머신 요약"))
         self.assertIn("- overview", body)
         self.assertIn("- changes", body)
+        self.assertNotIn("- planned", body)
+        self.assertNotIn("- commit", body)
         self.assertIn("- timeline", body)
         self.assertIn("- contribution", body)
         self.assertIn("- issue", body)
@@ -1102,11 +1133,10 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         self.assertIn("sprint_tagged_commit_shas=abcdef0123456789", rendered)
         self.assertIn("uncommitted_paths=leftover.py", rendered)
         self.assertIn("todo_status_counts=committed:1", rendered)
-        self.assertIn("- [committed] extract machine helper | request_id=req-machine | carry_over=carry-1", rendered)
-        self.assertIn(
-            "- [committed] extract machine helper | request_id=req-machine | artifact=shared_workspace/report.md",
-            rendered,
-        )
+        self.assertNotIn("todo_summary:", rendered)
+        self.assertNotIn("linked_artifacts:", rendered)
+        self.assertNotIn("- [committed] extract machine helper | request_id=req-machine | carry_over=carry-1", rendered)
+        self.assertNotIn("artifact=shared_workspace/report.md", rendered)
         self.assertIn("closeout_message=closeout verified", rendered)
         self.assertIn("version_control_message=commit message", rendered)
 
