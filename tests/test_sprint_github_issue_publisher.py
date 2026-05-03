@@ -95,7 +95,10 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             sprint_id = "260501-Sprint-12:00"
             folder_name = "260501-Sprint-12-00"
             paths.sprint_artifact_dir(folder_name).mkdir(parents=True)
-            (paths.sprint_artifact_dir(folder_name) / "report.md").write_text("# final\n", encoding="utf-8")
+            (paths.sprint_artifact_dir(folder_name) / "report.md").write_text(
+                "# final\n\n- **done**\n",
+                encoding="utf-8",
+            )
             calls: list[tuple[list[str], str | None]] = []
 
             def runner(args, stdin=None):
@@ -128,7 +131,10 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             self.assertEqual(issue_number, 42)
             create_call = next(stdin for args, stdin in calls if args[:2] == ["issue", "create"])
             self.assertIn("teams-runtime:sprint-issue:260501-Sprint-12:00", create_call or "")
-            self.assertTrue(any(args[:2] == ["issue", "comment"] and "# final" in (stdin or "") for args, stdin in calls))
+            comment_call = next(stdin for args, stdin in calls if args[:2] == ["issue", "comment"])
+            self.assertIn("## sprint/report.md\n\n# final", comment_call or "")
+            self.assertIn("- **done**", comment_call or "")
+            self.assertNotIn("```text", comment_call or "")
 
     def test_publish_sprint_issue_updates_existing_issue_and_comment(self):
         with tempfile.TemporaryDirectory() as tmpdir:

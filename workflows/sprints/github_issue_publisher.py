@@ -333,8 +333,8 @@ def _ensure_issue(runner: GhRunner, sprint_state: dict[str, Any]) -> int:
 
 
 def _split_document_comment(label: str, content: str) -> list[str]:
-    header = f"## {label}\n\n```text\n"
-    footer = "\n```\n"
+    header = f"## {label}\n\n"
+    footer = "\n"
     chunk_size = max(MAX_COMMENT_BODY_CHARS - len(header) - len(footer) - 200, 1000)
     chunks = [content[index : index + chunk_size] for index in range(0, len(content), chunk_size)] or [""]
     return [f"{header}{chunk}{footer}" for chunk in chunks]
