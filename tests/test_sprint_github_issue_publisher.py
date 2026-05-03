@@ -157,6 +157,20 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 "# final\n\n- **done**\n",
                 encoding="utf-8",
             )
+            (paths.sprint_artifact_dir(folder_name) / "spec.md").write_text(
+                "# Sprint Spec\n\n"
+                "- sprint_name: 260501-Sprint-12:00\n\n"
+                "## Canonical Contract Body\n\n"
+                "### First logical unit\n"
+                "- request_id: req-one\n"
+                "#### 플래너\n"
+                "- first planner evidence\n\n"
+                "### Second logical unit\n"
+                "- request_id: req-two\n"
+                "#### QA\n"
+                "- second qa evidence\n",
+                encoding="utf-8",
+            )
             calls: list[tuple[list[str], str | None]] = []
 
             def runner(args, stdin=None):
@@ -193,6 +207,25 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             self.assertIn("## sprint/report.md\n\n# final", comment_call or "")
             self.assertIn("- **done**", comment_call or "")
             self.assertNotIn("```text", comment_call or "")
+            comment_bodies = [stdin or "" for args, stdin in calls if args[:2] == ["issue", "comment"]]
+            report_index = next(index for index, body in enumerate(comment_bodies) if "## sprint/report.md" in body)
+            overview_index = next(index for index, body in enumerate(comment_bodies) if "## sprint/spec.md - Overview" in body)
+            first_spec_index = next(
+                index
+                for index, body in enumerate(comment_bodies)
+                if "## sprint/spec.md - req-one - First logical unit" in body
+            )
+            second_spec_index = next(
+                index
+                for index, body in enumerate(comment_bodies)
+                if "## sprint/spec.md - req-two - Second logical unit" in body
+            )
+            self.assertLess(report_index, overview_index)
+            self.assertLess(overview_index, first_spec_index)
+            self.assertLess(first_spec_index, second_spec_index)
+            self.assertIn("#### 플래너", comment_bodies[first_spec_index])
+            self.assertIn("#### QA", comment_bodies[second_spec_index])
+            self.assertFalse(any("## sprint/spec.md\n" in body for body in comment_bodies))
 
     def test_publish_sprint_issue_updates_existing_issue_and_comment(self):
         with tempfile.TemporaryDirectory() as tmpdir:

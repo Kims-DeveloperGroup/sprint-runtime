@@ -423,6 +423,41 @@ def _split_document_comment(label: str, content: str) -> list[str]:
     return [f"{header}{chunk}{footer}" for chunk in chunks]
 
 
+def _clean_heading_text(value: str) -> str:
+    return re.sub(r"\s+#+\s*$", "", str(value or "").strip()).strip()
+
+
+def _extract_request_id_from_markdown(content: str) -> str:
+    match = re.search(r"(?m)^-\s*request_id:\s*`?([^`\n]+?)`?\s*$", content)
+    return match.group(1).strip() if match else ""
+
+
+def _split_sprint_spec_document(label: str, content: str) -> list[tuple[str, str]]:
+    headings = list(re.finditer(r"(?m)^###\s+(.+?)\s*$", content))
+    if not headings:
+        return [(f"{label} - Full Spec", content)]
+
+    sections: list[tuple[str, str]] = []
+    overview = content[: headings[0].start()].strip()
+    if overview:
+        sections.append((f"{label} - Overview", f"{overview}\n"))
+    for index, heading in enumerate(headings):
+        start = heading.start()
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(content)
+        section_content = content[start:end].strip()
+        title = _clean_heading_text(heading.group(1)) or "Untitled Section"
+        request_id = _extract_request_id_from_markdown(section_content)
+        section_label = f"{label} - {request_id} - {title}" if request_id else f"{label} - {title}"
+        sections.append((section_label, f"{section_content}\n"))
+    return sections
+
+
+def _publishable_document_sections(document: SprintIssueDocument, content: str) -> list[tuple[str, str]]:
+    if document.label == "sprint/spec.md":
+        return _split_sprint_spec_document(document.label, content)
+    return [(document.label, content)]
+
+
 def _existing_comments_by_marker(runner: GhRunner, repo: str, issue_number: int) -> dict[str, int]:
     result = _run_gh(runner, ["api", f"repos/{repo}/issues/{issue_number}/comments"], stage="comments")
     try:
@@ -466,8 +501,16 @@ def publish_sprint_issue(paths: RuntimePaths, sprint_state: dict[str, Any], *, r
             content = document.path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = document.path.read_text(encoding="utf-8", errors="replace")
-        for index, body in enumerate(_split_document_comment(document.label, content), start=1):
-            _upsert_comment(runner, repo, issue_number, _comment_marker(sprint_id, document.label, index), body, existing_comments)
+        for section_label, section_content in _publishable_document_sections(document, content):
+            for index, body in enumerate(_split_document_comment(section_label, section_content), start=1):
+                _upsert_comment(
+                    runner,
+                    repo,
+                    issue_number,
+                    _comment_marker(sprint_id, section_label, index),
+                    body,
+                    existing_comments,
+                )
     return issue_number
 
 
