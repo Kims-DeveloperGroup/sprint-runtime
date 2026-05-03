@@ -397,6 +397,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("python -m teams_runtime sprint start|stop|restart|status", orchestrator_prompt)
             self.assertIn("legacy `approve request_id:...`", orchestrator_prompt)
             self.assertNotIn("승인 관리", orchestrator_prompt)
+            self.assertIn("unless the user explicitly mentions a branch checkout", commit_policy)
             self.assertIn("코드베이스와 모듈 구조를 overview", architect_prompt)
             self.assertIn("task별 technical specification", architect_prompt)
             self.assertIn("developer 결과를 검토해", architect_prompt)

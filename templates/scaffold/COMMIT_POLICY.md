@@ -44,5 +44,6 @@ fix bug
 
 - Reread this file before planning or creating commits.
 - If a prompt gives a shorter commit rule, this file wins.
+- Do not change or switch the current git branch unless the user explicitly mentions a branch checkout.
 - Do not leave a task in `completed` state while task-owned changes remain uncommitted. version_controller must commit them first or return a blocked/failed reason.
 - If a commit mixes multiple backlog/todo units, split or rewrite it before considering the task done unless the user explicitly asked for a squash.
