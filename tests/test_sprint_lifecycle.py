@@ -479,6 +479,7 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         }
         traced_item = {
             "title": "KIS websocket alert contract",
+            "milestone_title": "workflow initial",
             "acceptance_criteria": ["신규 호가 이벤트가 알림과 히스토리에 반영된다."],
             "origin": {
                 "milestone_ref": "workflow initial",
@@ -524,6 +525,81 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             "",
         )
 
+    def test_validate_initial_phase_step_result_enforces_prioritization_and_todo_completion(self) -> None:
+        sprint_state = {
+            "sprint_id": "Sprint-01",
+            "selected_items": [],
+            "selected_backlog_ids": [],
+            "todos": [],
+        }
+        prioritization_request = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION,
+            },
+        }
+        todo_request = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_TODO_FINALIZATION,
+            },
+        }
+
+        self.assertIn(
+            "priority_rank 없음",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=prioritization_request,
+                sync_summary={},
+                relevant_items=[{"title": "priority missing", "milestone_title": "workflow initial"}],
+            ),
+        )
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=prioritization_request,
+                sync_summary={},
+                relevant_items=[{"title": "priority set", "milestone_title": "workflow initial", "priority_rank": 1}],
+            ),
+            "",
+        )
+        self.assertIn(
+            "selected backlog 또는 sprint todo",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=todo_request,
+                sync_summary={},
+                relevant_items=[{"title": "ready", "milestone_title": "workflow initial", "priority_rank": 1}],
+            ),
+        )
+
+        sprint_state.update(
+            {
+                "selected_items": [
+                    {
+                        "backlog_id": "backlog-1",
+                        "title": "ready",
+                        "planned_in_sprint_id": "Sprint-01",
+                    }
+                ],
+                "selected_backlog_ids": ["backlog-1"],
+                "todos": [{"todo_id": "todo-1", "backlog_id": "backlog-1"}],
+            }
+        )
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=todo_request,
+                sync_summary={},
+                relevant_items=[{"title": "ready", "milestone_title": "workflow initial", "priority_rank": 1}],
+            ),
+            "",
+        )
+
     def test_validate_initial_phase_step_result_enforces_research_backlog_trace(self) -> None:
         sprint_state = {
             "kickoff_requirements": ["requirement-a"],
@@ -542,6 +618,7 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         }
         item = {
             "title": "Research-traced workflow contract",
+            "milestone_title": "workflow initial",
             "acceptance_criteria": ["workflow가 research trace를 보존한다."],
             "origin": {
                 "milestone_ref": "workflow initial",

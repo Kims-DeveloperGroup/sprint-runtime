@@ -765,19 +765,21 @@ def initial_phase_step_instruction(step: str) -> str:
             "Define sprint-relevant backlog from the current milestone, kickoff requirements, and spec before any selection. "
             "Create or reopen backlog items when the persisted queue does not fully cover the sprint contract. "
             "Backlog zero is invalid in this step. Each backlog item must include concrete acceptance criteria plus origin trace "
-            "for milestone_ref, requirement_refs, and spec_refs."
+            "for milestone_ref, requirement_refs, and spec_refs. Each item must also be linkable to this sprint through "
+            "milestone_title or origin.sprint_id; leave planned_in_sprint_id and selected_in_sprint_id unset until later steps."
         )
     if normalized == INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION:
         return (
             "Prioritize only the already-defined sprint-relevant backlog work and persist priority_rank plus milestone_title. "
             "Use priority_rank=1 for the first dependency to execute; larger priority_rank values run later. "
-            "Do not create execution todos in this step, and do not proceed if sprint-relevant backlog is still zero."
+            "Do not create execution todos in this step, and do not proceed if sprint-relevant backlog is still zero. "
+            "If any sprint-relevant item still lacks priority_rank or milestone_title, the same step will reopen."
         )
     if normalized == INITIAL_PHASE_STEP_TODO_FINALIZATION:
         return (
             "Finalize the execution-ready todo set for this sprint. "
             "Persist planned_in_sprint_id for the chosen backlog items and leave the prioritized todo set ready to run "
-            "in ascending priority_rank order."
+            "in ascending priority_rank order. If selected backlog ids or todos are not persisted, the same step will reopen."
         )
     return ""
 
@@ -842,6 +844,18 @@ def build_sprint_planning_request_record(
                 initial_phase_step_instruction(normalized_step),
             ]
         )
+    reopened_step = str(sprint_state.get("last_initial_phase_reopen_step") or "").strip().lower()
+    if normalized_phase == "initial" and normalized_step and reopened_step == normalized_step:
+        reopen_counts = dict(sprint_state.get("initial_phase_reopen_counts") or {})
+        body_lines.extend(
+            [
+                "initial_phase_reopen:",
+                f"- reopen_of_request_id: {sprint_state.get('last_initial_phase_reopen_request_id') or ''}",
+                f"- reopen_count: {int(reopen_counts.get(normalized_step) or 0)}",
+                f"- reason: {sprint_state.get('last_initial_phase_reopen_reason') or ''}",
+                "- policy: 이 단계의 필수 완료 조건이 충족되지 않아 같은 initial phase step이 재오픈되었습니다. 누락된 evidence를 보강하고 readback 근거를 남기세요.",
+            ]
+        )
     body_lines.extend(sprint_research_prepass_body_lines(sprint_state))
     body = "\n".join(line for line in body_lines if str(line).strip())
     sprint_id = str(sprint_state.get("sprint_id") or "")
@@ -867,6 +881,21 @@ def build_sprint_planning_request_record(
             "kickoff_reference_artifacts": list(sprint_state.get("kickoff_reference_artifacts") or []),
             "sprint_name": sprint_state.get("sprint_name") or "",
             "sprint_folder": sprint_state.get("sprint_folder") or "",
+            "reopen_of_request_id": (
+                sprint_state.get("last_initial_phase_reopen_request_id") or ""
+                if reopened_step == normalized_step
+                else ""
+            ),
+            "initial_phase_reopen_reason": (
+                sprint_state.get("last_initial_phase_reopen_reason") or ""
+                if reopened_step == normalized_step
+                else ""
+            ),
+            "initial_phase_reopen_count": (
+                int(dict(sprint_state.get("initial_phase_reopen_counts") or {}).get(normalized_step) or 0)
+                if reopened_step == normalized_step
+                else 0
+            ),
         },
         "current_role": "orchestrator",
         "next_role": "planner",
@@ -976,6 +1005,45 @@ def validate_initial_phase_step_result(
             f"initial phase {initial_phase_step_title(step)} 단계에서 sprint-relevant backlog가 0건입니다. "
             "backlog 0건 상태는 허용되지 않습니다."
         )
+    if step == INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION:
+        validation_errors: list[str] = []
+        for item in relevant_items:
+            title = str(item.get("title") or item.get("backlog_id") or "unnamed backlog").strip()
+            priority_rank = int(item.get("priority_rank") or 0)
+            milestone_title = str(item.get("milestone_title") or "").strip()
+            if priority_rank <= 0:
+                validation_errors.append(f"{title}: priority_rank 없음")
+            if not milestone_title:
+                validation_errors.append(f"{title}: milestone_title 없음")
+        if validation_errors:
+            return (
+                "initial phase backlog 우선순위화 단계의 완료 조건이 부족합니다. "
+                + "; ".join(validation_errors[:4])
+            )
+        return ""
+    if step == INITIAL_PHASE_STEP_TODO_FINALIZATION:
+        selected_items = [item for item in (sprint_state.get("selected_items") or []) if isinstance(item, dict)]
+        selected_backlog_ids = [
+            str(item).strip() for item in (sprint_state.get("selected_backlog_ids") or []) if str(item).strip()
+        ]
+        todos = [item for item in (sprint_state.get("todos") or []) if isinstance(item, dict)]
+        if not selected_items or not selected_backlog_ids or not todos:
+            return (
+                "initial phase 실행 todo 확정 단계에서 selected backlog 또는 sprint todo가 persist되지 않았습니다. "
+                "planned_in_sprint_id와 실행 todo를 확정해야 합니다."
+            )
+        missing_planned = [
+            str(item.get("title") or item.get("backlog_id") or "unnamed backlog").strip()
+            for item in selected_items
+            if str(item.get("planned_in_sprint_id") or "").strip()
+            != str(sprint_state.get("sprint_id") or "").strip()
+        ]
+        if missing_planned:
+            return (
+                "initial phase 실행 todo 확정 단계에서 planned_in_sprint_id가 현재 sprint와 연결되지 않았습니다. "
+                + "; ".join(missing_planned[:4])
+            )
+        return ""
     if step != INITIAL_PHASE_STEP_BACKLOG_DEFINITION:
         return ""
     if not bool(sync_summary.get("planner_persisted_backlog")):
@@ -993,10 +1061,14 @@ def validate_initial_phase_step_result(
         requirement_refs = normalize_trace_list(origin.get("requirement_refs") or [])
         spec_refs = normalize_trace_list(origin.get("spec_refs") or [])
         research_refs = normalize_trace_list(origin.get("research_refs") or [])
+        origin_sprint_id = str(origin.get("sprint_id") or "").strip()
+        item_milestone = str(item.get("milestone_title") or "").strip()
         if not acceptance:
             validation_errors.append(f"{title}: acceptance_criteria 없음")
         if not milestone_ref:
             validation_errors.append(f"{title}: origin.milestone_ref 없음")
+        if not origin_sprint_id and not item_milestone:
+            validation_errors.append(f"{title}: milestone_title 또는 origin.sprint_id 없음")
         if kickoff_requirements and not requirement_refs:
             validation_errors.append(f"{title}: origin.requirement_refs 없음")
         if not spec_refs:

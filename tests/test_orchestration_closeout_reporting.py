@@ -1490,6 +1490,82 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertEqual(sprint_state["phase"], "ongoing")
                 self.assertEqual(sprint_state["status"], "running")
 
+    def test_run_initial_sprint_phase_reopens_incomplete_step_before_advancing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            config_text = config_text.replace('  start_mode: "auto"\n', '  start_mode: "manual_daily"\n', 1)
+            config_path.write_text(config_text, encoding="utf-8")
+
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="workflow initial",
+                    trigger="manual_start",
+                )
+                seen_steps: list[str] = []
+                seen_bodies: list[str] = []
+                apply_counts: dict[str, int] = {}
+
+                async def fake_run_internal_request_chain(*, sprint_id, request_record, initial_role):
+                    self.assertEqual(sprint_id, sprint_state["sprint_id"])
+                    self.assertEqual(initial_role, "planner")
+                    seen_steps.append(str(request_record["params"].get("initial_phase_step") or ""))
+                    seen_bodies.append(str(request_record.get("body") or ""))
+                    persisted = service._load_request(request_record["request_id"])
+                    persisted["status"] = "completed"
+                    persisted["result"] = {
+                        "request_id": request_record["request_id"],
+                        "role": "planner",
+                        "status": "completed",
+                        "summary": f"{request_record['params'].get('initial_phase_step')} 완료",
+                        "insights": [],
+                        "proposals": {},
+                        "artifacts": [],
+                        "error": "",
+                    }
+                    service._save_request(persisted)
+                    return dict(persisted["result"])
+
+                def fake_apply_sprint_planning_result(sprint_state_arg, *, phase, request_record, result):
+                    self.assertEqual(phase, "initial")
+                    step = str(request_record["params"].get("initial_phase_step") or "")
+                    apply_counts[step] = int(apply_counts.get(step) or 0) + 1
+                    if step == orchestration_module.INITIAL_PHASE_STEP_BACKLOG_DEFINITION and apply_counts[step] == 1:
+                        request_record["initial_phase_validation_error"] = "backlog_definition evidence missing"
+                        service._save_request(request_record)
+                        return False
+                    request_record["initial_phase_validation_error"] = ""
+                    service._save_request(request_record)
+                    return step == orchestration_module.INITIAL_PHASE_STEP_TODO_FINALIZATION
+
+                with (
+                    patch.object(service, "_run_internal_request_chain", side_effect=fake_run_internal_request_chain),
+                    patch.object(service, "_apply_sprint_planning_result", side_effect=fake_apply_sprint_planning_result),
+                    patch.object(service, "_missing_sprint_preflight_artifacts", return_value=[]),
+                    patch.object(service, "_send_sprint_spec_todo_report", AsyncMock(return_value=None)),
+                ):
+                    ready = asyncio.run(service._run_initial_sprint_phase(sprint_state))
+
+                self.assertTrue(ready)
+                self.assertEqual(
+                    seen_steps,
+                    [
+                        orchestration_module.INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+                        orchestration_module.INITIAL_PHASE_STEP_ARTIFACT_SYNC,
+                        orchestration_module.INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+                        orchestration_module.INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+                        orchestration_module.INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION,
+                        orchestration_module.INITIAL_PHASE_STEP_TODO_FINALIZATION,
+                    ],
+                )
+                self.assertIn("initial_phase_reopen:", seen_bodies[3])
+                self.assertIn("backlog_definition evidence missing", seen_bodies[3])
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated["status"], "running")
+                self.assertEqual(updated["initial_phase_reopen_counts"], {"backlog_definition": 1})
+
     def test_run_initial_sprint_phase_emits_spec_todo_preflight_report(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

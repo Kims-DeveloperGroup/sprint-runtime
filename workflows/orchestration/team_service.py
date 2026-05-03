@@ -495,6 +495,7 @@ SPRINT_DISCORD_SUMMARY_ARTIFACT_LIMIT = 3
 
 PLANNING_CONTEXT_RECENCY_SECONDS = 3600.0
 SPRINT_INITIAL_PHASE_MAX_ITERATIONS = 3
+SPRINT_INITIAL_PHASE_STEP_MAX_REOPENS = 2
 RECENT_SPRINT_ACTIVITY_LIMIT = 25
 SPRINT_SPEC_TODO_REPORT_DOC_KEYS = ("milestone", "plan", "spec", "todo_backlog", "iteration_log")
 
@@ -4229,15 +4230,93 @@ class TeamService:
             result=result,
         )
 
+    def _record_initial_phase_step_reopen(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        step: str,
+        reason: str,
+        request_record: dict[str, Any],
+    ) -> bool:
+        normalized_step = str(step or "").strip().lower()
+        if not normalized_step:
+            return False
+        raw_counts = sprint_state.get("initial_phase_reopen_counts")
+        counts = {
+            str(key).strip(): int(value or 0)
+            for key, value in (raw_counts.items() if isinstance(raw_counts, dict) else [])
+            if str(key).strip()
+        }
+        current_count = int(counts.get(normalized_step) or 0)
+        if current_count >= SPRINT_INITIAL_PHASE_STEP_MAX_REOPENS:
+            return False
+
+        next_count = current_count + 1
+        counts[normalized_step] = next_count
+        request_id = str(request_record.get("request_id") or "").strip()
+        normalized_reason = str(reason or "").strip()
+        sprint_state["initial_phase_reopen_counts"] = counts
+        sprint_state["last_initial_phase_reopen_step"] = normalized_step
+        sprint_state["last_initial_phase_reopen_reason"] = normalized_reason
+        sprint_state["last_initial_phase_reopen_request_id"] = request_id
+        sprint_state["phase"] = "initial"
+        sprint_state["status"] = "planning"
+        sprint_state["closeout_status"] = ""
+        sprint_state["ended_at"] = ""
+        self._append_sprint_event(
+            str(sprint_state.get("sprint_id") or ""),
+            event_type="initial_phase_step_reopened",
+            summary=(
+                f"initial phase {self._initial_phase_step_title(normalized_step)} 단계가 완료 조건 미충족으로 재오픈되었습니다. "
+                f"reopen={next_count}/{SPRINT_INITIAL_PHASE_STEP_MAX_REOPENS} | reason={normalized_reason}"
+            ).strip(),
+            payload={
+                "request_id": request_id,
+                "initial_phase_step": normalized_step,
+                "reopen_count": next_count,
+                "max_reopens": SPRINT_INITIAL_PHASE_STEP_MAX_REOPENS,
+                "reason": normalized_reason,
+            },
+        )
+        if request_id:
+            persisted_request = self._load_request(request_id) or dict(request_record)
+            if not self._is_terminal_internal_request_status(str(persisted_request.get("status") or "")):
+                persisted_request["status"] = "blocked"
+            append_request_event(
+                persisted_request,
+                event_type="initial_phase_step_reopened",
+                actor="orchestrator",
+                summary=(
+                    f"{self._initial_phase_step_title(normalized_step)} 단계 완료 조건이 충족되지 않아 같은 단계를 재오픈했습니다."
+                ),
+                payload={
+                    "initial_phase_step": normalized_step,
+                    "reopen_count": next_count,
+                    "reason": normalized_reason,
+                },
+            )
+            self._save_request(persisted_request)
+        self._save_sprint_state(sprint_state)
+        return True
+
+    def _initial_phase_step_for_missing_preflight_artifacts(self, missing_artifacts: list[str]) -> str:
+        normalized = " ".join(str(item).strip() for item in (missing_artifacts or []) if str(item).strip())
+        if "todo_backlog" in normalized or "current_sprint" in normalized:
+            return INITIAL_PHASE_STEP_TODO_FINALIZATION
+        return INITIAL_PHASE_STEP_ARTIFACT_SYNC
+
     async def _run_initial_sprint_phase(self, sprint_state: dict[str, Any]) -> bool:
         sprint_id = str(sprint_state.get("sprint_id") or "").strip()
         if self._is_wrap_up_requested(sprint_state):
             sprint_state["phase"] = "wrap_up"
             self._save_sprint_state(sprint_state)
             return False
-        for iteration in range(1, SPRINT_INITIAL_PHASE_MAX_ITERATIONS + 1):
-            phase_ready = False
-            for step in INITIAL_PHASE_STEPS:
+        iteration = 1
+        step_index = 0
+        phase_ready = False
+        while True:
+            while step_index < len(INITIAL_PHASE_STEPS):
+                step = INITIAL_PHASE_STEPS[step_index]
                 if self._is_wrap_up_requested(sprint_state):
                     sprint_state["phase"] = "wrap_up"
                     self._save_sprint_state(sprint_state)
@@ -4255,17 +4334,26 @@ class TeamService:
                 )
                 request_record = self._load_request(str(request_record.get("request_id") or "")) or request_record
                 if str(result.get("status") or "").strip().lower() != "completed":
+                    reopen_reason = (
+                        "initial phase planning이 완료되지 않았습니다. "
+                        f"step={self._initial_phase_step_title(step)} | "
+                        f"request_id={request_record.get('request_id') or ''} | "
+                        f"summary={result.get('summary') or result.get('error') or ''}"
+                    ).strip()
+                    if self._record_initial_phase_step_reopen(
+                        sprint_state,
+                        step=step,
+                        reason=reopen_reason,
+                        request_record=request_record,
+                    ):
+                        iteration += 1
+                        continue
                     await self._complete_terminal_sprint(
                         sprint_state,
                         status="blocked",
                         closeout_status="planning_incomplete",
                         terminal_title="⚠️ 스프린트 시작 실패",
-                        message=(
-                            "initial phase planning이 완료되지 않아 sprint를 시작하지 못했습니다. "
-                            f"step={self._initial_phase_step_title(step)} | "
-                            f"request_id={request_record.get('request_id') or ''} | "
-                            f"summary={result.get('summary') or result.get('error') or ''}"
-                        ).strip(),
+                        message=reopen_reason,
                         clear_active=True,
                     )
                     return False
@@ -4277,6 +4365,14 @@ class TeamService:
                 )
                 validation_error = str(request_record.get("initial_phase_validation_error") or "").strip()
                 if validation_error:
+                    if self._record_initial_phase_step_reopen(
+                        sprint_state,
+                        step=step,
+                        reason=validation_error,
+                        request_record=request_record,
+                    ):
+                        iteration += 1
+                        continue
                     await self._complete_terminal_sprint(
                         sprint_state,
                         status="blocked",
@@ -4287,19 +4383,55 @@ class TeamService:
                     )
                     return False
                 self._save_sprint_state(sprint_state)
-            if phase_ready:
-                self._save_sprint_state(sprint_state)
-                missing_artifacts = self._missing_sprint_preflight_artifacts(sprint_state)
-                if missing_artifacts:
+                if step == INITIAL_PHASE_STEP_TODO_FINALIZATION and not phase_ready:
+                    reopen_reason = (
+                        "initial phase 실행 todo 확정 단계에서 selected backlog 또는 sprint todo가 준비되지 않았습니다."
+                    )
+                    if self._record_initial_phase_step_reopen(
+                        sprint_state,
+                        step=step,
+                        reason=reopen_reason,
+                        request_record=request_record,
+                    ):
+                        iteration += 1
+                        continue
                     await self._complete_terminal_sprint(
                         sprint_state,
                         status="blocked",
                         closeout_status="planning_incomplete",
                         terminal_title="⚠️ 스프린트 시작 실패",
-                        message=(
-                            "initial phase는 완료됐지만 sprint start 전 canonical spec/todo 문서가 아직 닫히지 않았습니다. "
-                            f"missing={', '.join(missing_artifacts)}"
-                        ).strip(),
+                        message=reopen_reason,
+                        clear_active=True,
+                    )
+                    return False
+                step_index += 1
+            if not phase_ready:
+                break
+            if phase_ready:
+                self._save_sprint_state(sprint_state)
+                missing_artifacts = self._missing_sprint_preflight_artifacts(sprint_state)
+                if missing_artifacts:
+                    reopen_step = self._initial_phase_step_for_missing_preflight_artifacts(missing_artifacts)
+                    reopen_reason = (
+                        "initial phase는 완료됐지만 sprint start 전 canonical spec/todo 문서가 아직 닫히지 않았습니다. "
+                        f"missing={', '.join(missing_artifacts)}"
+                    ).strip()
+                    if self._record_initial_phase_step_reopen(
+                        sprint_state,
+                        step=reopen_step,
+                        reason=reopen_reason,
+                        request_record={},
+                    ):
+                        step_index = INITIAL_PHASE_STEPS.index(reopen_step)
+                        phase_ready = False
+                        iteration += 1
+                        continue
+                    await self._complete_terminal_sprint(
+                        sprint_state,
+                        status="blocked",
+                        closeout_status="planning_incomplete",
+                        terminal_title="⚠️ 스프린트 시작 실패",
+                        message=reopen_reason,
                         clear_active=True,
                     )
                     return False
