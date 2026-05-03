@@ -56,6 +56,34 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             role_doc = paths.shared_workspace_root / "role-result.md"
             role_doc.write_text("# result\n", encoding="utf-8")
             (paths.role_root("developer") / "history.md").write_text("# private\n", encoding="utf-8")
+            (paths.role_sources_dir("planner") / "req-dev.planner_draft.md").write_text(
+                "# planner draft\n",
+                encoding="utf-8",
+            )
+            (paths.role_sources_dir("planner") / "req-dev.request.md").write_text(
+                "# runtime request snapshot\n",
+                encoding="utf-8",
+            )
+            (paths.role_sources_dir("architect") / "req-dev.architect_review.md").write_text(
+                "# architect review\n",
+                encoding="utf-8",
+            )
+            (paths.role_sources_dir("architect") / "req-dev.architect_guidance.md").write_text(
+                "# architect guidance\n",
+                encoding="utf-8",
+            )
+            (paths.role_sources_dir("developer") / "req-dev.developer_build.md").write_text(
+                "# developer build\n",
+                encoding="utf-8",
+            )
+            (paths.role_sources_dir("qa") / "req-dev.qa_validation.md").write_text(
+                "# qa validation\n",
+                encoding="utf-8",
+            )
+            (paths.role_sources_dir("designer") / "other-request.designer_advisory.md").write_text(
+                "# unrelated advisory\n",
+                encoding="utf-8",
+            )
             save_request(
                 paths,
                 {
@@ -89,6 +117,19 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
 
             labels = [doc.label for doc in docs]
             self.assertEqual(labels[:2], ["sprint/todo_backlog.md", "sprint/report.md"])
+            request_labels = [label for label in labels if label.startswith("request/req-dev/")]
+            self.assertEqual(
+                request_labels,
+                [
+                    "request/req-dev/planner/sources/req-dev.planner_draft.md",
+                    "request/req-dev/architect/sources/req-dev.architect_guidance.md",
+                    "request/req-dev/developer/sources/req-dev.developer_build.md",
+                    "request/req-dev/architect/sources/req-dev.architect_review.md",
+                    "request/req-dev/qa/sources/req-dev.qa_validation.md",
+                ],
+            )
+            self.assertNotIn("request/req-dev/planner/sources/req-dev.request.md", labels)
+            self.assertNotIn("request/other-request/designer/sources/other-request.designer_advisory.md", labels)
             names = {doc.path.name for doc in docs}
             self.assertIn("kickoff.md", names)
             self.assertIn("report.md", names)
@@ -99,6 +140,9 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             self.assertIn("req-research.md", names)
             self.assertIn("role-note.md", names)
             self.assertIn("role-result.md", names)
+            self.assertIn("req-dev.planner_draft.md", names)
+            self.assertIn("req-dev.architect_guidance.md", names)
+            self.assertNotIn("req-dev.request.md", names)
             self.assertNotIn("state.json", names)
             self.assertNotIn("history.md", names)
 

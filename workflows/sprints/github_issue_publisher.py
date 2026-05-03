@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from dotenv import load_dotenv
 
+from teams_runtime.shared.models import TEAM_ROLES
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.workflows.sprints.lifecycle import build_sprint_artifact_folder_name
 from teams_runtime.workflows.state.request_store import iter_request_records
@@ -54,6 +55,21 @@ EXCLUDED_PARTS = {
     "sessions",
     "service",
 }
+ROLE_SOURCE_STAGE_ORDER = (
+    "planner_draft",
+    "planner_final",
+    "planner_finalize",
+    "planner_reopen_scope",
+    "research",
+    "designer_advisory",
+    "architect_advisory",
+    "architect_guidance",
+    "developer_build",
+    "developer_reopen_scope_build",
+    "developer_revision",
+    "architect_review",
+    "qa_validation",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -154,6 +170,64 @@ def _is_document_path(path: Path) -> bool:
     return True
 
 
+def _is_role_authored_source_doc(path: Path) -> bool:
+    return _is_document_path(path) and not path.name.endswith(".request.md")
+
+
+def _sprint_request_ids(sprint_state: dict[str, Any]) -> list[str]:
+    request_ids: list[str] = []
+    seen: set[str] = set()
+
+    def append(value: Any) -> None:
+        request_id = str(value or "").strip()
+        if request_id and request_id not in seen:
+            seen.add(request_id)
+            request_ids.append(request_id)
+
+    append(sprint_state.get("request_id"))
+    append(sprint_state.get("source_request_id"))
+    for todo in sprint_state.get("todos") or []:
+        if isinstance(todo, dict):
+            append(todo.get("request_id"))
+    return request_ids
+
+
+def _role_source_stage_name(path: Path, request_id: str) -> str:
+    prefix = f"{request_id}."
+    suffix = path.name
+    if suffix.startswith(prefix):
+        suffix = suffix.removeprefix(prefix)
+    return suffix.removesuffix(path.suffix)
+
+
+def _role_source_stage_rank(stage: str) -> int:
+    for index, known_stage in enumerate(ROLE_SOURCE_STAGE_ORDER):
+        if stage == known_stage or stage.startswith(f"{known_stage}_"):
+            return index
+    return len(ROLE_SOURCE_STAGE_ORDER)
+
+
+def _role_authored_source_sort_key(request_id: str, role: str, path: Path) -> tuple[int, str, str]:
+    stage = _role_source_stage_name(path, request_id)
+    return (_role_source_stage_rank(stage), role, path.name)
+
+
+def _collect_role_authored_source_documents(paths: RuntimePaths, request_id: str) -> list[SprintIssueDocument]:
+    candidates: list[tuple[str, Path]] = []
+    for role in TEAM_ROLES:
+        sources_dir = paths.role_sources_dir(role)
+        if not sources_dir.exists():
+            continue
+        for path in sources_dir.glob(f"{request_id}*.md"):
+            if _is_role_authored_source_doc(path):
+                candidates.append((role, path))
+    candidates.sort(key=lambda item: _role_authored_source_sort_key(request_id, item[0], item[1]))
+    return [
+        SprintIssueDocument(path, f"request/{request_id}/{role}/sources/{path.name}")
+        for role, path in candidates
+    ]
+
+
 def _resolve_workspace_path(paths: RuntimePaths, value: Any) -> Path | None:
     raw = str(value or "").strip()
     if not raw:
@@ -198,6 +272,8 @@ def collect_sprint_issue_documents(paths: RuntimePaths, sprint_state: dict[str, 
         if research_dir.exists():
             for path in sorted(research_dir.rglob("*.md")):
                 documents.append(SprintIssueDocument(path, f"research/{path.name}"))
+    for request_id in _sprint_request_ids(sprint_state):
+        documents.extend(_collect_role_authored_source_documents(paths, request_id))
     artifact_values: list[str] = []
     artifact_values.extend(_extract_artifact_values(sprint_state.get("reference_artifacts")))
     for todo in sprint_state.get("todos") or []:
