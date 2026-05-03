@@ -211,6 +211,100 @@ class GitOpsCloseoutTests(unittest.TestCase):
             self.assertEqual(result["status"], "no_changes")
             self.assertEqual(result["changed_paths"], [])
 
+    def test_commit_sprint_changes_resolves_unmerged_files_and_commits(self):
+        sprint_id = "2026-Sprint-01-20260324T123330Z"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            _run_git(repo_root, "init")
+            _run_git(repo_root, "config", "user.name", "Teams Runtime")
+            _run_git(repo_root, "config", "user.email", "teams-runtime@example.com")
+            (repo_root / "a.txt").write_text("base\n", encoding="utf-8")
+            _run_git(repo_root, "add", "a.txt")
+            _run_git(repo_root, "commit", "-m", "base")
+            baseline = capture_git_baseline(repo_root)
+
+            _run_git(repo_root, "checkout", "-b", "feature")
+            (repo_root / "a.txt").write_text("feature\n", encoding="utf-8")
+            _run_git(repo_root, "add", "a.txt")
+            _run_git(repo_root, "commit", "-m", "feature change")
+
+            _run_git(repo_root, "checkout", "-")
+            (repo_root / "a.txt").write_text("master\n", encoding="utf-8")
+            _run_git(repo_root, "add", "a.txt")
+            _run_git(repo_root, "commit", "-m", "master change")
+            subprocess.run(
+                ["git", "merge", "feature"],
+                cwd=str(repo_root),
+                text=True,
+                capture_output=True,
+            )
+            (repo_root / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+            result = commit_sprint_changes(
+                repo_root,
+                baseline,
+                build_task_commit_message(
+                    sprint_id=sprint_id,
+                    todo_id="todo-123330-taskconf",
+                    backlog_id="backlog-ignored",
+                    changed_paths=["a.txt"],
+                    summary="resolve merge conflict",
+                ),
+            )
+
+            self.assertEqual(result["status"], "committed")
+            self.assertNotIn("unmerged_paths", result)
+            self.assertIn("병합 충돌 파일을 `ours` 기준으로 자동 해소했습니다.", result["message"])
+            self.assertEqual(result["changed_paths"], ["keep.txt"])
+
+    def test_run_version_control_payload_task_mode_auto_resolves_unmerged_and_commits(self):
+        sprint_id = "2026-Sprint-01-20260324T123330Z"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            _run_git(repo_root, "init")
+            _run_git(repo_root, "config", "user.name", "Teams Runtime")
+            _run_git(repo_root, "config", "user.email", "teams-runtime@example.com")
+            (repo_root / "a.txt").write_text("base\n", encoding="utf-8")
+            _run_git(repo_root, "add", "a.txt")
+            _run_git(repo_root, "commit", "-m", "base")
+            baseline = capture_git_baseline(repo_root)
+
+            _run_git(repo_root, "checkout", "-b", "feature")
+            (repo_root / "a.txt").write_text("feature\n", encoding="utf-8")
+            _run_git(repo_root, "add", "a.txt")
+            _run_git(repo_root, "commit", "-m", "feature change")
+
+            _run_git(repo_root, "checkout", "-")
+            (repo_root / "a.txt").write_text("master\n", encoding="utf-8")
+            _run_git(repo_root, "add", "a.txt")
+            _run_git(repo_root, "commit", "-m", "master change")
+            subprocess.run(
+                ["git", "merge", "feature"],
+                cwd=str(repo_root),
+                text=True,
+                capture_output=True,
+            )
+            (repo_root / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+            result = run_version_control_payload(
+                {
+                    "mode": "task",
+                    "project_root": str(repo_root),
+                    "baseline": baseline,
+                    "sprint_id": sprint_id,
+                    "todo_id": "todo-123330-task005",
+                    "backlog_id": "backlog-ignored",
+                    "summary": "delegate task commit after merge conflict",
+                }
+            )
+
+            self.assertEqual(result["status"], "committed")
+            self.assertEqual(result["commit_status"], "committed")
+            self.assertEqual(result["changed_paths"], ["keep.txt"])
+            self.assertEqual(result["change_detected"], True)
+            self.assertNotIn("unmerged_paths", result)
+            self.assertIn("병합 충돌 파일을 `ours` 기준으로 자동 해소했습니다.", result["message"])
+
     def test_inspect_sprint_closeout_warns_when_new_commit_lacks_sprint_id(self):
         sprint_id = "2026-Sprint-01-20260324T123330Z"
         with tempfile.TemporaryDirectory() as tmpdir:

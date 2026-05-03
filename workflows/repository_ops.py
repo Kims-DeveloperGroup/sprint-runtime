@@ -352,19 +352,61 @@ def _decode_git_quoted_path(path_text: str) -> str:
     return raw_bytes.decode("utf-8", errors="surrogateescape")
 
 
-def _parse_status_paths(status_output: str) -> set[str]:
-    paths: set[str] = set()
+def _parse_status_entries(status_output: str) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
     for raw_line in status_output.splitlines():
-        line = raw_line.rstrip()
+        line = raw_line.rstrip("\n")
         if len(line) < 4:
             continue
+        status = line[:2]
         body = line[3:]
+        if not body:
+            continue
         if " -> " in body:
             body = body.split(" -> ", 1)[1]
         normalized = _decode_git_quoted_path(body.strip())
         if normalized:
-            paths.add(normalized)
+            entries.append((status, normalized))
+    return entries
+
+
+def _parse_status_paths(status_output: str) -> set[str]:
+    paths: set[str] = {path for _status, path in _parse_status_entries(status_output)}
     return paths
+
+
+def _parse_status_unmerged_paths(status_output: str) -> set[str]:
+    return {
+        path
+        for status, path in _parse_status_entries(status_output)
+        if len(status) >= 2 and ("U" in status[0] or "U" in status[1])
+    }
+
+
+def _auto_resolve_unmerged_paths(repo_root: Path, unmerged_paths: list[str]) -> tuple[bool, str]:
+    if not unmerged_paths:
+        return True, "no conflicts"
+    checkout_result = _run_git(repo_root, ["checkout", "--ours", "--", *unmerged_paths])
+    if checkout_result.returncode != 0:
+        return (
+            False,
+            checkout_result.stderr.strip() or checkout_result.stdout.strip() or "병합 충돌 자동 해소를 위한 checkout 실패",
+        )
+    add_result = _run_git(repo_root, ["add", "-A", "--", *unmerged_paths])
+    if add_result.returncode != 0:
+        return (
+            False,
+            add_result.stderr.strip() or add_result.stdout.strip() or "병합 충돌 자동 해소 후 add 실패",
+        )
+    return True, "병합 충돌 파일을 `ours` 기준으로 자동 해소했습니다."
+
+
+def collect_unmerged_paths(project_root: Path) -> tuple[Path | None, list[str]]:
+    repo_root = detect_repo_root(project_root)
+    if repo_root is None:
+        return None, []
+    status = _run_git(repo_root, ["status", "--porcelain=v1", "-uall"]).stdout
+    return repo_root, sorted(_parse_status_unmerged_paths(status))
 
 
 def capture_git_baseline(project_root: Path) -> dict[str, Any]:
@@ -515,6 +557,47 @@ def commit_sprint_changes(project_root: Path, baseline: dict[str, Any], message:
             "commit_message": message,
             "message": "git repository를 찾을 수 없습니다.",
         }
+    unmerged_paths = sorted(
+        _parse_status_unmerged_paths(_run_git(repo_root, ["status", "--porcelain=v1", "-uall"]).stdout)
+    )
+    conflict_resolution_note = ""
+    if unmerged_paths:
+        resolved, resolve_message = _auto_resolve_unmerged_paths(repo_root, unmerged_paths)
+        if not resolved:
+            return {
+                "status": "failed",
+                "repo_root": str(repo_root),
+                "changed_paths": changed_paths,
+                "unmerged_paths": unmerged_paths,
+                "commit_sha": "",
+                "commit_message": message,
+                "message": resolve_message,
+            }
+        if resolve_message:
+            conflict_resolution_note = resolve_message
+        _, changed_paths = collect_sprint_owned_paths(project_root, baseline)
+        unmerged_paths = sorted(
+            _parse_status_unmerged_paths(_run_git(repo_root, ["status", "--porcelain=v1", "-uall"]).stdout)
+        )
+        if unmerged_paths:
+            return {
+                "status": "failed",
+                "repo_root": str(repo_root),
+                "changed_paths": changed_paths,
+                "unmerged_paths": unmerged_paths,
+                "commit_sha": "",
+                "commit_message": message,
+                "message": "병합 충돌 자동 해소를 시도했지만 충돌 상태가 남아있어 커밋을 진행할 수 없습니다.",
+            }
+        if not changed_paths:
+            return {
+                "status": "no_changes",
+                "repo_root": str(repo_root),
+                "changed_paths": [],
+                "commit_sha": "",
+                "commit_message": message,
+                "message": conflict_resolution_note or resolve_message,
+            }
     if not changed_paths:
         return {
             "status": "no_changes",
@@ -545,13 +628,16 @@ def commit_sprint_changes(project_root: Path, baseline: dict[str, Any], message:
             "message": commit_result.stderr.strip() or commit_result.stdout.strip() or "git commit failed",
         }
     head = _run_git(repo_root, ["rev-parse", "HEAD"]).stdout.strip()
+    commit_message = commit_result.stdout.strip() or commit_result.stderr.strip() or "commit created"
+    if conflict_resolution_note:
+        commit_message = f"{conflict_resolution_note}\n{commit_message}"
     return {
         "status": "committed",
         "repo_root": str(repo_root),
         "changed_paths": changed_paths,
         "commit_sha": head,
         "commit_message": message,
-        "message": commit_result.stdout.strip() or commit_result.stderr.strip() or "commit created",
+        "message": commit_message,
     }
 
 

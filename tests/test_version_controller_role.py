@@ -20,8 +20,7 @@ class TeamsRuntimeVersionControllerRoleTests(unittest.TestCase):
         self.assertIn("`commit_status`, `commit_sha`, `commit_message`, `commit_paths`, and `change_detected`", rules)
         self.assertIn("`functional_title`", rules)
         self.assertIn("`committed` or `no_changes`", rules)
-        self.assertIn("task-mode commit failures", rules)
-        self.assertIn("closeout-mode failures", rules)
+        self.assertIn("commit failures", rules)
 
     def test_role_runtime_prompt_uses_version_controller_role_rules(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -60,8 +59,7 @@ class TeamsRuntimeVersionControllerRoleTests(unittest.TestCase):
             self.assertIn("`Current request.version_control`", prompt)
             self.assertIn("`sources/*.version_control.json`", prompt)
             self.assertIn("`functional_title`", prompt)
-            self.assertIn("task-mode commit failures", prompt)
-            self.assertIn("closeout-mode failures", prompt)
+            self.assertIn("commit failures", prompt)
             self.assertIn('"commit_status": "committed|no_changes|failed|no_repo"', prompt)
             self.assertIn('"change_detected": false', prompt)
 
