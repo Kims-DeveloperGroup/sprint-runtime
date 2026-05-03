@@ -39,7 +39,7 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 load_github_token_dotenv(RuntimePaths.from_root(root))
                 self.assertEqual(os.environ.get("GH_TOKEN"), "existing")
 
-    def test_collect_sprint_issue_documents_includes_sprint_backlog_research_and_role_artifacts(self):
+    def test_collect_sprint_issue_documents_orders_sprint_docs_and_excludes_shared_status_docs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
             paths = RuntimePaths.from_root(tmpdir)
@@ -61,8 +61,11 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 {
                     "request_id": "req-dev",
                     "sprint_id": sprint_id,
-                    "artifacts": ["shared_workspace/role-result.md"],
-                    "result": {"artifacts": ["developer/history.md"]},
+                    "artifacts": ["shared_workspace/role-result.md", "shared_workspace/backlog.md"],
+                    "reference_artifacts": ["shared_workspace/current_sprint.md"],
+                    "result": {
+                        "artifacts": ["developer/history.md", "shared_workspace/completed_backlog.md"],
+                    },
                 },
                 update_timestamp=False,
             )
@@ -72,16 +75,27 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 {
                     "sprint_id": sprint_id,
                     "sprint_folder_name": folder_name,
-                    "todos": [{"request_id": "req-dev", "artifacts": ["shared_workspace/role-result.md"]}],
+                    "todos": [
+                        {
+                            "request_id": "req-dev",
+                            "artifacts": [
+                                "shared_workspace/role-result.md",
+                                "shared_workspace/backlog.md",
+                            ],
+                        }
+                    ],
                 },
             )
 
+            labels = [doc.label for doc in docs]
+            self.assertEqual(labels[:2], ["sprint/todo_backlog.md", "sprint/report.md"])
             names = {doc.path.name for doc in docs}
             self.assertIn("kickoff.md", names)
             self.assertIn("report.md", names)
-            self.assertIn("backlog.md", names)
-            self.assertIn("completed_backlog.md", names)
-            self.assertIn("current_sprint.md", names)
+            self.assertIn("todo_backlog.md", names)
+            self.assertNotIn("backlog.md", names)
+            self.assertNotIn("completed_backlog.md", names)
+            self.assertNotIn("current_sprint.md", names)
             self.assertIn("req-research.md", names)
             self.assertIn("role-note.md", names)
             self.assertIn("role-result.md", names)

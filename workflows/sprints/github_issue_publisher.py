@@ -22,13 +22,13 @@ COMMENT_MARKER_PREFIX = "<!-- teams-runtime:sprint-doc:"
 MAX_COMMENT_BODY_CHARS = 58000
 DOCUMENT_EXTENSIONS = {".md", ".markdown", ".txt", ".text", ".rst"}
 SPRINT_DOC_FILENAMES = (
+    "todo_backlog.md",
+    "report.md",
     "kickoff.md",
     "milestone.md",
     "plan.md",
     "spec.md",
     "iteration_log.md",
-    "todo_backlog.md",
-    "report.md",
 )
 EXCLUDED_FILENAMES = {
     "index.md",
@@ -113,14 +113,26 @@ def _comment_marker(sprint_id: str, label: str, part: int = 1) -> str:
     return f"{COMMENT_MARKER_PREFIX}{sprint_id}:{safe_label}:part-{part} -->"
 
 
+def _normalized_path(path: Path) -> Path:
+    try:
+        return path.expanduser().resolve()
+    except Exception:
+        return path
+
+
+def _excluded_shared_issue_document_paths(paths: RuntimePaths) -> set[Path]:
+    return {
+        _normalized_path(paths.current_sprint_file),
+        _normalized_path(paths.shared_backlog_file),
+        _normalized_path(paths.shared_completed_backlog_file),
+    }
+
+
 def _dedupe_documents(documents: list[SprintIssueDocument]) -> list[SprintIssueDocument]:
     seen: set[Path] = set()
     deduped: list[SprintIssueDocument] = []
     for doc in documents:
-        try:
-            resolved = doc.path.expanduser().resolve()
-        except Exception:
-            resolved = doc.path
+        resolved = _normalized_path(doc.path)
         if resolved in seen or not resolved.exists() or not resolved.is_file():
             continue
         seen.add(resolved)
@@ -175,15 +187,10 @@ def collect_sprint_issue_documents(paths: RuntimePaths, sprint_state: dict[str, 
     sprint_id = str(sprint_state.get("sprint_id") or "").strip()
     folder_name = str(sprint_state.get("sprint_folder_name") or "").strip() or build_sprint_artifact_folder_name(sprint_id)
     sprint_dir = paths.sprint_artifact_dir(folder_name)
+    excluded_shared_documents = _excluded_shared_issue_document_paths(paths)
     documents: list[SprintIssueDocument] = []
     for filename in SPRINT_DOC_FILENAMES:
         documents.append(SprintIssueDocument(sprint_dir / filename, f"sprint/{filename}"))
-    for path, label in (
-        (paths.shared_backlog_file, "shared_workspace/backlog.md"),
-        (paths.shared_completed_backlog_file, "shared_workspace/completed_backlog.md"),
-        (paths.current_sprint_file, "shared_workspace/current_sprint.md"),
-    ):
-        documents.append(SprintIssueDocument(path, label))
     research_dirs = [sprint_dir / "research"]
     if sprint_id and paths.sprint_research_dir(sprint_id) not in research_dirs:
         research_dirs.append(paths.sprint_research_dir(sprint_id))
@@ -210,12 +217,12 @@ def collect_sprint_issue_documents(paths: RuntimePaths, sprint_state: dict[str, 
             artifact_values.extend(_extract_artifact_values(source.get("reference_artifacts")))
     for raw in artifact_values:
         path = _resolve_workspace_path(paths, raw)
-        if path is not None and _is_document_path(path):
+        if path is not None and _is_document_path(path) and _normalized_path(path) not in excluded_shared_documents:
             documents.append(SprintIssueDocument(path, f"artifact/{path.name}"))
     for root in (sprint_dir, sprint_dir / "attachments"):
         if root.exists():
             for path in sorted(root.rglob("*")):
-                if path.is_file() and _is_document_path(path):
+                if path.is_file() and _is_document_path(path) and _normalized_path(path) not in excluded_shared_documents:
                     documents.append(SprintIssueDocument(path, f"sprint/{path.relative_to(sprint_dir).as_posix()}"))
     return _dedupe_documents(documents)
 
