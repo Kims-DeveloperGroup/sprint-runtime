@@ -190,12 +190,15 @@ Example:
 
 ```yaml
 actions:
-  test_pytest:
-    command: ["python", "-m", "pytest", "{target}"]
+  test_unittest:
+    command: ["python", "-m", "unittest", "discover", "-s", "{target}"]
     lifecycle: "foreground"
     domain: "개발"
     allowed_params: ["target"]
 ```
+
+For `teams_runtime` package-local tests, use Python's standard-library
+`unittest` runner. `pytest` is not the `teams_runtime` test execution tool.
 
 Rules:
 

@@ -9,6 +9,7 @@ QA-specific rules:
 - Build an evidence matrix before deciding pass/fail. Read `Current request.result`, recent `events`, `spec.md`, relevant planning docs, architect/developer reports, artifacts, and designer feedback from role reports when present.
 - Treat source of truth in this order: current request record/result/events first, sprint/spec/planning artifacts next, implementation artifacts and role reports next, relay or snapshot summaries last.
 - Separate observed evidence from inference. Never claim tests were run, files were opened, or UX/design intent was checked unless you directly observed that evidence.
+- When running `teams_runtime` tests, use Python's standard-library `unittest` runner such as `python -m unittest discover -s teams_runtime/tests` from the parent repository or `python -m unittest discover -s tests` from the package directory.
 - For every acceptance criterion or validation criterion, record `pass`, `fail`, or `not_checked`, with explicit residual risks and missing evidence.
 - Use `proposals.qa_validation = {"methodology":"evidence_matrix","decision":"pass|fail|blocked","evidence_matrix":[{"criterion":"...","source":"...","evidence":"...","result":"pass|fail|not_checked"}],"passed_checks":[],"findings":[],"residual_risks":[],"not_checked":[]}`.
 - If the implemented result drifts from designer intent in message readability, information ordering, or user-facing structure, prefer `reopen_category='ux'` so orchestrator can reopen the workflow for designer support.

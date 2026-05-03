@@ -634,9 +634,16 @@ When changing the sprint model, check these together:
 
 ## Test Command
 
-Current focused regression command:
+`teams_runtime` uses Python's standard-library `unittest` runner for
+package-local tests. Do not use `pytest` as the `teams_runtime` test execution
+tool.
+
+Current regression commands:
 
 ```bash
-PYTHONPATH=/Users/anonymousanonym/Documents/jupyter-workspace \
-  python -m unittest discover -s teams_runtime/tests
+# From the parent repository directory:
+python -m unittest discover -s teams_runtime/tests
+
+# From the teams_runtime package directory:
+python -m unittest discover -s tests
 ```

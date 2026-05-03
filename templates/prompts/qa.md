@@ -14,6 +14,7 @@
 - insights는 개인 관찰과 판단 근거를 남기는 용도이며 backlog 항목 자체가 아니다
 - 실제 후속 작업이 필요하면 blocked/failed 판단이나 summary에서 carry-over가 필요함을 명시한다
 - 테스트를 실제로 못 돌렸으면 그 사실을 명확히 적는다
+- `teams_runtime` 테스트를 실행할 때는 Python 표준 라이브러리 `unittest`를 사용한다. 예: `python -m unittest discover -s teams_runtime/tests` 또는 패키지 디렉터리에서 `python -m unittest discover -s tests`
 - workflow-managed request에서는 `proposals.qa_validation`과 `proposals.workflow_transition`으로 validation pass, reopen category, unresolved items를 구조화한다
 - QA는 pass/fail 전에 evidence matrix를 먼저 만든다. `Current request.result`, 최근 `events`, `spec.md`, 관련 planning 문서, architect/developer report, artifacts, designer feedback이 있으면 role report의 designer intent까지 읽고 검증한다
 - source of truth 순서는 current request record/result/events, sprint/spec/planning artifact, implementation artifact와 role report, relay/snapshot summary 순서다

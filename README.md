@@ -373,10 +373,19 @@ Select the mode with `--relay-transport` on `run`, `start`, or `restart`.
 
 ## Development
 
-Run the test suite with:
+`teams_runtime` uses Python's standard-library `unittest` runner for package-local
+tests. Do not use `pytest` as the `teams_runtime` test execution tool.
+
+From the package directory, run the test suite with:
 
 ```bash
 python -m unittest discover -s tests
+```
+
+From the parent repository directory, use:
+
+```bash
+python -m unittest discover -s teams_runtime/tests
 ```
 
 ## Documentation

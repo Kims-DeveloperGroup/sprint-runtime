@@ -29,6 +29,7 @@ Package-local documentation for the standalone `teams_runtime` module lives here
 - Package code: `teams_runtime/`
 - Canonical shared contracts: `teams_runtime/shared/models.py`
 - Package-local tests: `teams_runtime/tests/`
+- Test execution tool: Python standard-library `unittest`
 - Workspace template scaffold: `teams_runtime/core/template.py`
 - Python dependencies: `teams_runtime/requirements.txt`
 

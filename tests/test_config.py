@@ -576,7 +576,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             scaffold_workspace(tmpdir)
             config_path = Path(tmpdir) / "team_runtime.yaml"
             config_path.write_text(
-                """sprint:\n  id: \"2026-Sprint-01\"\nactions:\n  run_test:\n    command: [\"python\", \"-m\", \"pytest\"]\n    lifecycle: \"foreground\"\n    domain: \"개발\"\n    approval_required: false\n""",
+                """sprint:\n  id: \"2026-Sprint-01\"\nactions:\n  run_test:\n    command: [\"python\", \"-m\", \"unittest\", \"discover\", \"-s\", \"tests\"]\n    lifecycle: \"foreground\"\n    domain: \"개발\"\n    approval_required: false\n""",
                 encoding="utf-8",
             )
 
