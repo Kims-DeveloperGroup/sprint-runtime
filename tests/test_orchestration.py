@@ -1172,6 +1172,42 @@ class TeamsRuntimeOrchestrationTests(OrchestrationTestCase):
                 self.assertEqual(service.discord_client.sent_dms, [("user-1", "수신양호")])
                 service._handle_orchestrator_message.assert_awaited_once_with(message)
 
+    def test_handle_message_continues_orchestrator_dm_when_immediate_receipt_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                service.discord_client.send_dm = AsyncMock(
+                    side_effect=DiscordSendError(
+                        "Discord send operation failed during dm.send(user-1) after 3 attempt(s): TimeoutError: timeout",
+                        attempts=3,
+                        last_error=asyncio.TimeoutError("timeout"),
+                        retryable=True,
+                        phase="dm.send(user-1)",
+                    )
+                )
+                service._handle_orchestrator_message = AsyncMock()
+                message = DiscordMessage(
+                    message_id="msg-receipt-dm-fail",
+                    channel_id="dm-1",
+                    guild_id=None,
+                    author_id="user-1",
+                    author_name="tester",
+                    content="intent: status\nscope: sprint",
+                    is_dm=True,
+                    mentions_bot=False,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                with patch("teams_runtime.workflows.orchestration.notifications.LOGGER.warning") as warning_mock:
+                    asyncio.run(service.handle_message(message))
+
+                service.discord_client.send_dm.assert_awaited_once_with("user-1", "수신양호")
+                service._handle_orchestrator_message.assert_awaited_once_with(message)
+                warning_mock.assert_called_once()
+                self.assertEqual(warning_mock.call_args.args[1]["attempts"], 3)
+                self.assertEqual(warning_mock.call_args.args[1]["phase"], "dm.send(user-1)")
+
     def test_handle_message_sends_immediate_receipt_for_guild_message(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -1194,6 +1230,45 @@ class TeamsRuntimeOrchestrationTests(OrchestrationTestCase):
 
                 self.assertEqual(service.discord_client.sent_channels, [("channel-1", "<@user-1> 수신양호")])
                 service._handle_non_orchestrator_message.assert_awaited_once_with(message)
+
+    def test_handle_message_continues_non_orchestrator_guild_when_immediate_receipt_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "planner")
+                service.discord_client.send_channel_message = AsyncMock(
+                    side_effect=DiscordSendError(
+                        "Discord send operation failed during channel.send(channel-1) after 3 attempt(s): TimeoutError: timeout",
+                        attempts=3,
+                        last_error=asyncio.TimeoutError("timeout"),
+                        retryable=True,
+                        phase="channel.send(channel-1)",
+                    )
+                )
+                service._handle_non_orchestrator_message = AsyncMock()
+                message = DiscordMessage(
+                    message_id="msg-receipt-guild-fail",
+                    channel_id="channel-1",
+                    guild_id="guild-1",
+                    author_id="user-1",
+                    author_name="tester",
+                    content=f"<@{service.role_config.bot_id}> status sprint",
+                    is_dm=False,
+                    mentions_bot=True,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                with patch("teams_runtime.workflows.orchestration.notifications.LOGGER.warning") as warning_mock:
+                    asyncio.run(service.handle_message(message))
+
+                service.discord_client.send_channel_message.assert_awaited_once_with(
+                    "channel-1",
+                    "<@user-1> 수신양호",
+                )
+                service._handle_non_orchestrator_message.assert_awaited_once_with(message)
+                warning_mock.assert_called_once()
+                self.assertEqual(warning_mock.call_args.args[1]["attempts"], 3)
+                self.assertEqual(warning_mock.call_args.args[1]["phase"], "channel.send(channel-1)")
 
     def test_handle_message_skips_immediate_receipt_for_trusted_relay(self):
         with tempfile.TemporaryDirectory() as tmpdir:

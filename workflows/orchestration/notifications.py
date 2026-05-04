@@ -39,6 +39,28 @@ PRIMARY_SHARED_FILES = {
 }
 
 
+def _immediate_receipt_message_metadata(message: DiscordMessage) -> dict[str, str | bool]:
+    return {
+        "message_id": str(getattr(message, "message_id", "") or ""),
+        "channel_id": str(getattr(message, "channel_id", "") or ""),
+        "guild_id": str(getattr(message, "guild_id", "") or ""),
+        "author_id": str(getattr(message, "author_id", "") or ""),
+        "is_dm": bool(getattr(message, "is_dm", False)),
+    }
+
+
+def _discord_send_error_log_metadata(error: DiscordSendError) -> dict[str, Any]:
+    last_error = getattr(error, "last_error", None)
+    return {
+        "attempts": int(getattr(error, "attempts", 1) or 1),
+        "phase": str(getattr(error, "phase", "") or ""),
+        "retryable": bool(getattr(error, "retryable", False)),
+        "last_error_type": type(last_error).__name__ if last_error is not None else "",
+        "last_error": str(last_error or ""),
+        "error": str(error),
+    }
+
+
 def normalize_markdown_body(lines: list[str]) -> str:
     return "\n".join(str(line).rstrip() for line in lines).strip()
 
@@ -1376,7 +1398,27 @@ async def send_immediate_receipt(
 ) -> None:
     if is_trusted_relay_message(message):
         return
-    await notification_service.send_immediate_receipt(message)
+    try:
+        await notification_service.send_immediate_receipt(message)
+    except DiscordSendError as exc:
+        metadata = {
+            **_immediate_receipt_message_metadata(message),
+            **_discord_send_error_log_metadata(exc),
+        }
+        LOGGER.warning(
+            "Immediate Discord receipt send failed; continuing request handling: %s",
+            metadata,
+        )
+    except Exception as exc:
+        metadata = {
+            **_immediate_receipt_message_metadata(message),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        LOGGER.warning(
+            "Immediate Discord receipt send raised unexpected error; continuing request handling: %s",
+            metadata,
+        )
 
 
 async def send_discord_content(

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from teams_runtime.core.config import load_discord_agents_config, load_team_runtime_config
 from teams_runtime.core.notifications import DiscordNotificationService
@@ -257,6 +257,50 @@ class TeamsRuntimeOrchestrationNotificationsTests(unittest.TestCase):
         )
 
         notification_service.send_immediate_receipt.assert_awaited_once_with(message)
+
+    def test_send_immediate_receipt_swallows_discord_send_error_and_logs_metadata(self) -> None:
+        notification_service = DummyNotificationService()
+        notification_service.send_immediate_receipt = AsyncMock(
+            side_effect=DiscordSendError(
+                "Discord send operation failed during dm.send(user-2) after 3 attempt(s): TimeoutError: timeout",
+                attempts=3,
+                last_error=asyncio.TimeoutError("timeout"),
+                retryable=True,
+                phase="dm.send(user-2)",
+            )
+        )
+        message = DiscordMessage(
+            message_id="msg-receipt-fail",
+            channel_id="dm-2",
+            guild_id=None,
+            author_id="user-2",
+            author_name="tester",
+            content="hello",
+            is_dm=True,
+            mentions_bot=False,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        with patch("teams_runtime.workflows.orchestration.notifications.LOGGER.warning") as warning_mock:
+            asyncio.run(
+                send_immediate_receipt(
+                    notification_service,
+                    message,
+                    is_trusted_relay_message=lambda _message: False,
+                )
+            )
+
+        notification_service.send_immediate_receipt.assert_awaited_once_with(message)
+        warning_mock.assert_called_once()
+        metadata = warning_mock.call_args.args[1]
+        self.assertEqual(metadata["message_id"], "msg-receipt-fail")
+        self.assertEqual(metadata["channel_id"], "dm-2")
+        self.assertEqual(metadata["author_id"], "user-2")
+        self.assertEqual(metadata["attempts"], 3)
+        self.assertEqual(metadata["phase"], "dm.send(user-2)")
+        self.assertTrue(metadata["retryable"])
+        self.assertEqual(metadata["last_error_type"], "TimeoutError")
+        self.assertEqual(metadata["last_error"], "timeout")
 
     def test_send_discord_content_delegates_delivery_options(self) -> None:
         notification_service = DummyNotificationService()
