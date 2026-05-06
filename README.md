@@ -11,7 +11,17 @@
 
 ## Concept
 
-`teams_runtime` is a standalone Python package for running a small Discord-connected agent team against a project workspace. Think of it as a compact production crew: each agent has a role, and the orchestrator keeps the handoffs orderly.
+`teams_runtime` turns Discord into a coordinated agent workspace for getting project work from "someone asked for this" to backlog, sprint execution, validation, and closeout. Its objective is to make multi-agent work operational: requests are captured, plans are grounded, implementation is reviewed, QA has a clear gate, and completed work leaves behind usable reports instead of scattered chat fragments.
+
+Think of it as a compact production crew for software projects. Instead of relying on one freeform agent conversation, you run a small team with explicit responsibilities, durable workspace state, and predictable handoffs.
+
+## What You Can Achieve
+
+- Turn Discord DMs and mentions into planner-owned backlog, specs, and sprint todos.
+- Start research-grounded sprints from a milestone, brief, and requirements.
+- Coordinate specialist agents through a governed flow from planning to build to review to QA.
+- Keep operators informed with relay summaries, sprint status, and human-readable workspace artifacts.
+- Close out completed work with git-backed commit reporting, sprint history, and reusable documentation.
 
 The public roles are `orchestrator`, `research`, `planner`, `designer`, `architect`, `developer`, and `qa`. The orchestrator receives user requests and controls routing; research grounds sprint planning; planner turns context into backlog, specs, and todos; designer advises on UX and message clarity; architect shapes technical direction and review; developer builds; QA validates.
 
