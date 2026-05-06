@@ -307,12 +307,51 @@ Current ownership notes:
 
 ## Runtime Data Layout
 
+Generated workspace root:
+
+```text
+<workspace-root>/
+├── discord_agents_config.yaml
+├── team_runtime.yaml
+├── communication_protocol.md
+├── file_contracts.md
+├── COMMIT_POLICY.md
+├── orchestrator/
+├── research/
+├── planner/
+├── designer/
+├── architect/
+├── developer/
+├── qa/
+├── internal/
+└── shared_workspace/
+```
+
+`internal/` contains generated internal workspaces for `parser`, `sourcer`, and `version_controller`.
+The scaffolded `discord_agents_config.yaml` `internal_agents.sourcer` entry is a Discord presence/reporting sample for the sourcer reporter; it is separate from the internal workspace layout.
+
+Role-session workspace roots are seeded with coordination files and links back to the real runtime workspace:
+
+```text
+workspace/                  # project root link
+shared_workspace/           # shared team coordination link
+.teams_runtime/             # runtime state and receipts link
+communication_protocol.md   # seeded runtime context
+file_contracts.md           # seeded runtime context
+COMMIT_POLICY.md            # seeded runtime context
+workspace_context.md        # seeded runtime context
+```
+
+Each public role directory is seeded with coordination files such as `AGENTS.md`, `todo.md`, `history.md`, `journal.md`, and `sources/`.
+
 Machine-readable state:
 
 - `<workspace>/.teams_runtime/backlog/`
 - `<workspace>/.teams_runtime/sprints/`
 - `<workspace>/.teams_runtime/requests/`
 - `<workspace>/.teams_runtime/internal_relay/`
+  - `inbox/<role>/<relay_id>.json` for pending internal relay envelopes
+  - `archive/<role>/<relay_id>.json` for processed internal relay envelopes
 - `<workspace>/.teams_runtime/role_sessions/`
   - one active metadata file per `runtime_identity`, stored as `<sanitized_runtime_identity>.json`
 - `<workspace>/.teams_runtime/archive/`
