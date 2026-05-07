@@ -2442,7 +2442,7 @@ context compacted
                     "request_id": "request-1",
                     "role": "developer",
                     "status": "completed|blocked|failed",
-                    "summary": "short Korean summary",
+                    "summary": "이 세션에서 직접 확인한 실제 한국어 요약",
                     "insights": ["private role insight for journal.md"],
                     "proposals": {
                         "workflow_transition": {
@@ -2535,6 +2535,7 @@ context compacted
             self.assertEqual(payload["contract_status"], "repaired")
             self.assertTrue(payload["contract_repair_attempted"])
             self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
+            self.assertIn("copied_placeholder_summary", payload["contract_issues"])
             self.assertEqual(payload["summary"], "구현과 검증 범위를 정리해 QA handoff 조건을 명시했습니다.")
 
     def test_role_runtime_fails_when_repair_cannot_fix_invalid_contract_output(self):
@@ -2556,7 +2557,7 @@ context compacted
                     "request_id": "request-1",
                     "role": "planner",
                     "status": "completed|blocked|failed",
-                    "summary": "short Korean summary",
+                    "summary": "이 세션에서 직접 확인한 실제 한국어 요약",
                     "insights": ["private role insight for journal.md"],
                     "proposals": {},
                     "artifacts": [],
@@ -2605,6 +2606,7 @@ context compacted
             self.assertTrue(payload["contract_repair_attempted"])
             self.assertIn("invalid_role_payload:", payload["error"])
             self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
+            self.assertIn("copied_placeholder_summary", payload["contract_issues"])
 
     def test_normalize_role_payload_coerces_common_shape_issues(self):
         payload = normalize_role_payload(
@@ -2659,6 +2661,17 @@ context compacted
         self.assertIn("coerced copied prompt status enum literal", payload["validation_notes"])
         self.assertIn("reset placeholder summary copied from prompt", payload["validation_notes"])
         self.assertIn("reset placeholder insights copied from prompt", payload["validation_notes"])
+
+        korean_payload = normalize_role_payload(
+            {
+                "status": "completed",
+                "summary": "이 세션에서 직접 확인한 실제 한국어 요약",
+            }
+        )
+
+        self.assertEqual(korean_payload["status"], "completed")
+        self.assertEqual(korean_payload["summary"], "")
+        self.assertIn("reset placeholder summary copied from prompt", korean_payload["validation_notes"])
 
     def test_validate_role_result_contract_requires_workflow_transition_for_workflow_roles(self):
         issues = validate_role_result_contract(

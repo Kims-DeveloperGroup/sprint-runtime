@@ -115,6 +115,21 @@ class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
 
         self.assertEqual(issues, [])
 
+    def test_korean_prompt_example_summary_is_invalid_placeholder(self):
+        payload = {
+            "role": "developer",
+            "status": "completed",
+            "summary": "이 세션에서 직접 확인한 실제 한국어 요약",
+            "insights": [],
+            "proposals": {},
+            "artifacts": [],
+            "error": "",
+        }
+
+        issues = validate_role_result_contract(payload, role="developer")
+
+        self.assertIn("copied_placeholder_summary", issues)
+
 
 if __name__ == "__main__":
     unittest.main()

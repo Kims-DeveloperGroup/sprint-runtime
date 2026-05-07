@@ -14,9 +14,9 @@ from teams_runtime.runtime.role_result_contract import (
     CONTRACT_STATUS_INVALID,
     CONTRACT_STATUS_REPAIRED,
     PROMPT_PLACEHOLDER_INSIGHT,
-    PROMPT_PLACEHOLDER_SUMMARY,
     PROMPT_STATUS_ENUM_LITERAL,
     describe_contract_issues,
+    is_prompt_placeholder_summary,
     is_invalid_contract_payload,
     render_role_result_contract,
     summarize_contract_issues,
@@ -133,7 +133,7 @@ def normalize_role_payload(payload: dict[str, Any]) -> RoleResult:
     normalized["status"] = status
 
     normalized["summary"] = str(normalized.get("summary") or "").strip()
-    if normalized["summary"].lower() == PROMPT_PLACEHOLDER_SUMMARY:
+    if is_prompt_placeholder_summary(normalized["summary"]):
         normalized["summary"] = ""
         validation_notes.append("reset placeholder summary copied from prompt")
 

@@ -6,6 +6,12 @@ from typing import Any
 ALLOWED_ROLE_STATUSES = {"completed", "blocked", "failed"}
 PROMPT_STATUS_ENUM_LITERAL = "completed|blocked|failed"
 PROMPT_PLACEHOLDER_SUMMARY = "short korean summary"
+PROMPT_PLACEHOLDER_SUMMARIES = frozenset(
+    {
+        PROMPT_PLACEHOLDER_SUMMARY,
+        "이 세션에서 직접 확인한 실제 한국어 요약",
+    }
+)
 PROMPT_PLACEHOLDER_INSIGHT = "private role insight for journal.md"
 WORKFLOW_TRANSITION_ALLOWED_OUTCOMES = {"continue", "advance", "reopen", "block", "complete"}
 WORKFLOW_TRANSITION_REQUIRED_KEYS = (
@@ -32,6 +38,11 @@ QA_VALIDATION_REQUIRED_KEYS = (
     "not_checked",
 )
 QA_EVIDENCE_MATRIX_REQUIRED_KEYS = ("criterion", "source", "evidence", "result")
+
+
+def is_prompt_placeholder_summary(value: Any) -> bool:
+    normalized = str(value or "").strip().casefold()
+    return normalized in {summary.casefold() for summary in PROMPT_PLACEHOLDER_SUMMARIES}
 
 
 def render_role_result_contract(*, request_id: str, role: str, extra_fields: str = "") -> str:
@@ -65,8 +76,7 @@ def validate_role_result_contract(
     if status == PROMPT_STATUS_ENUM_LITERAL:
         issues.append("copied_prompt_status_enum_literal")
 
-    summary = str(payload.get("summary") or "").strip().lower()
-    if summary == PROMPT_PLACEHOLDER_SUMMARY:
+    if is_prompt_placeholder_summary(payload.get("summary")):
         issues.append("copied_placeholder_summary")
 
     raw_insights = payload.get("insights")
@@ -108,7 +118,7 @@ def describe_contract_issues(issues: list[str]) -> list[str]:
         elif issue == "copied_prompt_status_enum_literal":
             descriptions.append("status에 prompt enum 예시 `completed|blocked|failed`가 그대로 복사되었습니다.")
         elif issue == "copied_placeholder_summary":
-            descriptions.append("summary에 placeholder 예시 `short Korean summary`가 그대로 복사되었습니다.")
+            descriptions.append("summary에 prompt placeholder 또는 예시 summary가 그대로 복사되었습니다.")
         elif issue == "copied_placeholder_insight":
             descriptions.append("insights에 placeholder 예시가 그대로 복사되었습니다.")
         elif issue == "missing_workflow_transition":
@@ -228,11 +238,13 @@ __all__ = [
     "CONTRACT_STATUS_INVALID",
     "CONTRACT_STATUS_REPAIRED",
     "PROMPT_PLACEHOLDER_INSIGHT",
+    "PROMPT_PLACEHOLDER_SUMMARIES",
     "PROMPT_PLACEHOLDER_SUMMARY",
     "PROMPT_STATUS_ENUM_LITERAL",
     "QA_VALIDATION_ALLOWED_DECISIONS",
     "QA_VALIDATION_ALLOWED_RESULTS",
     "describe_contract_issues",
+    "is_prompt_placeholder_summary",
     "is_invalid_contract_payload",
     "render_role_result_contract",
     "summarize_contract_issues",
