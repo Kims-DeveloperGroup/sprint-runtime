@@ -303,9 +303,21 @@ class TeamsRuntimeBacklogStoreTests(unittest.TestCase):
 
         changed_update = [dict(item) for item in normalized]
         changed_update[0]["updated_at"] = "2026-04-04T00:00:00Z"
-        self.assertNotEqual(
+        self.assertEqual(
             build_blocked_backlog_review_fingerprint(normalized),
             build_blocked_backlog_review_fingerprint(changed_update),
+        )
+        changed_identity = [dict(item) for item in normalized]
+        changed_identity.append(
+            {
+                **dict(normalized[0]),
+                "backlog_id": "backlog-3",
+                "updated_at": "2026-04-04T00:00:00Z",
+            }
+        )
+        self.assertNotEqual(
+            build_blocked_backlog_review_fingerprint(normalized),
+            build_blocked_backlog_review_fingerprint(changed_identity),
         )
 
     def test_review_markdown_renderers_include_candidate_context(self):

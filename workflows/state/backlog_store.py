@@ -188,17 +188,14 @@ def build_sourcer_review_fingerprint(candidates: list[dict[str, Any]]) -> str:
 
 
 def build_blocked_backlog_review_fingerprint(candidates: list[dict[str, Any]]) -> str:
-    parts = [
-        "|".join(
-            [
-                str(candidate.get("backlog_id") or "").strip(),
-                str(candidate.get("updated_at") or "").strip(),
-            ]
-        )
-        for candidate in candidates
-        if str(candidate.get("backlog_id") or "").strip()
-    ]
-    digest = hashlib.sha1("|".join(sorted(parts)).encode("utf-8")).hexdigest()
+    parts = sorted(
+        {
+            str(candidate.get("backlog_id") or "").strip()
+            for candidate in candidates
+            if str(candidate.get("backlog_id") or "").strip()
+        }
+    )
+    digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
     return build_request_fingerprint(
         author_id="blocked-backlog-review",
         channel_id="blocked-backlog-review",

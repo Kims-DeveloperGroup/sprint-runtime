@@ -1606,6 +1606,144 @@ def sync_planner_backlog_review_from_role_report(
     return sync_summary
 
 
+def _blocked_review_candidate_ids(request_record: dict[str, Any]) -> list[str]:
+    params = dict(request_record.get("params") or {})
+    seen: set[str] = set()
+    candidate_ids: list[str] = []
+    for candidate in params.get("blocked_backlog_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        backlog_id = str(candidate.get("backlog_id") or "").strip()
+        if not backlog_id or backlog_id in seen:
+            continue
+        seen.add(backlog_id)
+        candidate_ids.append(backlog_id)
+    return candidate_ids
+
+
+def _active_sprint_state(service: Any) -> dict[str, Any]:
+    scheduler_state = service._load_scheduler_state()
+    active_sprint_id = str(scheduler_state.get("active_sprint_id") or "").strip()
+    if not active_sprint_id:
+        return {}
+    return service._load_sprint_state(active_sprint_id)
+
+
+def _backlog_is_selected_or_running(service: Any, backlog_id: str, backlog_item: dict[str, Any]) -> bool:
+    if str(backlog_item.get("status") or "").strip().lower() == "selected":
+        return True
+    active_sprint = _active_sprint_state(service)
+    if not active_sprint:
+        return False
+    if backlog_id in {str(item).strip() for item in (active_sprint.get("selected_backlog_ids") or [])}:
+        return True
+    for item in active_sprint.get("selected_items") or []:
+        if isinstance(item, dict) and str(item.get("backlog_id") or "").strip() == backlog_id:
+            return True
+    running_statuses = {"pending", "queued", "delegated", "running", "in_progress"}
+    for todo in active_sprint.get("todos") or []:
+        if not isinstance(todo, dict):
+            continue
+        if str(todo.get("backlog_id") or "").strip() != backlog_id:
+            continue
+        if str(todo.get("status") or "").strip().lower() in running_statuses:
+            return True
+    return False
+
+
+def resolve_blocked_backlog_review_request(service: Any, request_record: dict[str, Any]) -> dict[str, Any]:
+    if not service._is_blocked_backlog_review_request(request_record):
+        return {}
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "already_done": [],
+        "already_selected_or_running": [],
+        "missing_or_empty": [],
+        "still_blocked": [],
+    }
+    candidate_ids = _blocked_review_candidate_ids(request_record)
+    if not candidate_ids:
+        buckets["missing_or_empty"].append({"backlog_id": "", "status": "empty"})
+    for backlog_id in candidate_ids:
+        backlog_item = service._load_backlog_item(backlog_id)
+        status = str(backlog_item.get("status") or "").strip().lower()
+        bucket_item = {
+            "backlog_id": backlog_id,
+            "status": status or "missing",
+            "title": str(backlog_item.get("title") or "").strip(),
+        }
+        if not backlog_item:
+            buckets["missing_or_empty"].append(bucket_item)
+        elif status == "blocked":
+            buckets["still_blocked"].append(bucket_item)
+        elif status == "done":
+            buckets["already_done"].append(bucket_item)
+        elif _backlog_is_selected_or_running(service, backlog_id, backlog_item):
+            buckets["already_selected_or_running"].append(bucket_item)
+        else:
+            buckets["missing_or_empty"].append(bucket_item)
+    still_blocked = buckets["still_blocked"]
+    return {
+        "decision": "actionable" if still_blocked else "no_action_terminal",
+        "candidate_ids": candidate_ids,
+        "buckets": buckets,
+        "still_blocked": still_blocked,
+        "no_action_terminal": not still_blocked,
+    }
+
+
+def complete_blocked_backlog_review_if_no_action_terminal(
+    service: Any,
+    request_record: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    *,
+    summary: str = "",
+) -> dict[str, Any]:
+    if result and service._result_has_structured_repair_or_reopen_signal(result):
+        return {}
+    resolution = service._resolve_blocked_backlog_review_request(request_record)
+    if not resolution or not resolution.get("no_action_terminal"):
+        return {}
+    base_result = dict(result or request_record.get("result") or {})
+    proposals = dict(base_result.get("proposals") or {}) if isinstance(base_result.get("proposals"), dict) else {}
+    proposals["blocked_backlog_review"] = {
+        "decision": "no_action_terminal",
+        "buckets": dict(resolution.get("buckets") or {}),
+        "backlog_writes": [],
+    }
+    terminal_summary = (
+        summary
+        or str(base_result.get("summary") or "").strip()
+        or "blocked_backlog_review 후보가 더 이상 active blocked 상태가 아니어서 no-action terminal로 완료했습니다."
+    )
+    terminal_result = {
+        **base_result,
+        "request_id": str(request_record.get("request_id") or base_result.get("request_id") or ""),
+        "role": str(base_result.get("role") or "orchestrator"),
+        "status": "completed",
+        "summary": terminal_summary,
+        "proposals": proposals,
+        "error": "",
+    }
+    request_record["status"] = "completed"
+    request_record["current_role"] = "orchestrator"
+    request_record["next_role"] = ""
+    request_record["result"] = terminal_result
+    append_request_event(
+        request_record,
+        event_type="completed",
+        actor="orchestrator",
+        summary=terminal_summary,
+        payload={"blocked_backlog_review": proposals["blocked_backlog_review"]},
+    )
+    scheduler_state = service._load_scheduler_state()
+    scheduler_state["last_blocked_review_at"] = utc_now_iso()
+    scheduler_state["last_blocked_review_request_id"] = str(request_record.get("request_id") or "")
+    scheduler_state["last_blocked_review_status"] = "completed"
+    scheduler_state["last_blocked_review_fingerprint"] = str(request_record.get("fingerprint") or "").strip()
+    service._save_scheduler_state(scheduler_state)
+    return terminal_result
+
+
 def apply_sprint_planning_result(
     service: Any,
     sprint_state: dict[str, Any],

@@ -2654,7 +2654,12 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                             "status": "completed",
                             "summary": "구현을 이어가기 전에 planner가 scope와 acceptance criteria를 다시 정리해야 합니다.",
                             "insights": [],
-                            "proposals": {},
+                            "proposals": {
+                                "suggested_next_step": {
+                                    "owner": "planner",
+                                    "reason": "scope와 acceptance criteria 재정리가 필요합니다.",
+                                }
+                            },
                             "artifacts": [],
                             "next_role": "",
                             "error": "",
@@ -2676,6 +2681,72 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertIn("[이관 이유]", relay_content)
                 self.assertIn("Selected planner because its strengths match the current request.", relay_content)
                 self.assertIn("[핵심 전달]", relay_content)
+
+    def test_orchestrator_does_not_select_planner_from_keyword_only_execution_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                request_record = {
+                    "request_id": "20260330-plannerkeyword1",
+                    "status": "delegated",
+                    "intent": "implement",
+                    "urgency": "normal",
+                    "scope": "실행 중 요구사항 재정리가 필요한 구현 요청",
+                    "body": "요구사항이 흔들려서 planner 재정리가 필요하다",
+                    "artifacts": [],
+                    "params": {},
+                    "current_role": "developer",
+                    "next_role": "developer",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-03-30T00:00:00+00:00",
+                    "updated_at": "2026-03-30T00:00:00+00:00",
+                    "fingerprint": "planner-keyword-fp",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                }
+                service._save_request(request_record)
+                message = DiscordMessage(
+                    message_id="relay-plannerkeyword-1",
+                    channel_id="111111111111111111",
+                    guild_id="guild-1",
+                    author_id=service.discord_config.get_role("developer").bot_id,
+                    author_name="developer",
+                    content="relay",
+                    is_dm=False,
+                    mentions_bot=True,
+                    created_at=datetime.now(timezone.utc),
+                )
+                envelope = MessageEnvelope(
+                    request_id="20260330-plannerkeyword1",
+                    sender="developer",
+                    target="orchestrator",
+                    intent="report",
+                    urgency="normal",
+                    scope="실행 중 요구사항 재정리가 필요한 구현 요청",
+                    params={
+                        "_teams_kind": "report",
+                        "result": {
+                            "request_id": "20260330-plannerkeyword1",
+                            "role": "developer",
+                            "status": "completed",
+                            "summary": "planner, planning, backlog 단어가 있지만 구조화된 재진입 신호는 없습니다.",
+                            "insights": [],
+                            "proposals": {},
+                            "artifacts": [],
+                            "next_role": "",
+                            "error": "",
+                        },
+                    },
+                )
+
+                asyncio.run(service._handle_role_report(message, envelope))
+
+                updated = service._load_request("20260330-plannerkeyword1")
+                self.assertEqual(updated["status"], "completed")
+                self.assertEqual(updated["current_role"], "orchestrator")
+                self.assertEqual(updated["next_role"], "")
 
     def test_orchestrator_rejects_legacy_approve_command(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3018,6 +3089,317 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 _channel_id, relay_content = service.discord_client.sent_channels[0]
                 self.assertIn(f"<@{planner_bot_id}>", relay_content)
                 self.assertIn("intent: plan", relay_content)
+
+    def test_blocked_backlog_review_qa_pass_with_keywords_completes_without_planner_reentry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                backlog_item = build_backlog_item(
+                    title="still blocked",
+                    summary="still blocked",
+                    kind="enhancement",
+                    source="planner",
+                    scope="still blocked",
+                    backlog_id="backlog-1",
+                )
+                backlog_item["status"] = "blocked"
+                service._save_backlog_item(backlog_item)
+                request_record = {
+                    "request_id": "20260325-blockedqapass1",
+                    "status": "delegated",
+                    "intent": "plan",
+                    "urgency": "normal",
+                    "scope": "autonomous blocked backlog review",
+                    "body": "blocked backlog planner review",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "blocked_backlog_review",
+                        "candidate_count": 1,
+                        "blocked_backlog_candidates": [{"backlog_id": "backlog-1"}],
+                    },
+                    "current_role": "qa",
+                    "next_role": "qa",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-03-25T21:23:02.118515+09:00",
+                    "updated_at": "2026-03-25T21:23:02.118515+09:00",
+                    "fingerprint": "blocked-qa-pass-fp",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                }
+                service._save_request(request_record)
+
+                asyncio.run(
+                    service._apply_role_result(
+                        request_record,
+                        {
+                            "request_id": "20260325-blockedqapass1",
+                            "role": "qa",
+                            "status": "completed",
+                            "summary": "planner/backlog/blocked review 단어가 있지만 QA pass이며 backlog 변경 요구는 없습니다.",
+                            "insights": [],
+                            "proposals": {
+                                "qa_validation": {
+                                    "decision": "pass",
+                                    "findings": [],
+                                }
+                            },
+                            "artifacts": [],
+                            "error": "",
+                        },
+                        sender_role="qa",
+                    )
+                )
+
+                updated = service._load_request("20260325-blockedqapass1")
+                self.assertEqual(updated["status"], "completed")
+                self.assertEqual(updated["current_role"], "orchestrator")
+                self.assertEqual(updated["next_role"], "")
+                self.assertEqual(
+                    updated["result"]["proposals"]["blocked_backlog_review"]["decision"],
+                    "qa_pass_terminal",
+                )
+                self.assertEqual(
+                    updated["result"]["proposals"]["blocked_backlog_review"]["backlog_writes"],
+                    [],
+                )
+                delegated_events = [
+                    event
+                    for event in updated.get("events", [])
+                    if str(event.get("type") or "") == "delegated"
+                ]
+                self.assertEqual(delegated_events, [])
+
+    def test_blocked_backlog_review_qa_repair_required_owner_planner_routes_to_planner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                planner_bot_id = service.discord_config.get_role("planner").bot_id
+                request_record = {
+                    "request_id": "20260325-blockedqarepair1",
+                    "status": "delegated",
+                    "intent": "plan",
+                    "urgency": "normal",
+                    "scope": "autonomous blocked backlog review",
+                    "body": "blocked backlog planner review",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "blocked_backlog_review",
+                        "candidate_count": 1,
+                        "blocked_backlog_candidates": [{"backlog_id": "backlog-1"}],
+                    },
+                    "current_role": "qa",
+                    "next_role": "qa",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-03-25T21:23:02.118515+09:00",
+                    "updated_at": "2026-03-25T21:23:02.118515+09:00",
+                    "fingerprint": "blocked-qa-repair-fp",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                }
+                service._save_request(request_record)
+
+                asyncio.run(
+                    service._apply_role_result(
+                        request_record,
+                        {
+                            "request_id": "20260325-blockedqarepair1",
+                            "role": "qa",
+                            "status": "completed",
+                            "summary": "scope 기준의 planner repair가 필요합니다.",
+                            "insights": [],
+                            "proposals": {
+                                "blocked_backlog_review": {
+                                    "decision": "repair_required",
+                                    "owner": "planner",
+                                    "category": "scope",
+                                }
+                            },
+                            "artifacts": [],
+                            "error": "",
+                        },
+                        sender_role="qa",
+                    )
+                )
+
+                updated = service._load_request("20260325-blockedqarepair1")
+                self.assertEqual(updated["status"], "delegated")
+                self.assertEqual(updated["current_role"], "planner")
+                self.assertEqual(updated["next_role"], "planner")
+                self.assertEqual(updated["routing_context"]["selected_role"], "planner")
+                self.assertEqual(len(service.discord_client.sent_channels), 1)
+                _channel_id, relay_content = service.discord_client.sent_channels[0]
+                self.assertIn(f"<@{planner_bot_id}>", relay_content)
+
+    def test_workflow_managed_qa_pass_still_completes_through_engine(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                request_record = {
+                    "request_id": "20260325-workflowqapass1",
+                    "status": "delegated",
+                    "intent": "route",
+                    "urgency": "normal",
+                    "scope": "workflow qa pass",
+                    "body": "workflow qa pass",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "sprint_internal",
+                        "workflow": {
+                            "phase": "validation",
+                            "step": "qa_validation",
+                            "phase_owner": "qa",
+                            "phase_status": "active",
+                        },
+                    },
+                    "current_role": "qa",
+                    "next_role": "qa",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-03-25T21:23:02.118515+09:00",
+                    "updated_at": "2026-03-25T21:23:02.118515+09:00",
+                    "fingerprint": "workflow-qa-pass-fp",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                }
+                service._save_request(request_record)
+
+                asyncio.run(
+                    service._apply_role_result(
+                        request_record,
+                        {
+                            "request_id": "20260325-workflowqapass1",
+                            "role": "qa",
+                            "status": "completed",
+                            "summary": "workflow QA pass",
+                            "insights": [],
+                            "proposals": {
+                                "workflow_transition": {
+                                    "outcome": "complete",
+                                    "target_phase": "",
+                                    "target_step": "",
+                                    "reopen_category": "",
+                                    "reason": "QA pass",
+                                    "unresolved_items": [],
+                                    "finalize_phase": False,
+                                },
+                                "qa_validation": {
+                                    "decision": "pass",
+                                    "evidence_matrix": [
+                                        {
+                                            "criterion": "acceptance",
+                                            "source": "test",
+                                            "evidence": "passed",
+                                            "result": "pass",
+                                        }
+                                    ],
+                                    "findings": [],
+                                },
+                            },
+                            "artifacts": [],
+                            "error": "",
+                        },
+                        sender_role="qa",
+                    )
+                )
+
+                updated = service._load_request("20260325-workflowqapass1")
+                self.assertEqual(updated["status"], "completed")
+                self.assertEqual(updated["current_role"], "orchestrator")
+                self.assertEqual(updated["next_role"], "")
+
+    def test_workflow_qa_reopen_scope_routes_to_planner_finalize(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                planner_bot_id = service.discord_config.get_role("planner").bot_id
+                request_record = {
+                    "request_id": "20260325-workflowqareopen1",
+                    "status": "delegated",
+                    "intent": "route",
+                    "urgency": "normal",
+                    "scope": "workflow qa reopen",
+                    "body": "workflow qa reopen",
+                    "artifacts": [],
+                    "params": {
+                        "_teams_kind": "sprint_internal",
+                        "workflow": {
+                            "phase": "validation",
+                            "step": "qa_validation",
+                            "phase_owner": "qa",
+                            "phase_status": "active",
+                        },
+                    },
+                    "current_role": "qa",
+                    "next_role": "qa",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-03-25T21:23:02.118515+09:00",
+                    "updated_at": "2026-03-25T21:23:02.118515+09:00",
+                    "fingerprint": "workflow-qa-reopen-fp",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {},
+                }
+                service._save_request(request_record)
+
+                asyncio.run(
+                    service._apply_role_result(
+                        request_record,
+                        {
+                            "request_id": "20260325-workflowqareopen1",
+                            "role": "qa",
+                            "status": "completed",
+                            "summary": "scope contract mismatch",
+                            "insights": [],
+                            "proposals": {
+                                "workflow_transition": {
+                                    "outcome": "reopen",
+                                    "target_phase": "planning",
+                                    "target_step": "planner_finalize",
+                                    "reopen_category": "scope",
+                                    "reason": "scope mismatch",
+                                    "unresolved_items": ["scope mismatch"],
+                                    "finalize_phase": False,
+                                },
+                                "qa_validation": {
+                                    "decision": "fail",
+                                    "evidence_matrix": [
+                                        {
+                                            "criterion": "scope",
+                                            "source": "qa",
+                                            "evidence": "mismatch",
+                                            "result": "fail",
+                                        }
+                                    ],
+                                    "findings": [
+                                        {
+                                            "owner": "planner",
+                                            "category": "scope",
+                                            "summary": "scope mismatch",
+                                        }
+                                    ],
+                                },
+                            },
+                            "artifacts": [],
+                            "error": "",
+                        },
+                        sender_role="qa",
+                    )
+                )
+
+                updated = service._load_request("20260325-workflowqareopen1")
+                self.assertEqual(updated["status"], "delegated")
+                self.assertEqual(updated["current_role"], "planner")
+                self.assertEqual(updated["next_role"], "planner")
+                self.assertEqual(updated["params"]["workflow"]["step"], "planner_finalize")
+                self.assertEqual(len(service.discord_client.sent_channels), 1)
+                _channel_id, relay_content = service.discord_client.sent_channels[0]
+                self.assertIn(f"<@{planner_bot_id}>", relay_content)
 
     def test_orchestrator_role_report_skips_requester_reply_when_reply_route_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

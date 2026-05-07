@@ -423,7 +423,21 @@ async def maybe_queue_blocked_backlog_review_for_autonomous_start(
 ) -> bool:
     blocked_candidates = await asyncio.to_thread(service._collect_blocked_backlog_review_candidates)
     if not blocked_candidates:
-        if any(
+        closed_stale_reviews = False
+        for request_record in service._find_open_blocked_backlog_review_requests():
+            terminal_result = service._complete_blocked_backlog_review_if_no_action_terminal(
+                request_record,
+                summary=(
+                    "active blocked backlog 후보가 없어 stale blocked_backlog_review를 "
+                    "no-action terminal로 완료했습니다."
+                ),
+            )
+            if terminal_result:
+                closed_stale_reviews = True
+                service._save_request(request_record)
+        if closed_stale_reviews:
+            state.update(service._load_scheduler_state())
+        elif any(
             str(state.get(field) or "").strip()
             for field in (
                 "last_blocked_review_at",
@@ -449,6 +463,17 @@ async def maybe_queue_blocked_backlog_review_for_autonomous_start(
         str(state.get("last_blocked_review_fingerprint") or "").strip() == fingerprint
         and last_status in {"completed", "committed", "failed", "blocked", "cancelled"}
     ):
+        return False
+    recent_terminal = service._find_recent_terminal_blocked_backlog_review_request(fingerprint)
+    if recent_terminal:
+        terminal_status = str(recent_terminal.get("status") or "").strip().lower()
+        state["last_blocked_review_at"] = str(
+            recent_terminal.get("updated_at") or recent_terminal.get("created_at") or utc_now_iso()
+        )
+        state["last_blocked_review_request_id"] = str(recent_terminal.get("request_id") or "")
+        state["last_blocked_review_status"] = terminal_status
+        state["last_blocked_review_fingerprint"] = str(recent_terminal.get("fingerprint") or "").strip()
+        service._save_scheduler_state(state)
         return False
     review_result = await service._queue_blocked_backlog_for_planner_review(blocked_candidates)
     request_id = str(review_result.get("request_id") or "")

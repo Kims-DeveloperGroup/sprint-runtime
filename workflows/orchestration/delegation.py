@@ -1927,6 +1927,21 @@ def derive_routing_decision_after_report(
             "next_role": "",
             "routing_context": {},
         }
+    if (
+        service._is_blocked_backlog_review_request(request_record)
+        and current_role == "qa"
+        and service._has_explicit_planner_reentry_signal(result)
+    ):
+        return {
+            "next_role": "planner",
+            "routing_context": service._build_routing_context(
+                "planner",
+                reason="blocked_backlog_review QA 결과에 planner-owned structured repair 신호가 있어 planner 재검토로 되돌립니다.",
+                preferred_role="planner",
+                selection_source="blocked_backlog_review",
+                matched_signals=["blocked_backlog_review:structured_planner_repair"],
+            ),
+        }
 
     selection = service._build_governed_routing_selection(
         request_record,
@@ -2103,6 +2118,23 @@ async def apply_role_result(
     force_complete = bool(control_outcome.get("force_complete")) if control_outcome else False
     if not force_complete and service._request_handling_mode(result) == "complete":
         force_complete = True
+    no_action_terminal_result = service._complete_blocked_backlog_review_if_no_action_terminal(
+        request_record,
+        result,
+    )
+    if no_action_terminal_result:
+        result = no_action_terminal_result
+        request_record["result"] = result
+        force_complete = True
+    if not force_complete:
+        qa_pass_terminal_result = service._complete_blocked_backlog_review_qa_pass_if_terminal(
+            request_record,
+            result,
+        )
+        if qa_pass_terminal_result:
+            result = qa_pass_terminal_result
+            request_record["result"] = result
+            force_complete = True
     if not force_complete:
         result = service._coerce_nonterminal_workflow_role_result(
             request_record,

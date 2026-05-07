@@ -966,6 +966,9 @@ internal_agents:
 
                 with patch.object(service, "_run_autonomous_sprint", AsyncMock(return_value=None)) as run_sprint_mock:
                     asyncio.run(service._poll_scheduler_once())
+                    timestamp_only_update = service._load_backlog_item(blocked_item["backlog_id"])
+                    timestamp_only_update["updated_at"] = "2026-05-04T10:00:00+09:00"
+                    service._save_backlog_item(timestamp_only_update)
                     asyncio.run(service._poll_scheduler_once())
 
                 request_files = list(service.paths.requests_dir.glob("*.json"))
@@ -985,6 +988,256 @@ internal_agents:
                     request_payload["request_id"],
                 )
                 run_sprint_mock.assert_not_awaited()
+
+    def test_scheduler_suppresses_recent_terminal_blocked_backlog_review_without_scheduler_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                blocked_item = build_backlog_item(
+                    title="최근 검토된 막힌 작업",
+                    summary="updated_at만 바뀌어도 다시 검토 요청을 만들면 안 됩니다.",
+                    kind="enhancement",
+                    source="carry_over",
+                    scope="최근 검토된 막힌 작업",
+                )
+                blocked_item["status"] = "blocked"
+                blocked_item["blocked_reason"] = "입력 대기"
+                blocked_item["fingerprint"] = service._build_backlog_fingerprint(
+                    title=str(blocked_item.get("title") or ""),
+                    scope=str(blocked_item.get("scope") or ""),
+                    kind=str(blocked_item.get("kind") or ""),
+                )
+                service._save_backlog_item(blocked_item)
+                terminal_request = service._build_blocked_backlog_review_request_record(
+                    service._collect_blocked_backlog_review_candidates()
+                )
+                terminal_request["status"] = "completed"
+                service._save_request(terminal_request)
+                timestamp_only_update = service._load_backlog_item(blocked_item["backlog_id"])
+                timestamp_only_update["updated_at"] = "2026-05-04T16:05:00+09:00"
+                service._save_backlog_item(timestamp_only_update)
+                service._save_scheduler_state(
+                    {
+                        "active_sprint_id": "",
+                        "next_slot_at": "2000-01-01T00:00:00+00:00",
+                    }
+                )
+
+                with patch.object(service, "_run_autonomous_sprint", AsyncMock(return_value=None)) as run_sprint_mock:
+                    asyncio.run(service._poll_scheduler_once())
+
+                request_payloads = [
+                    json.loads(path.read_text(encoding="utf-8"))
+                    for path in service.paths.requests_dir.glob("*.json")
+                ]
+                self.assertEqual(len(request_payloads), 1)
+                self.assertEqual(request_payloads[0]["request_id"], terminal_request["request_id"])
+                scheduler_state = service._load_scheduler_state()
+                self.assertEqual(scheduler_state["last_blocked_review_status"], "completed")
+                self.assertEqual(
+                    scheduler_state["last_blocked_review_request_id"],
+                    terminal_request["request_id"],
+                )
+                self.assertEqual(
+                    scheduler_state["last_blocked_review_fingerprint"],
+                    terminal_request["fingerprint"],
+                )
+                run_sprint_mock.assert_not_awaited()
+
+    def test_scheduler_completes_open_blocked_review_when_candidates_are_done(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                blocked_item = build_backlog_item(
+                    title="이미 끝난 막힌 작업",
+                    summary="검토 요청 생성 뒤 완료된 backlog입니다.",
+                    kind="enhancement",
+                    source="carry_over",
+                    scope="이미 끝난 막힌 작업",
+                )
+                blocked_item["status"] = "blocked"
+                blocked_item["fingerprint"] = service._build_backlog_fingerprint(
+                    title=str(blocked_item.get("title") or ""),
+                    scope=str(blocked_item.get("scope") or ""),
+                    kind=str(blocked_item.get("kind") or ""),
+                )
+                service._save_backlog_item(blocked_item)
+                request_record = service._build_blocked_backlog_review_request_record(
+                    service._collect_blocked_backlog_review_candidates()
+                )
+                request_record["status"] = "delegated"
+                request_record["current_role"] = "planner"
+                request_record["next_role"] = "planner"
+                service._save_request(request_record)
+
+                completed_item = service._load_backlog_item(blocked_item["backlog_id"])
+                completed_item["status"] = "done"
+                service._save_backlog_item(completed_item)
+                service._save_scheduler_state(
+                    {
+                        "active_sprint_id": "",
+                        "next_slot_at": "2000-01-01T00:00:00+00:00",
+                    }
+                )
+
+                with patch.object(service, "_run_autonomous_sprint", AsyncMock(return_value=None)) as run_sprint_mock:
+                    asyncio.run(service._poll_scheduler_once())
+
+                updated_request = service._load_request(request_record["request_id"])
+                self.assertEqual(updated_request["status"], "completed")
+                self.assertEqual(updated_request["current_role"], "orchestrator")
+                self.assertEqual(updated_request["next_role"], "")
+                blocked_review = updated_request["result"]["proposals"]["blocked_backlog_review"]
+                self.assertEqual(blocked_review["decision"], "no_action_terminal")
+                self.assertEqual(blocked_review["backlog_writes"], [])
+                self.assertEqual(
+                    blocked_review["buckets"]["already_done"][0]["backlog_id"],
+                    blocked_item["backlog_id"],
+                )
+                scheduler_state = service._load_scheduler_state()
+                self.assertEqual(scheduler_state["last_blocked_review_status"], "completed")
+                self.assertEqual(
+                    scheduler_state["last_blocked_review_request_id"],
+                    request_record["request_id"],
+                )
+                run_sprint_mock.assert_not_awaited()
+
+    def test_planner_no_action_blocked_review_report_does_not_route_to_qa(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                blocked_item = build_backlog_item(
+                    title="보고 전에 완료된 작업",
+                    summary="planner 보고 시점에는 done입니다.",
+                    kind="enhancement",
+                    source="carry_over",
+                    scope="보고 전에 완료된 작업",
+                )
+                blocked_item["status"] = "blocked"
+                blocked_item["fingerprint"] = service._build_backlog_fingerprint(
+                    title=str(blocked_item.get("title") or ""),
+                    scope=str(blocked_item.get("scope") or ""),
+                    kind=str(blocked_item.get("kind") or ""),
+                )
+                service._save_backlog_item(blocked_item)
+                request_record = service._build_blocked_backlog_review_request_record(
+                    service._collect_blocked_backlog_review_candidates()
+                )
+                request_record["status"] = "delegated"
+                request_record["current_role"] = "planner"
+                request_record["next_role"] = "planner"
+                service._save_request(request_record)
+                completed_item = service._load_backlog_item(blocked_item["backlog_id"])
+                completed_item["status"] = "done"
+                service._save_backlog_item(completed_item)
+
+                asyncio.run(
+                    service._apply_role_result(
+                        request_record,
+                        {
+                            "request_id": request_record["request_id"],
+                            "role": "planner",
+                            "status": "completed",
+                            "summary": "canonical backlog가 이미 완료되어 추가 조치가 없습니다.",
+                            "insights": [],
+                            "proposals": {},
+                            "artifacts": [],
+                            "error": "",
+                        },
+                        sender_role="planner",
+                    )
+                )
+
+                updated_request = service._load_request(request_record["request_id"])
+                self.assertEqual(updated_request["status"], "completed")
+                self.assertEqual(updated_request["current_role"], "orchestrator")
+                self.assertEqual(updated_request["next_role"], "")
+                self.assertEqual(
+                    updated_request["result"]["proposals"]["blocked_backlog_review"]["decision"],
+                    "no_action_terminal",
+                )
+                delegated_events = [
+                    event
+                    for event in updated_request.get("events", [])
+                    if str(event.get("type") or "") == "delegated"
+                ]
+                self.assertEqual(delegated_events, [])
+
+    def test_selected_running_blocked_review_candidate_completes_without_redispatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                blocked_item = build_backlog_item(
+                    title="실행 중으로 전환된 작업",
+                    summary="blocked review 이후 active sprint에서 실행 중입니다.",
+                    kind="enhancement",
+                    source="carry_over",
+                    scope="실행 중으로 전환된 작업",
+                )
+                blocked_item["status"] = "blocked"
+                blocked_item["fingerprint"] = service._build_backlog_fingerprint(
+                    title=str(blocked_item.get("title") or ""),
+                    scope=str(blocked_item.get("scope") or ""),
+                    kind=str(blocked_item.get("kind") or ""),
+                )
+                service._save_backlog_item(blocked_item)
+                request_record = service._build_blocked_backlog_review_request_record(
+                    service._collect_blocked_backlog_review_candidates()
+                )
+                request_record["status"] = "delegated"
+                request_record["current_role"] = "qa"
+                request_record["next_role"] = "qa"
+                service._save_request(request_record)
+                selected_item = service._load_backlog_item(blocked_item["backlog_id"])
+                selected_item["status"] = "selected"
+                service._save_backlog_item(selected_item)
+                service._save_sprint_state(
+                    {
+                        "sprint_id": "sprint-running",
+                        "status": "running",
+                        "selected_backlog_ids": [blocked_item["backlog_id"]],
+                        "selected_items": [{"backlog_id": blocked_item["backlog_id"]}],
+                        "todos": [
+                            {
+                                "todo_id": "todo-running",
+                                "backlog_id": blocked_item["backlog_id"],
+                                "status": "running",
+                            }
+                        ],
+                    }
+                )
+                service._save_scheduler_state({"active_sprint_id": "sprint-running"})
+
+                asyncio.run(
+                    service._apply_role_result(
+                        request_record,
+                        {
+                            "request_id": request_record["request_id"],
+                            "role": "qa",
+                            "status": "completed",
+                            "summary": "이미 실행 중인 backlog라 추가 blocked review가 필요 없습니다.",
+                            "insights": [],
+                            "proposals": {},
+                            "artifacts": [],
+                            "error": "",
+                        },
+                        sender_role="qa",
+                    )
+                )
+
+                updated_request = service._load_request(request_record["request_id"])
+                self.assertEqual(updated_request["status"], "completed")
+                self.assertEqual(updated_request["next_role"], "")
+                blocked_review = updated_request["result"]["proposals"]["blocked_backlog_review"]
+                self.assertEqual(blocked_review["decision"], "no_action_terminal")
+                self.assertEqual(
+                    blocked_review["buckets"]["already_selected_or_running"][0]["backlog_id"],
+                    blocked_item["backlog_id"],
+                )
 
     def test_blocked_backlog_review_sync_reopens_item_for_future_sprint_selection(self):
         with tempfile.TemporaryDirectory() as tmpdir:

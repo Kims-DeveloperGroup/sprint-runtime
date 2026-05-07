@@ -217,6 +217,8 @@ from teams_runtime.workflows.state.request_store import (
     append_request_event,
     build_blocked_backlog_review_request_record as build_blocked_backlog_review_request_record_helper,
     build_sourcer_review_request_record as build_sourcer_review_request_record_helper,
+    find_recent_terminal_blocked_backlog_review_request as find_recent_terminal_blocked_backlog_review_request_helper,
+    find_open_blocked_backlog_review_requests as find_open_blocked_backlog_review_requests_helper,
     find_open_blocked_backlog_review_request as find_open_blocked_backlog_review_request_helper,
     find_open_sourcer_review_request as find_open_sourcer_review_request_helper,
     is_blocked_backlog_review_request as is_blocked_backlog_review_request_helper,
@@ -423,12 +425,14 @@ from teams_runtime.workflows.sprints.lifecycle import (
     sync_internal_sprint_artifacts_from_role_report as sync_internal_sprint_artifacts_from_role_report_helper,
     sync_manual_sprint_queue as sync_manual_sprint_queue_helper,
     sync_planner_backlog_review_from_role_report as sync_planner_backlog_review_from_role_report_helper,
+    complete_blocked_backlog_review_if_no_action_terminal as complete_blocked_backlog_review_if_no_action_terminal_helper,
     sync_sprint_planning_state as sync_sprint_planning_state_helper,
     synchronize_sprint_todo_backlog_state as synchronize_sprint_todo_backlog_state_helper,
     todo_status_from_request_record as todo_status_from_request_record_helper,
     todo_status_rank as todo_status_rank_helper,
     uses_manual_daily_sprint as uses_manual_daily_sprint_helper,
     validate_initial_phase_step_result as validate_initial_phase_step_result_helper,
+    resolve_blocked_backlog_review_request as resolve_blocked_backlog_review_request_helper,
 )
 from teams_runtime.workflows.orchestration.ingress import (
     extract_ready_planning_artifact as extract_ready_planning_artifact_helper,
@@ -1860,6 +1864,30 @@ class TeamService:
 
     def _has_explicit_planner_reentry_signal(self, result: dict[str, Any]) -> bool:
         proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+        workflow_transition = (
+            dict(proposals.get("workflow_transition") or {})
+            if isinstance(proposals.get("workflow_transition"), dict)
+            else {}
+        )
+        if str(workflow_transition.get("outcome") or "").strip().lower() == "reopen":
+            target_step = str(workflow_transition.get("target_step") or "").strip().lower()
+            reopen_category = str(workflow_transition.get("reopen_category") or "").strip().lower()
+            if target_step == "planner_finalize" or reopen_category == "scope":
+                return True
+        qa_validation = (
+            dict(proposals.get("qa_validation") or {})
+            if isinstance(proposals.get("qa_validation"), dict)
+            else {}
+        )
+        if self._qa_validation_has_planner_reentry_signal(qa_validation):
+            return True
+        blocked_review = (
+            dict(proposals.get("blocked_backlog_review") or {})
+            if isinstance(proposals.get("blocked_backlog_review"), dict)
+            else {}
+        )
+        if self._blocked_review_has_planner_repair_signal(blocked_review):
+            return True
         suggested_next_step = (
             dict(proposals.get("suggested_next_step") or {})
             if isinstance(proposals.get("suggested_next_step"), dict)
@@ -1867,30 +1895,141 @@ class TeamService:
         )
         if str(suggested_next_step.get("owner") or "").strip() == "planner":
             return True
-        routing = dict(proposals.get("routing") or {}) if isinstance(proposals.get("routing"), dict) else {}
-        reference_text = self._normalize_reference_text(
-            " ".join(
-                part
-                for part in (
-                    str(result.get("summary") or ""),
-                    str(routing.get("reason") or ""),
-                    str(suggested_next_step.get("reason") or ""),
-                )
-                if str(part).strip()
-            )
+        return False
+
+    @staticmethod
+    def _qa_validation_has_planner_reentry_signal(qa_validation: dict[str, Any]) -> bool:
+        decision = str(qa_validation.get("decision") or "").strip().lower()
+        if decision != "fail":
+            return False
+        for finding in qa_validation.get("findings") or []:
+            if not isinstance(finding, dict):
+                continue
+            owner = str(finding.get("owner") or finding.get("role") or "").strip().lower()
+            category = str(finding.get("category") or finding.get("reopen_category") or "").strip().lower()
+            if owner == "planner" or category in {"scope", "planning", "planning_contract"}:
+                return True
+        return False
+
+    @staticmethod
+    def _blocked_review_has_planner_repair_signal(blocked_review: dict[str, Any]) -> bool:
+        decision = str(blocked_review.get("decision") or "").strip().lower()
+        if decision != "repair_required":
+            return False
+        owner = str(blocked_review.get("owner") or "").strip().lower()
+        category = str(blocked_review.get("category") or blocked_review.get("reopen_category") or "").strip().lower()
+        return owner == "planner" or category == "scope"
+
+    def _result_has_structured_repair_or_reopen_signal(self, result: dict[str, Any]) -> bool:
+        proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+        workflow_transition = (
+            dict(proposals.get("workflow_transition") or {})
+            if isinstance(proposals.get("workflow_transition"), dict)
+            else {}
         )
-        return any(
-            marker in reference_text
-            for marker in (
-                "planner",
-                "planning",
-                "backlog",
-                "기획",
-                "계획",
-                "구조화",
-                "재정리",
-            )
+        if str(workflow_transition.get("outcome") or "").strip().lower() == "reopen":
+            return True
+        qa_validation = (
+            dict(proposals.get("qa_validation") or {})
+            if isinstance(proposals.get("qa_validation"), dict)
+            else {}
         )
+        if str(qa_validation.get("decision") or "").strip().lower() in {"fail", "blocked"}:
+            return True
+        blocked_review = (
+            dict(proposals.get("blocked_backlog_review") or {})
+            if isinstance(proposals.get("blocked_backlog_review"), dict)
+            else {}
+        )
+        if str(blocked_review.get("decision") or "").strip().lower() in {
+            "repair_required",
+            "reopen",
+            "remain_blocked",
+        }:
+            return True
+        if proposals.get("verification_result") is not None:
+            verification_result = (
+                dict(proposals.get("verification_result") or {})
+                if isinstance(proposals.get("verification_result"), dict)
+                else {}
+            )
+            if str(verification_result.get("decision") or verification_result.get("status") or "").strip().lower() in {
+                "fail",
+                "failed",
+                "repair_required",
+                "reopen",
+            }:
+                return True
+        if proposals.get("code_review") is not None:
+            code_review = (
+                dict(proposals.get("code_review") or {})
+                if isinstance(proposals.get("code_review"), dict)
+                else {}
+            )
+            if str(code_review.get("decision") or code_review.get("status") or "").strip().lower() in {
+                "changes_requested",
+                "repair_required",
+                "fail",
+                "failed",
+            }:
+                return True
+        return False
+
+    @staticmethod
+    def _result_requests_backlog_write(result: dict[str, Any]) -> bool:
+        proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+        if isinstance(proposals.get("backlog_item"), dict):
+            return True
+        if any(isinstance(item, dict) for item in (proposals.get("backlog_items") or [])):
+            return True
+        if any(isinstance(item, dict) for item in (proposals.get("backlog_writes") or [])):
+            return True
+        blocked_review = (
+            dict(proposals.get("blocked_backlog_review") or {})
+            if isinstance(proposals.get("blocked_backlog_review"), dict)
+            else {}
+        )
+        return any(isinstance(item, dict) for item in (blocked_review.get("backlog_writes") or []))
+
+    def _complete_blocked_backlog_review_qa_pass_if_terminal(
+        self,
+        request_record: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._is_blocked_backlog_review_request(request_record):
+            return {}
+        if str(result.get("role") or "").strip().lower() != "qa":
+            return {}
+        if str(result.get("status") or "").strip().lower() not in {"completed", "committed"}:
+            return {}
+        if str(result.get("error") or "").strip():
+            return {}
+        if self._result_has_structured_repair_or_reopen_signal(result):
+            return {}
+        if self._result_requests_backlog_write(result):
+            return {}
+        terminal_result = dict(result)
+        proposals = (
+            dict(terminal_result.get("proposals") or {})
+            if isinstance(terminal_result.get("proposals"), dict)
+            else {}
+        )
+        blocked_review = (
+            dict(proposals.get("blocked_backlog_review") or {})
+            if isinstance(proposals.get("blocked_backlog_review"), dict)
+            else {}
+        )
+        blocked_review["decision"] = "qa_pass_terminal"
+        blocked_review["backlog_writes"] = []
+        proposals["blocked_backlog_review"] = blocked_review
+        terminal_result["status"] = "completed"
+        terminal_result["proposals"] = proposals
+        terminal_result["error"] = ""
+        request_record["status"] = "completed"
+        request_record["current_role"] = "orchestrator"
+        request_record["next_role"] = ""
+        request_record["result"] = terminal_result
+        return terminal_result
 
     def _match_reference_terms(
         self,
@@ -3745,6 +3884,12 @@ class TeamService:
     def _find_open_blocked_backlog_review_request(self, fingerprint: str) -> dict[str, Any]:
         return find_open_blocked_backlog_review_request_helper(self.paths, fingerprint)
 
+    def _find_recent_terminal_blocked_backlog_review_request(self, fingerprint: str) -> dict[str, Any]:
+        return find_recent_terminal_blocked_backlog_review_request_helper(self.paths, fingerprint)
+
+    def _find_open_blocked_backlog_review_requests(self) -> list[dict[str, Any]]:
+        return find_open_blocked_backlog_review_requests_helper(self.paths)
+
     def _find_open_sprint_planning_request(
         self,
         *,
@@ -4213,6 +4358,23 @@ class TeamService:
         result: dict[str, Any],
     ) -> dict[str, Any]:
         return sync_planner_backlog_review_from_role_report_helper(self, request_record, result)
+
+    def _resolve_blocked_backlog_review_request(self, request_record: dict[str, Any]) -> dict[str, Any]:
+        return resolve_blocked_backlog_review_request_helper(self, request_record)
+
+    def _complete_blocked_backlog_review_if_no_action_terminal(
+        self,
+        request_record: dict[str, Any],
+        result: dict[str, Any] | None = None,
+        *,
+        summary: str = "",
+    ) -> dict[str, Any]:
+        return complete_blocked_backlog_review_if_no_action_terminal_helper(
+            self,
+            request_record,
+            result,
+            summary=summary,
+        )
 
     def _apply_sprint_planning_result(
         self,
