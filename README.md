@@ -34,7 +34,7 @@ Normal change requests are backlog-first instead of freeform implementation. Spr
 Required:
 
 - **Discord**: configure role bot tokens, role bot IDs, and `relay_channel_id`; `startup_channel_id` and `report_channel_id` are optional convenience channels.
-- **Codex CLI**: the runtime starts role agents through the `codex` command on `PATH`.
+- **Role runtime CLI**: the default role models run through the `codex` command; role models whose name includes `gemini` run through the `gemini` command instead. Install the CLI for the models you configure and keep it on `PATH`.
 - **git**: sprint closeout, task commit checks, and commit reporting depend on git being available.
 
 Optional:
@@ -131,8 +131,11 @@ You can update role defaults through the CLI:
 
 ```bash
 python -m teams_runtime config role set --agent developer --model gpt-5.5 --reasoning high
+python -m teams_runtime config role set --agent planner --model gemini-2.5-pro
 python -m teams_runtime config research set --app "Gemini Research App" --file "market.md"
 ```
+
+Gemini role models ignore Codex reasoning levels at runtime, so status output reports their reasoning as `None`.
 
 ### 4. Export bot tokens
 
