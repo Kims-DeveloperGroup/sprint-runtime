@@ -23,11 +23,50 @@ Think of it as a compact production crew for software projects. Instead of relyi
 - Keep operators informed with relay summaries, sprint status, and human-readable workspace artifacts.
 - Close out completed work with git-backed commit reporting, sprint history, and reusable documentation.
 
-The public roles are `orchestrator`, `research`, `planner`, `designer`, `architect`, `developer`, and `qa`. The orchestrator receives user requests and controls routing; research grounds sprint planning; planner turns context into backlog, specs, and todos; designer advises on UX and message clarity; architect shapes technical direction and review; developer builds; QA validates.
+## Roles At A Glance
 
-The internal runtime agents are `parser`, `sourcer`, and `version_controller`. They support intent parsing, backlog candidate discovery, and git-backed task or sprint closeout without becoming public Discord roles.
+- `orchestrator`: receives requests, owns routing, sprint state, and final reporting.
+- `research`: runs the pre-planning research pass and gives planner grounding.
+- `planner`: turns requests and research into backlog, specs, priorities, and sprint todos.
+- `designer`: advises on UX, interaction flow, and user-facing message clarity.
+- `architect`: gives implementation guidance and reviews developer output.
+- `developer`: implements and revises sprint work.
+- `qa`: validates behavior, regressions, and readiness.
+- Internal agents: `parser`, `sourcer`, and `version_controller` support intent parsing, backlog discovery, and git closeout.
 
-Normal change requests are backlog-first instead of freeform implementation. Sprint kickoff starts with the `research` prepass, then planner refines the milestone and turns the plan into sprint-ready backlog and todos. Sprint execution follows the orchestrator-governed chain: planner output, architect guidance, developer build, architect review, QA validation, then version-controller closeout when there are owned changes to commit.
+## Standard Workflow
+
+```mermaid
+sequenceDiagram
+    participant U as User / Operator
+    participant O as Orchestrator
+    participant R as Research
+    participant P as Planner
+    participant A as Architect
+    participant D as Developer
+    participant Q as QA
+    participant V as Version Controller
+
+    U->>O: Discord request or sprint kickoff
+    O->>R: research_initial
+    R-->>O: grounding, sources, planner hints
+    O->>P: milestone refinement + backlog planning
+    P-->>O: specs, backlog, prioritized todos
+    O->>A: architect_guidance
+    A-->>O: implementation contract
+    O->>D: developer_build
+    D-->>O: code/docs changes
+    O->>A: architect_review
+    A-->>O: pass or revision request
+    O->>D: developer_revision when needed
+    O->>Q: qa_validation
+    Q-->>O: validation pass or reopen
+    O->>V: commit/closeout when changes exist
+    V-->>O: commit metadata or no_changes
+    O-->>U: sprint report and status
+```
+
+A user request becomes planner-owned backlog, sprint kickoff starts with research, implementation goes through architect guidance, developer work, and QA validation, and closeout records git and report artifacts.
 
 ## Integration Tools
 
