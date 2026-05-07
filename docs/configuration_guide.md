@@ -159,13 +159,13 @@ If left empty, guild filtering is not enforced.
 
 ### `role_defaults`
 
-Override the Codex model or reasoning level per role.
+Override the Codex or Gemini model, plus Codex reasoning level, per role.
 
 You can edit `teams_generated/team_runtime.yaml` directly or update it through the CLI:
 
 ```bash
 python -m teams_runtime config role set --agent planner --model gpt-5.5 --reasoning medium
-python -m teams_runtime config role set --agent developer --model gemini-2.5-pro
+python -m teams_runtime config role set --agent developer --model gemini-3.1-pro-preview
 ```
 
 Example:

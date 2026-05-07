@@ -1665,16 +1665,16 @@ agents:
                         "--agent",
                         "qa",
                         "--model",
-                        "gemini-2.5-pro",
+                        "gemini-3.1-pro-preview",
                     ]
                 )
 
             self.assertEqual(exit_code, 0)
             runtime_config = load_team_runtime_config(tmpdir)
-            self.assertEqual(runtime_config.role_defaults["qa"].model, "gemini-2.5-pro")
+            self.assertEqual(runtime_config.role_defaults["qa"].model, "gemini-3.1-pro-preview")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
             rendered = output.getvalue()
-            self.assertIn("role=qa model=gemini-2.5-pro reasoning=None", rendered)
+            self.assertIn("role=qa model=gemini-3.1-pro-preview reasoning=None", rendered)
 
     def test_main_config_role_set_requires_model_or_reasoning(self):
         with tempfile.TemporaryDirectory() as tmpdir:

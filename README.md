@@ -131,7 +131,7 @@ You can update role defaults through the CLI:
 
 ```bash
 python -m teams_runtime config role set --agent developer --model gpt-5.5 --reasoning high
-python -m teams_runtime config role set --agent planner --model gemini-2.5-pro
+python -m teams_runtime config role set --agent planner --model gemini-3.1-pro-preview
 python -m teams_runtime config research set --app "Gemini Research App" --file "market.md"
 ```
 

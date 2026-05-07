@@ -760,7 +760,7 @@ class TeamsRuntimeOrchestrationTests(OrchestrationTestCase):
             with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
                 service = TeamService(tmpdir, "orchestrator")
                 service.runtime_config.role_defaults["orchestrator"] = RoleRuntimeConfig(
-                    model="gemini-2.5-pro",
+                    model="gemini-3.1-pro-preview",
                     reasoning="high",
                 )
                 message = DiscordMessage(
@@ -778,7 +778,7 @@ class TeamsRuntimeOrchestrationTests(OrchestrationTestCase):
                 asyncio.run(service._send_channel_reply(message, "hello"))
 
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
-                self.assertIn("model: gemini-2.5-pro | reasoning: None", service.discord_client.sent_channels[0][1])
+                self.assertIn("model: gemini-3.1-pro-preview | reasoning: None", service.discord_client.sent_channels[0][1])
 
     def test_announce_startup_sends_progress_report_to_startup_channel(self):
         with tempfile.TemporaryDirectory() as tmpdir:
