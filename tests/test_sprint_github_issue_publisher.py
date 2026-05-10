@@ -171,6 +171,11 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 "- second qa evidence\n",
                 encoding="utf-8",
             )
+            (paths.sprint_artifact_dir(folder_name) / "attachments").mkdir()
+            (paths.sprint_artifact_dir(folder_name) / "attachments" / "no-heading.md").write_text(
+                "fallback body without a heading\n",
+                encoding="utf-8",
+            )
             calls: list[tuple[list[str], str | None]] = []
 
             def runner(args, stdin=None):
@@ -185,7 +190,16 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 if args[:2] == ["issue", "create"]:
                     return GhResult(0, "https://github.com/owner/repo/issues/42\n", "")
                 if args == ["api", "repos/owner/repo/issues/42/comments"]:
-                    return GhResult(0, "[]", "")
+                    comments = []
+                    for index, (_call_args, body) in enumerate(
+                        [(call_args, body) for call_args, body in calls if call_args[:2] == ["issue", "comment"]],
+                        start=101,
+                    ):
+                        comment = {"id": index, "body": body or ""}
+                        if "sprint/attachments/no-heading.md" not in (body or ""):
+                            comment["html_url"] = f"https://github.com/owner/repo/issues/42#issuecomment-{index}"
+                        comments.append(comment)
+                    return GhResult(0, json.dumps(comments), "")
                 return GhResult(0, "", "")
 
             issue_number = publish_sprint_issue(
@@ -226,6 +240,30 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             self.assertIn("#### 플래너", comment_bodies[first_spec_index])
             self.assertIn("#### QA", comment_bodies[second_spec_index])
             self.assertFalse(any("## sprint/spec.md\n" in body for body in comment_bodies))
+            final_issue_body = [stdin or "" for args, stdin in calls if args[:2] == ["issue", "edit"]][-1]
+            self.assertIn("## Artifact Index", final_issue_body)
+            self.assertIn(
+                "1. [final](<https://github.com/owner/repo/issues/42#issuecomment-101>) - sprint/report.md",
+                final_issue_body,
+            )
+            self.assertIn(
+                "2. [Sprint Spec](<https://github.com/owner/repo/issues/42#issuecomment-102>) - sprint/spec.md / Overview",
+                final_issue_body,
+            )
+            self.assertIn(
+                "3. [First logical unit](<https://github.com/owner/repo/issues/42#issuecomment-103>) - sprint/spec.md / req-one",
+                final_issue_body,
+            )
+            self.assertIn(
+                "4. [Second logical unit](<https://github.com/owner/repo/issues/42#issuecomment-104>) - sprint/spec.md / req-two",
+                final_issue_body,
+            )
+            self.assertIn(
+                "5. sprint/attachments/no-heading.md - sprint/attachments/no-heading.md",
+                final_issue_body,
+            )
+            self.assertNotIn("[sprint/spec.md - req-one - First logical unit]", final_issue_body)
+            self.assertNotIn("[sprint/attachments/no-heading.md]", final_issue_body)
 
     def test_publish_sprint_issue_updates_existing_issue_and_comment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -249,7 +287,19 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 if args[:2] == ["issue", "list"]:
                     return GhResult(0, "[]", "")
                 if args == ["api", "repos/owner/repo/issues/42/comments"]:
-                    return GhResult(0, json.dumps([{"id": 99, "body": marker}]), "")
+                    return GhResult(
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "id": 99,
+                                    "body": marker,
+                                    "html_url": "https://github.com/owner/repo/issues/42#issuecomment-99",
+                                }
+                            ]
+                        ),
+                        "",
+                    )
                 return GhResult(0, "", "")
 
             issue_number = publish_sprint_issue(
@@ -261,6 +311,13 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             self.assertEqual(issue_number, 42)
             self.assertTrue(any(args[:2] == ["issue", "edit"] for args, _stdin in calls))
             self.assertTrue(any(args[:2] == ["api", "repos/owner/repo/issues/comments/99"] for args, _stdin in calls))
+            edit_bodies = [stdin or "" for args, stdin in calls if args[:2] == ["issue", "edit"]]
+            self.assertGreaterEqual(len(edit_bodies), 2)
+            self.assertIn("## Artifact Index", edit_bodies[-1])
+            self.assertIn(
+                "1. [updated](<https://github.com/owner/repo/issues/42#issuecomment-99>) - sprint/report.md",
+                edit_bodies[-1],
+            )
 
     def test_missing_token_reports_explicit_message(self):
         def runner(args, stdin=None):

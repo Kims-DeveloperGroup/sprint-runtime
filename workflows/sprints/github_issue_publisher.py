@@ -78,6 +78,26 @@ class SprintIssueDocument:
     label: str
 
 
+@dataclass(slots=True, frozen=True)
+class PublishableDocumentSection:
+    publish_label: str
+    source_label: str
+    content: str
+
+
+@dataclass(slots=True, frozen=True)
+class IssueCommentRef:
+    id: int
+    html_url: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class ArtifactIndexEntry:
+    marker: str
+    title: str
+    source_label: str
+
+
 @dataclass(slots=True)
 class GhResult:
     returncode: int
@@ -386,7 +406,31 @@ def _related_issue_lines(runner: GhRunner, milestone: str) -> list[str]:
     return lines
 
 
-def _build_issue_body(sprint_state: dict[str, Any], related_lines: list[str]) -> str:
+def _escape_markdown_link_text(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
+def _build_artifact_index_lines(entries: list[ArtifactIndexEntry], comments_by_marker: dict[str, IssueCommentRef]) -> list[str]:
+    if not entries:
+        return []
+    lines = ["## Artifact Index", ""]
+    for index, entry in enumerate(entries, start=1):
+        comment = comments_by_marker.get(entry.marker)
+        title = entry.title.strip() or entry.source_label.strip() or "Artifact"
+        if comment and comment.html_url:
+            rendered = f"[{_escape_markdown_link_text(title)}](<{comment.html_url}>)"
+        else:
+            rendered = title
+        lines.append(f"{index}. {rendered} - {entry.source_label}")
+    return lines
+
+
+def _build_issue_body(
+    sprint_state: dict[str, Any],
+    related_lines: list[str],
+    artifact_index_entries: list[ArtifactIndexEntry] | None = None,
+    comments_by_marker: dict[str, IssueCommentRef] | None = None,
+) -> str:
     sprint_id = str(sprint_state.get("sprint_id") or "").strip()
     lines = [
         _stable_marker(sprint_id),
@@ -398,21 +442,40 @@ def _build_issue_body(sprint_state: dict[str, Any], related_lines: list[str]) ->
     ]
     if related_lines:
         lines.extend(["", "## Related Issues", "", *related_lines])
+    artifact_index_lines = _build_artifact_index_lines(artifact_index_entries or [], comments_by_marker or {})
+    if artifact_index_lines:
+        lines.extend(["", *artifact_index_lines])
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _ensure_issue(runner: GhRunner, sprint_state: dict[str, Any]) -> int:
+def _ensure_issue(runner: GhRunner, sprint_state: dict[str, Any], related_lines: list[str]) -> int:
     sprint_id = str(sprint_state.get("sprint_id") or "").strip()
     existing = _find_existing_issue(runner, sprint_id)
     title = _issue_title(sprint_state)
-    related = _related_issue_lines(runner, str(sprint_state.get("milestone_title") or sprint_state.get("requested_milestone_title") or ""))
-    body = _build_issue_body(sprint_state, related)
+    body = _build_issue_body(sprint_state, related_lines)
     if existing:
         _run_gh(runner, ["issue", "edit", str(existing), "--title", title, "--body-file", "-"], stdin=body, stage="update_issue")
         return existing
     result = _run_gh(runner, ["issue", "create", "--title", title, "--body-file", "-"], stdin=body, stage="create_issue")
     match = re.search(r"/issues/(\d+)", result.stdout or "")
     return int(match.group(1)) if match else int((result.stdout or "0").strip() or 0)
+
+
+def _refresh_issue_body(
+    runner: GhRunner,
+    issue_number: int,
+    sprint_state: dict[str, Any],
+    related_lines: list[str],
+    artifact_index_entries: list[ArtifactIndexEntry],
+    comments_by_marker: dict[str, IssueCommentRef],
+) -> None:
+    body = _build_issue_body(sprint_state, related_lines, artifact_index_entries, comments_by_marker)
+    _run_gh(
+        runner,
+        ["issue", "edit", str(issue_number), "--title", _issue_title(sprint_state), "--body-file", "-"],
+        stdin=body,
+        stage="update_issue",
+    )
 
 
 def _split_document_comment(label: str, content: str) -> list[str]:
@@ -432,15 +495,15 @@ def _extract_request_id_from_markdown(content: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _split_sprint_spec_document(label: str, content: str) -> list[tuple[str, str]]:
+def _split_sprint_spec_document(label: str, content: str) -> list[PublishableDocumentSection]:
     headings = list(re.finditer(r"(?m)^###\s+(.+?)\s*$", content))
     if not headings:
-        return [(f"{label} - Full Spec", content)]
+        return [PublishableDocumentSection(f"{label} - Full Spec", f"{label} / Full Spec", content)]
 
-    sections: list[tuple[str, str]] = []
+    sections: list[PublishableDocumentSection] = []
     overview = content[: headings[0].start()].strip()
     if overview:
-        sections.append((f"{label} - Overview", f"{overview}\n"))
+        sections.append(PublishableDocumentSection(f"{label} - Overview", f"{label} / Overview", f"{overview}\n"))
     for index, heading in enumerate(headings):
         start = heading.start()
         end = headings[index + 1].start() if index + 1 < len(headings) else len(content)
@@ -448,39 +511,52 @@ def _split_sprint_spec_document(label: str, content: str) -> list[tuple[str, str
         title = _clean_heading_text(heading.group(1)) or "Untitled Section"
         request_id = _extract_request_id_from_markdown(section_content)
         section_label = f"{label} - {request_id} - {title}" if request_id else f"{label} - {title}"
-        sections.append((section_label, f"{section_content}\n"))
+        source_label = f"{label} / {request_id}" if request_id else f"{label} / {title}"
+        sections.append(PublishableDocumentSection(section_label, source_label, f"{section_content}\n"))
     return sections
 
 
-def _publishable_document_sections(document: SprintIssueDocument, content: str) -> list[tuple[str, str]]:
+def _publishable_document_sections(document: SprintIssueDocument, content: str) -> list[PublishableDocumentSection]:
     if document.label == "sprint/spec.md":
         return _split_sprint_spec_document(document.label, content)
-    return [(document.label, content)]
+    return [PublishableDocumentSection(document.label, document.label, content)]
 
 
-def _existing_comments_by_marker(runner: GhRunner, repo: str, issue_number: int) -> dict[str, int]:
+def _first_markdown_heading_title(content: str) -> str:
+    match = re.search(r"(?m)^#{1,6}\s+(.+?)\s*$", content)
+    return _clean_heading_text(match.group(1)) if match else ""
+
+
+def _artifact_index_title(section: PublishableDocumentSection, part: int, part_count: int) -> str:
+    title = _first_markdown_heading_title(section.content) or section.publish_label or section.source_label
+    if part_count > 1:
+        return f"{title} part {part}"
+    return title
+
+
+def _comments_by_marker(runner: GhRunner, repo: str, issue_number: int) -> dict[str, IssueCommentRef]:
     result = _run_gh(runner, ["api", f"repos/{repo}/issues/{issue_number}/comments"], stage="comments")
     try:
         comments = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
         comments = []
-    found: dict[str, int] = {}
+    found: dict[str, IssueCommentRef] = {}
     for comment in comments if isinstance(comments, list) else []:
         body = str(comment.get("body") or "")
         match = re.search(r"<!-- teams-runtime:sprint-doc:[^>]+ -->", body)
         comment_id = int(comment.get("id") or 0)
         if match and comment_id:
-            found[match.group(0)] = comment_id
+            found[match.group(0)] = IssueCommentRef(comment_id, str(comment.get("html_url") or "").strip())
     return found
 
 
-def _upsert_comment(runner: GhRunner, repo: str, issue_number: int, marker: str, body: str, existing: dict[str, int]) -> None:
+def _upsert_comment(runner: GhRunner, repo: str, issue_number: int, marker: str, body: str, existing: dict[str, IssueCommentRef]) -> None:
     full_body = f"{marker}\n\n{body}".rstrip() + "\n"
-    comment_id = existing.get(marker)
-    if comment_id:
+    comment = existing.get(marker)
+    if comment:
         _run_gh(
             runner,
-            ["api", f"repos/{repo}/issues/comments/{comment_id}", "--method", "PATCH", "--field", f"body={full_body}"],
+            ["api", f"repos/{repo}/issues/comments/{comment.id}", "--method", "PATCH", "--field", f"body={full_body}"],
             stage="update_comment",
         )
         return
@@ -490,27 +566,41 @@ def _upsert_comment(runner: GhRunner, repo: str, issue_number: int, marker: str,
 def publish_sprint_issue(paths: RuntimePaths, sprint_state: dict[str, Any], *, runner: GhRunner = default_gh_runner) -> int:
     load_github_token_dotenv(paths)
     repo = preflight_gh(runner)
-    issue_number = _ensure_issue(runner, sprint_state)
+    related_lines = _related_issue_lines(runner, str(sprint_state.get("milestone_title") or sprint_state.get("requested_milestone_title") or ""))
+    issue_number = _ensure_issue(runner, sprint_state, related_lines)
     if not issue_number:
         raise SprintIssuePublishError("create_issue", "Unable to determine GitHub issue number.", next_action="Check gh issue create output and retry.")
-    existing_comments = _existing_comments_by_marker(runner, repo, issue_number)
+    existing_comments = _comments_by_marker(runner, repo, issue_number)
     sprint_id = str(sprint_state.get("sprint_id") or "").strip()
     documents = collect_sprint_issue_documents(paths, sprint_state)
+    artifact_index_entries: list[ArtifactIndexEntry] = []
     for document in documents:
         try:
             content = document.path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = document.path.read_text(encoding="utf-8", errors="replace")
-        for section_label, section_content in _publishable_document_sections(document, content):
-            for index, body in enumerate(_split_document_comment(section_label, section_content), start=1):
+        for section in _publishable_document_sections(document, content):
+            comment_bodies = _split_document_comment(section.publish_label, section.content)
+            for index, body in enumerate(comment_bodies, start=1):
+                marker = _comment_marker(sprint_id, section.publish_label, index)
+                artifact_index_entries.append(
+                    ArtifactIndexEntry(
+                        marker,
+                        _artifact_index_title(section, index, len(comment_bodies)),
+                        section.source_label,
+                    )
+                )
                 _upsert_comment(
                     runner,
                     repo,
                     issue_number,
-                    _comment_marker(sprint_id, section_label, index),
+                    marker,
                     body,
                     existing_comments,
                 )
+    if artifact_index_entries:
+        indexed_comments = _comments_by_marker(runner, repo, issue_number)
+        _refresh_issue_body(runner, issue_number, sprint_state, related_lines, artifact_index_entries, indexed_comments)
     return issue_number
 
 
