@@ -146,7 +146,7 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
         self.assertIn("external_boundary", prompt)
         self.assertIn("Local sources already checked:", prompt)
 
-    def test_build_research_prompt_uses_curated_structured_json(self):
+    def test_build_research_prompt_uses_external_provider_payload(self):
         envelope = MessageEnvelope(
             request_id="request-structured",
             sender="orchestrator",
@@ -163,51 +163,126 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
             "params": {
                 "requested_milestone_title": "Choose provider",
                 "milestone_title": "Choose provider",
+                "kickoff_brief": "Kickoff brief content should stay local.",
                 "kickoff_requirements": ["Keep cost assumptions explicit"],
+                "kickoff_reference_artifacts": ["shared_workspace/sprints/sprint-a/kickoff.md"],
             },
+        }
+        signal = {
+            "needed": True,
+            "subject": "Current provider pricing",
+            "research_query": "Compare current provider pricing from official pages.",
+            "reason_code": RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
+        }
+        subject_definition = {
+            "planning_decision": "provider cost assumption",
+            "knowledge_gap": "current provider pricing",
+            "external_boundary": "official pricing changes outside repo",
+            "planner_impact": "planner should keep provider assumptions configurable",
+            "candidate_subject": "Current provider pricing",
+            "research_query": "Compare current provider pricing from official pages.",
+            "source_requirements": ["official pricing pages"],
+            "rejected_subjects": ["repo implementation details"],
+            "no_subject_rationale": "",
         }
 
         prompt = build_research_prompt(
             envelope,
             request_record,
-            signal={
-                "needed": True,
-                "subject": "Current provider pricing",
-                "research_query": "Compare current provider pricing from official pages.",
-                "reason_code": RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
-            },
-            subject_definition={
-                "planning_decision": "provider cost assumption",
-                "knowledge_gap": "current provider pricing",
-                "external_boundary": "official pricing changes outside repo",
-                "planner_impact": "planner should keep provider assumptions configurable",
-                "candidate_subject": "Current provider pricing",
-                "research_query": "Compare current provider pricing from official pages.",
-                "source_requirements": ["official pricing pages"],
-                "rejected_subjects": ["repo implementation details"],
-                "no_subject_rationale": "",
-            },
+            signal=signal,
+            subject_definition=subject_definition,
             local_sources_checked=["request.scope", "shared_workspace/current_sprint.md"],
             artifact_hint="shared_workspace/sprints/sprint-a/research/request-structured.md",
         )
         prompt_payload = json.loads(prompt)
 
+        self.assertEqual(list(prompt_payload.keys()), ["request", "sources", "report"])
+        self.assertEqual(prompt_payload["request"]["subject"], "Current provider pricing")
         self.assertEqual(
-            sorted(prompt_payload.keys()),
-            [
-                "defined_subject",
-                "expected_report",
-                "local_context_checked",
-                "planner_impact",
-                "research_mission",
-                "source_requirements",
-                "sprint_context",
-            ],
+            prompt_payload["request"]["query"],
+            "Compare current provider pricing from official pages.",
         )
-        self.assertEqual(prompt_payload["defined_subject"]["subject"], "Current provider pricing")
-        self.assertIn("official pricing pages", prompt_payload["source_requirements"])
+        self.assertEqual(prompt_payload["request"]["planner_decision"], "provider cost assumption")
+        self.assertEqual(prompt_payload["request"]["knowledge_gap"], "current provider pricing")
+        self.assertIn(
+            "planner should keep provider assumptions configurable",
+            prompt_payload["request"]["planner_impact"],
+        )
+        self.assertIn("official pricing pages", prompt_payload["sources"]["requirements"])
+        self.assertIn("authoritative primary", " ".join(prompt_payload["sources"]["expectations"]))
+        self.assertIn("repo implementation details", prompt_payload["sources"]["excluded_subjects"])
+        self.assertIn("Backing Sources", prompt_payload["report"]["required_headings"])
+        self.assertIn("Backing Reasoning", prompt_payload["report"]["required_headings"])
+        self.assertEqual(
+            sorted(prompt_payload["report"]["backing_source_fields"].keys()),
+            ["published_at", "relevance", "summary", "title", "url"],
+        )
+        self.assertNotIn("\n", prompt)
         self.assertNotIn('"request_id"', prompt)
-        self.assertNotIn('"Incoming envelope"', prompt)
+        self.assertNotIn("request-structured", prompt)
+        self.assertNotIn("Incoming envelope", prompt)
+        self.assertNotIn("local_context_checked", prompt)
+        self.assertNotIn("shared_workspace", prompt)
+        self.assertNotIn("current_sprint", prompt)
+        self.assertNotIn("sprint-a", prompt)
+        self.assertNotIn("Kickoff brief content", prompt)
+        self.assertNotIn("Keep cost assumptions explicit", prompt)
+
+        verbose_prompt = build_research_prompt(
+            MessageEnvelope(
+                request_id="noisy-request-id",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="NOISY ENVELOPE SCOPE " * 200,
+                body="NOISY ENVELOPE BODY " * 200,
+            ),
+            {
+                "request_id": "noisy-request-id",
+                "scope": "NOISY REQUEST SCOPE " * 200,
+                "body": "NOISY REQUEST BODY " * 200,
+                "params": {
+                    "requested_milestone_title": "NOISY MILESTONE " * 200,
+                    "milestone_title": "NOISY CURRENT MILESTONE " * 200,
+                    "kickoff_brief": "NOISY KICKOFF BRIEF " * 200,
+                    "kickoff_requirements": ["NOISY KICKOFF REQUIREMENT " * 100],
+                    "kickoff_reference_artifacts": ["shared_workspace/noisy-reference.md"],
+                },
+            },
+            signal=signal,
+            subject_definition=subject_definition,
+            local_sources_checked=[
+                f"shared_workspace/sprints/noisy/local-{index}.md"
+                for index in range(200)
+            ],
+            artifact_hint="shared_workspace/sprints/noisy/research/" + ("artifact-" * 500) + ".md",
+        )
+
+        self.assertEqual(prompt, verbose_prompt)
+        self.assertLess(len(verbose_prompt), 2500)
+
+        minimal_payload = json.loads(
+            build_research_prompt(
+                envelope,
+                request_record,
+                signal={
+                    "needed": True,
+                    "subject": "Minimal subject",
+                    "research_query": "Research the minimal subject.",
+                    "reason_code": RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
+                },
+                subject_definition={
+                    "candidate_subject": "Minimal subject",
+                    "research_query": "Research the minimal subject.",
+                },
+                local_sources_checked=["shared_workspace/current_sprint.md"],
+                artifact_hint="shared_workspace/sprints/noisy/research/minimal.md",
+            )
+        )
+
+        self.assertNotIn("planner_decision", minimal_payload["request"])
+        self.assertNotIn("excluded_subjects", minimal_payload["sources"])
 
     def test_parse_research_report_extracts_sections_and_sources(self):
         report = """# Executive Summary

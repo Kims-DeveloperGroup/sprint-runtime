@@ -69,6 +69,23 @@ def _normalize_comparison_text(value: Any) -> str:
     return re.sub(r"\W+", "", str(value or "").strip().lower())
 
 
+def _omit_empty_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = _omit_empty_fields(item)
+            if normalized not in ("", [], {}, None):
+                compact[key] = normalized
+        return compact
+    if isinstance(value, list):
+        return [
+            normalized
+            for item in value
+            if (normalized := _omit_empty_fields(item)) not in ("", [], {}, None)
+        ]
+    return value
+
+
 def _request_seed_texts(request_record: RequestRecord) -> list[str]:
     params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
     values = [
@@ -356,74 +373,63 @@ def build_research_prompt(
     artifact_hint: str,
 ) -> str:
     definition = dict(subject_definition or {})
-    params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
-    prompt_payload = {
-        "research_mission": (
-            "Prepare a source-backed research brief that helps planner refine the sprint milestone, "
-            "write spec boundaries, discover further problems, and define reviewable todos."
-        ),
-        "defined_subject": {
-            "subject": definition.get("candidate_subject") or signal.get("subject") or "",
-            "query": definition.get("research_query") or signal.get("research_query") or signal.get("subject") or "",
-            "planning_decision": definition.get("planning_decision") or "",
-            "knowledge_gap": definition.get("knowledge_gap") or "",
-            "external_boundary": definition.get("external_boundary") or "",
-            "rejected_subjects": _normalize_text_list(definition.get("rejected_subjects")),
-        },
-        "planner_impact": {
-            "impact_summary": definition.get("planner_impact") or "",
-            "must_influence": [
-                "milestone_refinement",
-                "problem_framing",
-                "spec_boundaries",
-                "todo_decomposition",
-                "acceptance_criteria",
-            ],
-        },
-        "source_requirements": _normalize_text_list(definition.get("source_requirements")),
-        "local_context_checked": [str(item).strip() for item in local_sources_checked if str(item).strip()],
-        "sprint_context": {
-            "requested_milestone_title": params.get("requested_milestone_title") or "",
-            "current_milestone_title": params.get("milestone_title") or "",
-            "kickoff_brief": params.get("kickoff_brief") or "",
-            "kickoff_requirements": _normalize_text_list(params.get("kickoff_requirements")),
-            "kickoff_reference_artifacts": _normalize_text_list(params.get("kickoff_reference_artifacts")),
-            "request_scope": _collapse_whitespace(request_record.get("scope") or envelope.scope or ""),
-            "request_summary": _collapse_whitespace(request_record.get("body") or envelope.body or ""),
-        },
-        "expected_report": {
-            "raw_report_artifact": artifact_hint,
-            "required_headings": [
-                "Executive Summary",
-                "Planner Guidance",
-                "Milestone Refinement Hints",
-                "Problem Framing Hints",
-                "Spec Implications",
-                "Todo Definition Hints",
-                "Backing Reasoning",
-                "Backing Sources",
-                "Open Questions",
-            ],
-            "backing_sources_format": {
-                "title": "source title",
-                "url": "http(s) URL",
-                "published_at": "publication or access date if available",
-                "relevance": "why this source matters to planner",
-                "summary": "short source-backed finding",
+    prompt_payload = _omit_empty_fields(
+        {
+            "request": {
+                "subject": _collapse_whitespace(definition.get("candidate_subject") or signal.get("subject") or ""),
+                "query": _collapse_whitespace(
+                    definition.get("research_query")
+                    or signal.get("research_query")
+                    or signal.get("subject")
+                    or ""
+                ),
+                "planner_decision": _collapse_whitespace(definition.get("planning_decision") or ""),
+                "knowledge_gap": _collapse_whitespace(definition.get("knowledge_gap") or ""),
+                "planner_impact": _collapse_whitespace(definition.get("planner_impact") or ""),
             },
-            "rules": [
-                "Focus on the smallest external research subject that materially changes planning decisions.",
-                "Planner Guidance must explain how findings should change milestone framing, spec boundaries, or todo decomposition.",
-                "Backing Reasoning must connect sources to planning recommendations instead of repeating source titles.",
-                "Backing Sources must include title and http(s) URL.",
-            ],
-        },
-    }
+            "sources": {
+                "requirements": _normalize_text_list(definition.get("source_requirements")),
+                "external_boundary": _collapse_whitespace(definition.get("external_boundary") or ""),
+                "excluded_subjects": _normalize_text_list(definition.get("rejected_subjects")),
+                "expectations": [
+                    "Use authoritative primary or official sources when available.",
+                    "Prefer current sources for facts that may have changed recently.",
+                    "Cite every source used for planning-relevant claims.",
+                ],
+            },
+            "report": {
+                "format": "Markdown",
+                "required_headings": [
+                    "Executive Summary",
+                    "Planner Guidance",
+                    "Milestone Refinement Hints",
+                    "Problem Framing Hints",
+                    "Spec Implications",
+                    "Todo Definition Hints",
+                    "Backing Reasoning",
+                    "Backing Sources",
+                    "Open Questions",
+                ],
+                "backing_source_fields": {
+                    "title": "source title",
+                    "url": "http(s) URL",
+                    "published_at": "publication date or access date if unavailable",
+                    "relevance": "why this source matters to planner",
+                    "summary": "short source-backed finding",
+                },
+                "rules": [
+                    "Focus only on the external research subject in this request.",
+                    "Planner Guidance must explain how findings affect milestone framing, spec boundaries, or todo decomposition.",
+                    "Backing Reasoning must connect sources to planning recommendations.",
+                    "Backing Sources must include title and http(s) URL.",
+                ],
+            },
+        }
+    )
     return json.dumps(
         prompt_payload,
         ensure_ascii=False,
-        indent=2,
-        sort_keys=False,
+        separators=(",", ":"),
     )
 
 
