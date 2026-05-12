@@ -54,6 +54,15 @@ _SCAFFOLD_PLACEHOLDER_SNOWFLAKES = frozenset(
     }
 )
 _ALLOW_PLACEHOLDER_IDS_ENV = "TEAMS_RUNTIME_ALLOW_PLACEHOLDER_IDS"
+_DEFAULT_ROLE_DEFAULTS: dict[str, RoleRuntimeConfig] = {
+    "orchestrator": RoleRuntimeConfig(model="gpt-5.5", reasoning="medium"),
+    "research": RoleRuntimeConfig(model="gpt-5.5", reasoning="xhigh"),
+    "planner": RoleRuntimeConfig(model="gpt-5.5", reasoning="xhigh"),
+    "designer": RoleRuntimeConfig(model="gpt-5.5", reasoning="medium"),
+    "architect": RoleRuntimeConfig(model="gpt-5.5", reasoning="xhigh"),
+    "developer": RoleRuntimeConfig(model="gpt-5.5", reasoning="high"),
+    "qa": RoleRuntimeConfig(model="gpt-5.5", reasoning="medium"),
+}
 
 
 def _normalize_cutoff_time(value: Any) -> str:
@@ -361,10 +370,9 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
     role_defaults: dict[str, RoleRuntimeConfig] = {}
     for role in TEAM_ROLES:
         defaults = raw_role_defaults.get(role) or {}
-        reasoning = str(defaults.get("reasoning") or "").strip() or (
-            "high" if role == "developer" else "medium"
-        )
-        model = str(defaults.get("model") or "").strip() or "gpt-5.5"
+        default_runtime = _DEFAULT_ROLE_DEFAULTS[role]
+        reasoning = str(defaults.get("reasoning") or "").strip() or default_runtime.reasoning
+        model = str(defaults.get("model") or "").strip() or default_runtime.model
         role_defaults[role] = RoleRuntimeConfig(model=model, reasoning=reasoning)
     raw_research_defaults = payload.get("research_defaults")
     if raw_research_defaults not in (None, {}) and not isinstance(raw_research_defaults, dict):

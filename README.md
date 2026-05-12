@@ -155,9 +155,10 @@ ingress:
 allowed_guild_ids: []
 
 role_defaults:
-  research: {model: "gpt-5.5", reasoning: "medium"}
+  research: {model: "gpt-5.5", reasoning: "xhigh"}
   planner: {model: "gpt-5.5", reasoning: "xhigh"}
-  developer: {model: "gpt-5.3-codex-spark", reasoning: "xhigh"}
+  architect: {model: "gpt-5.5", reasoning: "xhigh"}
+  developer: {model: "gpt-5.5", reasoning: "high"}
 
 research_defaults: {app: "", notebook: "", files: [], mode: "", profile_path: "", completion_timeout: 600, callback_timeout: 1200, cleanup: false}
 

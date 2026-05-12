@@ -248,8 +248,10 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.sprint_ingress_mode, "backlog_first")
             self.assertEqual(runtime_config.sprint_discovery_scope, "broad_scan")
             self.assertEqual(runtime_config.sprint_discovery_actions, ())
-            self.assertEqual(runtime_config.role_defaults["research"].reasoning, "medium")
-            self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["research"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["architect"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["developer"].model, "gpt-5.5")
+            self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "high")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
             self.assertIsNone(runtime_config.research_defaults.profile_path)
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 600.0)
@@ -645,6 +647,21 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "research_defaults must be a mapping"):
                 load_team_runtime_config(tmpdir)
 
+    def test_load_team_runtime_config_uses_role_default_fallbacks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            config_path.write_text('sprint:\n  id: "2026-Sprint-01"\n', encoding="utf-8")
+
+            runtime_config = load_team_runtime_config(tmpdir)
+
+            self.assertEqual(runtime_config.role_defaults["research"].model, "gpt-5.5")
+            self.assertEqual(runtime_config.role_defaults["research"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["architect"].model, "gpt-5.5")
+            self.assertEqual(runtime_config.role_defaults["architect"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["developer"].model, "gpt-5.5")
+            self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "high")
+
     def test_update_team_runtime_role_defaults_updates_model_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -652,10 +669,10 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             updated = update_team_runtime_role_defaults(tmpdir, "developer", model="gpt-5.5")
 
             self.assertEqual(updated.model, "gpt-5.5")
-            self.assertEqual(updated.reasoning, "xhigh")
+            self.assertEqual(updated.reasoning, "high")
             runtime_config = load_team_runtime_config(tmpdir)
             self.assertEqual(runtime_config.role_defaults["developer"].model, "gpt-5.5")
-            self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "high")
 
     def test_update_team_runtime_role_defaults_updates_reasoning_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1066,6 +1083,11 @@ agents:
             self.assertIn("Scaffolded", output.getvalue())
             self.assertIn("# Current Sprint", (workspace_root / "shared_workspace" / "current_sprint.md").read_text(encoding="utf-8"))
             self.assertFalse((workspace_root / ".teams_runtime" / "state.json").exists())
+            runtime_config = load_team_runtime_config(workspace_root)
+            self.assertEqual(runtime_config.role_defaults["research"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["architect"].reasoning, "xhigh")
+            self.assertEqual(runtime_config.role_defaults["developer"].model, "gpt-5.5")
+            self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "high")
 
     def test_init_reset_reloads_cwd_discord_agents_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1646,7 +1668,7 @@ agents:
             self.assertEqual(exit_code, 0)
             rendered = output.getvalue()
             self.assertIn("orchestrator: stopped pid=N/A model=gpt-5.5 reasoning=medium", rendered)
-            self.assertIn("developer: stopped pid=N/A model=gpt-5.3-codex-spark reasoning=xhigh", rendered)
+            self.assertIn("developer: stopped pid=N/A model=gpt-5.5 reasoning=high", rendered)
             self.assertIn("active_sprint_id=260330-Sprint-20:26", rendered)
             self.assertNotIn("sprint_series_id", rendered)
 

@@ -22,7 +22,7 @@ role_defaults:
     reasoning: "medium"
   research:
     model: "gpt-5.5"
-    reasoning: "medium"
+    reasoning: "xhigh"
   planner:
     model: "gpt-5.5"
     reasoning: "xhigh"
@@ -31,10 +31,10 @@ role_defaults:
     reasoning: "medium"
   architect:
     model: "gpt-5.5"
-    reasoning: "high"
-  developer:
-    model: "gpt-5.3-codex-spark"
     reasoning: "xhigh"
+  developer:
+    model: "gpt-5.5"
+    reasoning: "high"
   qa:
     model: "gpt-5.5"
     reasoning: "medium"
