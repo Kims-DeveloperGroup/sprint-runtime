@@ -795,6 +795,7 @@ class TeamsRuntimeOrchestrationTests(OrchestrationTestCase):
                 self.assertNotIn("┌", content)
                 self.assertNotIn("└", content)
                 self.assertIn("[준비 완료] ✅ orchestrator", content)
+                self.assertEqual(content.count("model: gpt-5.5 | reasoning: medium"), 1)
                 self.assertIn("🎯 현재 스프린트: 없음", content)
                 self.assertIn("📡 채널: startup 111111111111111111 | relay 111111111111111111", content)
                 self.assertNotIn("[작업 보고]", content)

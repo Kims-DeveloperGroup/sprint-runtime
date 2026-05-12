@@ -769,7 +769,7 @@ class DiscordNotificationService:
         self.runtime_config = runtime_config
         self.discord_client = discord_client
 
-    def build_runtime_signature_suffix(self) -> str:
+    def build_runtime_signature_text(self) -> str:
         role_config = self.runtime_config.role_defaults.get(self.role)
         if role_config is None:
             return ""
@@ -777,7 +777,11 @@ class DiscordNotificationService:
         if not model_name:
             return ""
         reasoning = "None" if "gemini" in model_name.lower() else str(role_config.reasoning or "").strip() or "medium"
-        return f"\n\nmodel: {model_name} | reasoning: {reasoning}"
+        return f"model: {model_name} | reasoning: {reasoning}"
+
+    def build_runtime_signature_suffix(self) -> str:
+        signature = self.build_runtime_signature_text()
+        return f"\n\n{signature}" if signature else ""
 
     def append_runtime_signature(self, content: str) -> str:
         normalized = str(content or "").strip()
@@ -786,7 +790,8 @@ class DiscordNotificationService:
         suffix = self.build_runtime_signature_suffix()
         if not suffix:
             return normalized
-        if normalized.endswith(suffix.strip()):
+        signature = suffix.strip()
+        if signature in normalized:
             return normalized
         return f"{normalized}{suffix}"
 
@@ -798,19 +803,25 @@ class DiscordNotificationService:
         active_sprint_id: str,
     ) -> str:
         role_config = self.discord_config.get_role(self.role)
+        runtime_signature = self.build_runtime_signature_text()
+        lines = [
+            f"[준비 완료] ✅ {self.role}",
+            f"- 🤖 봇: {identity_name} ({identity_id})",
+        ]
+        if runtime_signature:
+            lines.append(f"- 🧠 런타임: {runtime_signature}")
+        lines.extend(
+            [
+                f"- 🔐 검증: role {self.role} | expected_bot_id {role_config.bot_id}",
+                f"- 🎯 현재 스프린트: {str(active_sprint_id or '').strip() or '없음'}",
+                (
+                    f"- 📡 채널: startup {self.discord_config.startup_channel_id} | "
+                    f"relay {self.discord_config.relay_channel_id}"
+                ),
+            ]
+        )
         return box_text_message(
-            "\n".join(
-                [
-                    f"[준비 완료] ✅ {self.role}",
-                    f"- 🤖 봇: {identity_name} ({identity_id})",
-                    f"- 🔐 검증: role {self.role} | expected_bot_id {role_config.bot_id}",
-                    f"- 🎯 현재 스프린트: {str(active_sprint_id or '').strip() or '없음'}",
-                    (
-                        f"- 📡 채널: startup {self.discord_config.startup_channel_id} | "
-                        f"relay {self.discord_config.relay_channel_id}"
-                    ),
-                ]
-            ).strip()
+            "\n".join(lines).strip()
         )
 
     @contextlib.asynccontextmanager

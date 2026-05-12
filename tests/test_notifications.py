@@ -78,10 +78,22 @@ class TeamsRuntimeNotificationsTests(unittest.TestCase):
 
             self.assertIn("[준비 완료] ✅ orchestrator", report)
             self.assertIn("orchestrator-bot (bot-123)", report)
+            self.assertIn("런타임: model: gpt-5.5 | reasoning: medium", report)
             self.assertIn("expected_bot_id", report)
             self.assertIn("260419-Sprint-21:00", report)
             self.assertIn(str(service.discord_config.startup_channel_id), report)
             self.assertIn(str(service.discord_config.relay_channel_id), report)
+
+    def test_append_runtime_signature_does_not_duplicate_startup_runtime_line(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            service = self._build_notification_service(tmpdir, client=_FakeDiscordClient())
+
+            content = "[준비 완료] ✅ orchestrator\n- 🧠 런타임: model: gpt-5.5 | reasoning: medium"
+
+            rendered = service.append_runtime_signature(content)
+
+            self.assertEqual(rendered.count("model: gpt-5.5 | reasoning: medium"), 1)
 
     def test_summarize_boxed_report_excerpt_skips_fenced_section_headers(self):
         excerpt = summarize_boxed_report_excerpt(
