@@ -37,7 +37,7 @@ class TeamsRuntimeWorkflowStateTests(unittest.TestCase):
         self.assertEqual(normalized["planning_pass_count"], 0)
         self.assertEqual(normalized["planning_pass_limit"], 2)
         self.assertEqual(normalized["review_cycle_count"], 0)
-        self.assertEqual(normalized["review_cycle_limit"], 3)
+        self.assertEqual(normalized["review_cycle_limit"], 20)
         self.assertEqual(normalized["reopen_category"], "")
 
     def test_infer_legacy_internal_workflow_state_for_planner_after_advisory(self):

@@ -181,7 +181,7 @@ DEFAULT_AGENT_UTILIZATION_POLICY_DATA: dict[str, Any] = {
         "planning_advisory_roles": ["designer", "architect"],
         "planning_shared_pass_limit": 2,
         "planning_pass_limit_behavior": "planner_finalize_then_block",
-        "implementation_review_cycle_limit": 3,
+        "implementation_review_cycle_limit": 20,
         "implementation_sequence": [
             "architect_guidance",
             "developer_build",
@@ -652,7 +652,7 @@ def build_agent_utilization_policy(
         ),
         implementation_review_cycle_limit=max(
             1,
-            _coerce_int(workflow_contract.get("implementation_review_cycle_limit"), 3),
+            _coerce_int(workflow_contract.get("implementation_review_cycle_limit"), 20),
         ),
         load_error=load_error,
     )

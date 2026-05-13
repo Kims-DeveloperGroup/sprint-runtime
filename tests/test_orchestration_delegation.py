@@ -1379,7 +1379,7 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                 self.assertEqual(record["next_role"], "planner")
                 self.assertEqual(workflow["planning_pass_limit"], 2)
                 self.assertEqual(workflow["planning_pass_count"], 0)
-                self.assertEqual(workflow["review_cycle_limit"], 3)
+                self.assertEqual(workflow["review_cycle_limit"], 20)
 
     def test_non_orchestrator_ready_resumes_pending_delegated_request(self):
         with tempfile.TemporaryDirectory() as tmpdir:

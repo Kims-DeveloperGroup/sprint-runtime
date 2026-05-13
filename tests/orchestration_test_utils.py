@@ -198,7 +198,7 @@ class OrchestrationTestCase(unittest.TestCase):
         planning_pass_count=0,
         planning_pass_limit=2,
         review_cycle_count=0,
-        review_cycle_limit=3,
+        review_cycle_limit=20,
         reopen_source_role="",
         reopen_category="",
     ):
