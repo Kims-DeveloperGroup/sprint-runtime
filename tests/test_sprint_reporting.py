@@ -1675,13 +1675,14 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         self.assertIn("delivered change는 없었습니다", fallback_rendered)
         self.assertIn("closeout verified", fallback_rendered)
 
-    def test_build_sprint_completion_embed_keeps_full_headline_and_change_summary(self):
+    def test_build_sprint_completion_embed_keeps_full_headline_and_github_issue(self):
         long_headline = "상세 TLDR " + ("abcdef " * 80)
         change_line = "- 무엇이 달라졌나: " + ("change-detail " * 50)
+        issue_url = "https://github.com/owner/repo/issues/42"
 
         embeds = build_sprint_completion_embed(
             title="스프린트 완료",
-            sprint_state={"sprint_id": "sprint-1", "status": "completed"},
+            sprint_state={"sprint_id": "sprint-1", "status": "completed", "github_issue_url": issue_url},
             snapshot={"status_label": "완료", "todo_summary": "completed=1", "commit_count": 2},
             headline=long_headline,
             change_summary_lines=["### 긴 변경", change_line],
@@ -1690,29 +1691,47 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
         rendered_fields = "\n".join(
             str(field["value"]) for embed in embeds for field in embed.get("fields", [])
         )
+        field_names = [field["name"] for embed in embeds for field in embed.get("fields", [])]
         self.assertIn(long_headline.rstrip(), rendered_fields)
-        self.assertIn(change_line.rstrip(), rendered_fields)
+        self.assertIn(issue_url, rendered_fields)
+        self.assertNotIn(change_line.rstrip(), rendered_fields)
         self.assertNotIn("…", rendered_fields)
-        self.assertIn("변경 요약", [field["name"] for embed in embeds for field in embed.get("fields", [])])
+        self.assertIn("GitHub Issue", field_names)
+        self.assertNotIn("변경 요약", field_names)
 
     def test_build_sprint_completion_embed_overflow_uses_continuation_embeds(self):
-        long_change = "- 변경: " + ("overflow-content " * 2200)
+        long_headline = "긴 TLDR " + ("overflow-content " * 2200)
 
         embeds = build_sprint_completion_embed(
             title="스프린트 완료",
             sprint_state={"sprint_id": "sprint-1", "status": "completed"},
             snapshot={"status_label": "완료", "todo_summary": "completed=1", "commit_count": 2},
-            headline="짧은 TLDR",
-            change_summary_lines=[long_change],
+            headline=long_headline,
+            change_summary_lines=["- 변경: 이 줄은 Discord embed에 직접 렌더링하지 않습니다."],
         )
 
         rendered_fields = "".join(
             str(field["value"]) for embed in embeds for field in embed.get("fields", [])
         )
+        field_names = [field["name"] for embed in embeds for field in embed.get("fields", [])]
         self.assertGreater(len(embeds), 1)
         self.assertIn("overflow-content", rendered_fields)
-        self.assertEqual(rendered_fields.count("overflow-content"), long_change.count("overflow-content"))
+        self.assertEqual(rendered_fields.count("overflow-content"), long_headline.count("overflow-content"))
         self.assertTrue(any(str(embed.get("title", "")).endswith("계속 2") for embed in embeds))
+        self.assertFalse(any(str(name).startswith("변경 요약") for name in field_names))
+
+    def test_build_sprint_completion_embed_omits_github_issue_when_url_absent(self):
+        embeds = build_sprint_completion_embed(
+            title="스프린트 완료",
+            sprint_state={"sprint_id": "sprint-1", "status": "completed"},
+            snapshot={"status_label": "완료", "todo_summary": "completed=1", "commit_count": 2},
+            headline="짧은 TLDR",
+            change_summary_lines=["- 변경: 링크가 없으면 GitHub 필드도 없습니다."],
+        )
+
+        field_names = [field["name"] for embed in embeds for field in embed.get("fields", [])]
+        self.assertNotIn("GitHub Issue", field_names)
+        self.assertFalse(any(str(name).startswith("변경 요약") for name in field_names))
 
 
 if __name__ == "__main__":

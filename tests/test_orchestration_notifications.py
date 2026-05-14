@@ -362,6 +362,42 @@ class TeamsRuntimeOrchestrationNotificationsTests(unittest.TestCase):
             )
             service.send_content.assert_not_awaited()
 
+    def test_sprint_completion_user_report_sends_github_issue_content_with_rich_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = Path(tmpdir) / "report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            rich_send = AsyncMock()
+            discord_client = Mock(send_channel_rich_message=rich_send)
+            service = DiscordNotificationService(
+                paths=RuntimePaths.from_root(tmpdir),
+                role="orchestrator",
+                discord_config=Mock(),
+                runtime_config=Mock(),
+                discord_client=discord_client,
+            )
+            service.send_content = AsyncMock()
+
+            sent = asyncio.run(
+                service.send_sprint_completion_user_report(
+                    report_channel_id="123",
+                    sprint_id="sprint-1",
+                    content="markdown report",
+                    rich_content="GitHub issue: https://github.com/owner/repo/issues/42",
+                    embed={"title": "done"},
+                    report_file_path=str(report),
+                )
+            )
+
+            self.assertTrue(sent)
+            rich_send.assert_awaited_once_with(
+                "123",
+                content="GitHub issue: https://github.com/owner/repo/issues/42",
+                embed={"title": "done"},
+                files=[str(report)],
+                allowed_mentions="none",
+            )
+            service.send_content.assert_not_awaited()
+
     def test_sprint_completion_user_report_sends_multiple_embeds_with_single_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report = Path(tmpdir) / "report.md"

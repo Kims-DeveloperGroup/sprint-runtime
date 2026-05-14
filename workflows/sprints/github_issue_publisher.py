@@ -98,6 +98,13 @@ class ArtifactIndexEntry:
     source_label: str
 
 
+@dataclass(slots=True, frozen=True)
+class SprintIssuePublishMetadata:
+    issue_number: int
+    issue_url: str
+    repo: str
+
+
 @dataclass(slots=True)
 class GhResult:
     returncode: int
@@ -461,6 +468,13 @@ def _ensure_issue(runner: GhRunner, sprint_state: dict[str, Any], related_lines:
     return int(match.group(1)) if match else int((result.stdout or "0").strip() or 0)
 
 
+def _issue_url(repo: str, issue_number: int) -> str:
+    normalized_repo = str(repo or "").strip().strip("/")
+    if not normalized_repo or not issue_number:
+        return ""
+    return f"https://github.com/{normalized_repo}/issues/{issue_number}"
+
+
 def _refresh_issue_body(
     runner: GhRunner,
     issue_number: int,
@@ -563,7 +577,12 @@ def _upsert_comment(runner: GhRunner, repo: str, issue_number: int, marker: str,
     _run_gh(runner, ["issue", "comment", str(issue_number), "--body-file", "-"], stdin=full_body, stage="create_comment")
 
 
-def publish_sprint_issue(paths: RuntimePaths, sprint_state: dict[str, Any], *, runner: GhRunner = default_gh_runner) -> int:
+def publish_sprint_issue_metadata(
+    paths: RuntimePaths,
+    sprint_state: dict[str, Any],
+    *,
+    runner: GhRunner = default_gh_runner,
+) -> SprintIssuePublishMetadata:
     load_github_token_dotenv(paths)
     repo = preflight_gh(runner)
     related_lines = _related_issue_lines(runner, str(sprint_state.get("milestone_title") or sprint_state.get("requested_milestone_title") or ""))
@@ -601,8 +620,44 @@ def publish_sprint_issue(paths: RuntimePaths, sprint_state: dict[str, Any], *, r
     if artifact_index_entries:
         indexed_comments = _comments_by_marker(runner, repo, issue_number)
         _refresh_issue_body(runner, issue_number, sprint_state, related_lines, artifact_index_entries, indexed_comments)
-    return issue_number
+    return SprintIssuePublishMetadata(
+        issue_number=issue_number,
+        issue_url=_issue_url(repo, issue_number),
+        repo=repo,
+    )
+
+
+def publish_sprint_issue_with_metadata(
+    paths: RuntimePaths,
+    sprint_state: dict[str, Any],
+    *,
+    runner: GhRunner = default_gh_runner,
+) -> SprintIssuePublishMetadata:
+    return publish_sprint_issue_metadata(paths, sprint_state, runner=runner)
+
+
+def publish_sprint_issue(paths: RuntimePaths, sprint_state: dict[str, Any], *, runner: GhRunner = default_gh_runner) -> int:
+    return publish_sprint_issue_metadata(paths, sprint_state, runner=runner).issue_number
+
+
+async def publish_sprint_issue_metadata_async(
+    paths: RuntimePaths,
+    sprint_state: dict[str, Any],
+    *,
+    runner: GhRunner = default_gh_runner,
+) -> SprintIssuePublishMetadata:
+    return await asyncio.to_thread(publish_sprint_issue_metadata, paths, dict(sprint_state), runner=runner)
+
+
+async def publish_sprint_issue_with_metadata_async(
+    paths: RuntimePaths,
+    sprint_state: dict[str, Any],
+    *,
+    runner: GhRunner = default_gh_runner,
+) -> SprintIssuePublishMetadata:
+    return await publish_sprint_issue_metadata_async(paths, sprint_state, runner=runner)
 
 
 async def publish_sprint_issue_async(paths: RuntimePaths, sprint_state: dict[str, Any], *, runner: GhRunner = default_gh_runner) -> int:
-    return await asyncio.to_thread(publish_sprint_issue, paths, dict(sprint_state), runner=runner)
+    metadata = await publish_sprint_issue_metadata_async(paths, sprint_state, runner=runner)
+    return metadata.issue_number
