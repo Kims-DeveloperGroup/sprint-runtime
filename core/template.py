@@ -91,6 +91,12 @@ PLANNER_SPRINT_PLANNING_SKILL = _load_template_asset(
 VERSION_CONTROLLER_SKILL = _load_template_asset(
     "scaffold/internal/version_controller/.agents/skills/version_controller/SKILL.md"
 )
+QA_DISCORD_MESSAGE_READ_SKILL = _load_template_asset(
+    "scaffold/qa/.agents/skills/discord_message_read/SKILL.md"
+)
+QA_DISCORD_MESSAGE_READ_SCRIPT = _load_template_asset(
+    "scaffold/qa/.agents/skills/discord_message_read/scripts/read_discord_message.py"
+)
 TEAMS_RUNTIME_OPERATOR_SKILL = _load_template_asset("scaffold/.agents/skills/teams-runtime/SKILL.md")
 TEAMS_RUNTIME_OPERATOR_OPENAI_YAML = _load_template_asset(
     "scaffold/.agents/skills/teams-runtime/agents/openai.yaml"
@@ -208,6 +214,8 @@ def build_default_workspace_files() -> dict[str, str]:
     files["planner/.agents/skills/backlog_management/SKILL.md"] = PLANNER_BACKLOG_MANAGEMENT_SKILL
     files["planner/.agents/skills/backlog_decomposition/SKILL.md"] = PLANNER_BACKLOG_DECOMPOSITION_SKILL
     files["planner/.agents/skills/sprint_planning/SKILL.md"] = PLANNER_SPRINT_PLANNING_SKILL
+    files["qa/.agents/skills/discord_message_read/SKILL.md"] = QA_DISCORD_MESSAGE_READ_SKILL
+    files["qa/.agents/skills/discord_message_read/scripts/read_discord_message.py"] = QA_DISCORD_MESSAGE_READ_SCRIPT
     for agent_name in ("parser", "sourcer", "version_controller"):
         internal_prompt = _load_internal_agent_prompt(agent_name)
         files[f"internal/{agent_name}/AGENTS.md"] = internal_prompt

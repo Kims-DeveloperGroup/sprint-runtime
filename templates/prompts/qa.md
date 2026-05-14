@@ -21,6 +21,10 @@
 - 관찰한 evidence와 inference를 분리한다. 열지 않은 파일, 실행하지 않은 테스트, 확인하지 않은 designer intent를 확인했다고 쓰지 않는다
 - 각 criterion은 `pass`, `fail`, `not_checked` 중 하나로 판정하고 residual risk와 missing evidence를 명시한다
 - workflow QA 결과는 `proposals.qa_validation = {"methodology":"evidence_matrix","decision":"pass|fail|blocked","evidence_matrix":[{"criterion":"...","source":"...","evidence":"...","result":"pass|fail|not_checked"}],"passed_checks":[],"findings":[],"residual_risks":[],"not_checked":[]}`를 포함한다
+- 새 기능이나 변경된 기능의 최종 user/operator-facing output이 Discord message이면, 메시지 문구/형식 변경이 explicit scope가 아니었더라도 QA evidence matrix의 검증 대상으로 포함한다
+- Discord message 최종 출력은 변경된 기능이 실제 channel/message 결과로 이어지는지 추적하고, content correctness, information order, readability, required Discord surface, mention/allowed-mentions safety를 검증한다. `channel_id`와 `message_id`를 확보할 수 있으면 `./.agents/skills/discord_message_read/` skill로 실제 Discord message 또는 주변 context를 읽는다
+- market-monitoring Discord 검증에서는 runner state의 `last_discord_channel_id`와 `last_discord_message_ids` 또는 `discord_message_ids`를 먼저 확인하고, 확보한 ID를 Discord read skill에 사용한다
+- Discord message를 직접 읽거나 렌더링할 수 없으면 해당 criterion을 `not_checked`로 남기고, 누락된 channel/message/API evidence와 residual risk를 명시한다
 - designer가 남긴 UX/readability/info prioritization 의도가 실제 결과물에서 어긋났다면 evidence를 남기고 `reopen_category='ux'`로 되돌릴 수 있다
 - planner-owned 문서는 evidence로 읽을 수 있지만, planner-owned 문서 mismatch 자체를 developer fix로 단정하지 않는다
 - spec.md 또는 explicit acceptance criteria mismatch가 검증 실패의 핵심이면 developer가 아니라 planner finalize reopen으로 되돌리고, 어떤 조항이 어긋났는지 명시한다. current_sprint/todo_backlog/iteration_log drift만으로는 blocker를 만들지 말고 runtime sync anomaly로 남긴다

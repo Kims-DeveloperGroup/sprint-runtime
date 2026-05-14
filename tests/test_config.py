@@ -325,6 +325,23 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             research_prompt = (workspace_root / "research" / "AGENTS.md").read_text(encoding="utf-8")
             architect_prompt = (workspace_root / "architect" / "AGENTS.md").read_text(encoding="utf-8")
             developer_prompt = (workspace_root / "developer" / "AGENTS.md").read_text(encoding="utf-8")
+            qa_discord_skill = (
+                workspace_root
+                / "qa"
+                / ".agents"
+                / "skills"
+                / "discord_message_read"
+                / "SKILL.md"
+            ).read_text(encoding="utf-8")
+            qa_discord_script = (
+                workspace_root
+                / "qa"
+                / ".agents"
+                / "skills"
+                / "discord_message_read"
+                / "scripts"
+                / "read_discord_message.py"
+            ).read_text(encoding="utf-8")
             planner_skill = (
                 workspace_root
                 / "planner"
@@ -512,6 +529,12 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("Reopen blocked backlog explicitly.", planner_sprint_skill)
             self.assertIn("Do not move a `blocked` item directly into sprint selection", planner_sprint_skill)
             self.assertIn("Do not bulk-read `shared_workspace/sprint_history/`", planner_sprint_skill)
+            self.assertIn("name: discord_message_read", qa_discord_skill)
+            self.assertIn("reading a specific Discord channel message", qa_discord_skill)
+            self.assertIn("last_discord_message_ids", qa_discord_skill)
+            self.assertIn("read_discord_message.py --workspace-root . --channel-id", qa_discord_skill)
+            self.assertIn("Authorization", qa_discord_script)
+            self.assertIn("/channels/{channel_id}/messages/{message_id}", qa_discord_script)
             self.assertIn("helper command", version_controller_prompt)
             self.assertIn("name: version_controller", version_controller_skill)
             self.assertIn("The internal version_controller agent is the primary owner", commit_policy)
@@ -523,6 +546,9 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("pass`, `fail`, `not_checked`", qa_prompt)
             self.assertIn("proposals.qa_validation", qa_prompt)
             self.assertIn('"methodology":"evidence_matrix"', qa_prompt)
+            self.assertIn("최종 user/operator-facing output이 Discord message", qa_prompt)
+            self.assertIn("./.agents/skills/discord_message_read/", qa_prompt)
+            self.assertIn("last_discord_message_ids", qa_prompt)
             self.assertIn("reopen taxonomy", qa_prompt)
             self.assertIn("runtime sync anomaly", qa_prompt)
             self.assertNotIn("approval:", team_runtime_text)
