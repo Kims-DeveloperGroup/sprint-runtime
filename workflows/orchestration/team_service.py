@@ -338,7 +338,8 @@ from teams_runtime.workflows.sprints.reporting import (
 )
 from teams_runtime.workflows.sprints.github_issue_publisher import (
     SprintIssuePublishError,
-    publish_sprint_issue_async,
+    SprintIssuePublishMetadata,
+    publish_sprint_issue_metadata_async,
 )
 from teams_runtime.workflows.state.sprint_store import (
     append_sprint_event,
@@ -4715,17 +4716,78 @@ class TeamService:
         sprint_id = str(sprint_state.get("sprint_id") or "").strip()
         if not sprint_id:
             return
-        task = asyncio.create_task(self._publish_sprint_issue_best_effort(dict(sprint_state)))
+        task = asyncio.create_task(self._publish_sprint_issue_best_effort(sprint_state))
         if task is None:
             return
         self._sprint_issue_publish_tasks.add(task)
         task.add_done_callback(self._sprint_issue_publish_tasks.discard)
 
-    async def _publish_sprint_issue_best_effort(self, sprint_state: dict[str, Any]) -> None:
-        sprint_id = str(sprint_state.get("sprint_id") or "").strip() or "unknown"
+    def _record_sprint_issue_publish_success(
+        self,
+        sprint_state: dict[str, Any],
+        metadata: SprintIssuePublishMetadata,
+    ) -> None:
+        published_at = utc_now_iso()
+        sprint_state["github_issue_number"] = int(metadata.issue_number)
+        sprint_state["github_issue_url"] = str(metadata.issue_url or "").strip()
+        sprint_state["github_issue_publish_status"] = "published"
+        sprint_state["github_issue_published_at"] = published_at
+        sprint_state["github_issue_publish_updated_at"] = published_at
+        sprint_state.pop("github_issue_publish_error", None)
+
+    def _record_sprint_issue_publish_failure(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        message: str,
+    ) -> None:
+        failed_at = utc_now_iso()
+        sprint_state["github_issue_number"] = ""
+        sprint_state["github_issue_url"] = ""
+        sprint_state["github_issue_publish_status"] = "failed"
+        sprint_state["github_issue_publish_updated_at"] = failed_at
+        sprint_state["github_issue_publish_error"] = str(message or "").strip()
+
+    async def _publish_sprint_issue_best_effort(self, sprint_state: dict[str, Any]) -> SprintIssuePublishMetadata | None:
+        sprint_id = str(sprint_state.get("sprint_id") or "").strip()
+        if not sprint_id:
+            return None
         try:
-            await publish_sprint_issue_async(self.paths, sprint_state)
+            metadata = await publish_sprint_issue_metadata_async(self.paths, sprint_state)
         except SprintIssuePublishError as exc:
+            self._record_sprint_issue_publish_failure(sprint_state, message=str(exc))
+            self._save_sprint_state(sprint_state)
+            await self._notify_sprint_issue_publish_failure(
+                sprint_id=sprint_id,
+                stage=exc.stage,
+                message=str(exc),
+                next_action=exc.next_action,
+            )
+            return None
+        except Exception as exc:
+            LOGGER.warning("Sprint GitHub issue publishing failed for %s: %s", sprint_id, exc)
+            self._record_sprint_issue_publish_failure(sprint_state, message=f"{type(exc).__name__}: {exc}")
+            self._save_sprint_state(sprint_state)
+            await self._notify_sprint_issue_publish_failure(
+                sprint_id=sprint_id,
+                stage="unexpected",
+                message=f"{type(exc).__name__}: {exc}",
+                next_action="Check GitHub CLI configuration and retry publishing.",
+            )
+            return None
+        self._record_sprint_issue_publish_success(sprint_state, metadata)
+        self._save_sprint_state(sprint_state)
+        return metadata
+
+    async def _publish_sprint_issue_before_terminal_reports(self, sprint_state: dict[str, Any]) -> None:
+        sprint_id = str(sprint_state.get("sprint_id") or "").strip()
+        if not sprint_id:
+            return
+        try:
+            await self._publish_sprint_issue_best_effort(sprint_state)
+        except SprintIssuePublishError as exc:
+            self._record_sprint_issue_publish_failure(sprint_state, message=str(exc))
+            self._save_sprint_state(sprint_state)
             await self._notify_sprint_issue_publish_failure(
                 sprint_id=sprint_id,
                 stage=exc.stage,
@@ -4734,6 +4796,8 @@ class TeamService:
             )
         except Exception as exc:
             LOGGER.warning("Sprint GitHub issue publishing failed for %s: %s", sprint_id, exc)
+            self._record_sprint_issue_publish_failure(sprint_state, message=f"{type(exc).__name__}: {exc}")
+            self._save_sprint_state(sprint_state)
             await self._notify_sprint_issue_publish_failure(
                 sprint_id=sprint_id,
                 stage="unexpected",
@@ -5261,7 +5325,7 @@ class TeamService:
         )
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
-        self._schedule_sprint_issue_publish(sprint_state)
+        await self._publish_sprint_issue_before_terminal_reports(sprint_state)
         await self._send_terminal_sprint_reports(
             title=terminal_title,
             sprint_state=sprint_state,
@@ -5286,7 +5350,7 @@ class TeamService:
         )
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
-        self._schedule_sprint_issue_publish(sprint_state)
+        await self._publish_sprint_issue_before_terminal_reports(sprint_state)
         await self._send_terminal_sprint_reports(
             title=terminal_title,
             sprint_state=sprint_state,

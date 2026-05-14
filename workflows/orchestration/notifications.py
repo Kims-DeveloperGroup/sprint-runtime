@@ -972,12 +972,14 @@ class DiscordNotificationService:
         report_channel_id: str,
         sprint_id: str,
         content: str,
+        rich_content: str = "",
         embed: dict[str, Any] | list[dict[str, Any]] | None = None,
         report_file_path: str = "",
     ) -> bool:
         normalized_channel_id = str(report_channel_id or "").strip()
         if not normalized_channel_id:
             return False
+        normalized_rich_content = str(rich_content or "").strip()
         rich_send = getattr(self.discord_client, "send_channel_rich_message", None)
         if callable(rich_send) and (embed or report_file_path):
             try:
@@ -985,7 +987,7 @@ class DiscordNotificationService:
                 for index, payload in enumerate(embeds):
                     await rich_send(
                         normalized_channel_id,
-                        content="",
+                        content=normalized_rich_content if index == 0 else "",
                         embed=payload,
                         files=[report_file_path] if index == 0 and str(report_file_path or "").strip() else [],
                         allowed_mentions="none",
@@ -999,8 +1001,13 @@ class DiscordNotificationService:
                     exc,
                 )
         try:
+            fallback_content = (
+                f"{normalized_rich_content}\n\n{content}".strip()
+                if normalized_rich_content
+                else content
+            )
             await self.send_content(
-                content=content,
+                content=fallback_content,
                 send=lambda chunk: self.discord_client.send_channel_message(normalized_channel_id, chunk),
                 target_description=f"sprint-user-report:{normalized_channel_id}:{sprint_id or ''}",
                 swallow_exceptions=False,

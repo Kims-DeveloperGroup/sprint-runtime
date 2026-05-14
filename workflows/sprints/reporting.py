@@ -2849,6 +2849,7 @@ def build_sprint_completion_embed(
     headline: str,
     change_summary_lines: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    _ = change_summary_lines
     color = 0x2ECC71 if str(sprint_state.get("status") or "").strip().lower() == "completed" else 0xF1C40F
     followup_value = (
         "없음"
@@ -2874,10 +2875,10 @@ def build_sprint_completion_embed(
         content_fields.append(
             {"name": "TL;DR" if index == 0 else f"TL;DR 계속 {index + 1}", "value": chunk, "inline": False}
         )
-    change_summary = "\n".join(str(line or "").rstrip() for line in (change_summary_lines or [])).strip() or "- 변경 요약 없음"
-    for index, chunk in enumerate(_split_discord_embed_field_text(change_summary)):
+    github_issue_url = str(sprint_state.get("github_issue_url") or "").strip()
+    for index, chunk in enumerate(_split_discord_embed_field_text(github_issue_url) if github_issue_url else []):
         content_fields.append(
-            {"name": "변경 요약" if index == 0 else f"변경 요약 계속 {index + 1}", "value": chunk, "inline": False}
+            {"name": "GitHub Issue" if index == 0 else f"GitHub Issue 계속 {index + 1}", "value": chunk, "inline": False}
         )
 
     embeds: list[dict[str, Any]] = []
@@ -2899,6 +2900,11 @@ def build_sprint_completion_embed(
         )
         content_offset += capacity
     return embeds
+
+
+def sprint_github_issue_message_content(sprint_state: dict[str, Any]) -> str:
+    github_issue_url = str(sprint_state.get("github_issue_url") or "").strip()
+    return f"GitHub issue: {github_issue_url}" if github_issue_url else ""
 
 
 def _split_discord_embed_field_text(value: Any, *, limit: int = 1024) -> list[str]:
@@ -3579,7 +3585,6 @@ async def send_sprint_completion_user_report_for_service(
 ) -> bool:
     snapshot = service._collect_sprint_report_snapshot(sprint_state, closeout_result)
     headline = service._build_sprint_headline(sprint_state, snapshot, full_detail=True)
-    change_summary_lines = service._build_sprint_change_summary_lines(sprint_state, snapshot, full_detail=True)
     return await service.notification_service.send_sprint_completion_user_report(
         report_channel_id=str(service.discord_config.report_channel_id or ""),
         sprint_id=str(sprint_state.get("sprint_id") or ""),
@@ -3588,12 +3593,12 @@ async def send_sprint_completion_user_report_for_service(
             closeout_result,
             title=title,
         ),
+        rich_content=sprint_github_issue_message_content(sprint_state),
         embed=build_sprint_completion_embed(
             title=title,
             sprint_state=sprint_state,
             snapshot=snapshot,
             headline=headline,
-            change_summary_lines=change_summary_lines,
         ),
         report_file_path=str(sprint_state.get("report_path") or ""),
     )

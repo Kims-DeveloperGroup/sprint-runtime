@@ -12,14 +12,42 @@ from teams_runtime.core.orchestration import TeamService
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.workflows.sprints.github_issue_publisher import (
     GhResult,
+    SprintIssuePublishMetadata,
     SprintIssuePublishError,
     collect_sprint_issue_documents,
     load_github_token_dotenv,
     publish_sprint_issue,
+    publish_sprint_issue_metadata,
 )
 from teams_runtime.workflows.state.request_store import save_request
 
 from orchestration_test_utils import FakeDiscordClient, scaffold_workspace
+
+
+class RichFakeDiscordClient(FakeDiscordClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sent_rich: list[dict[str, object]] = []
+
+    async def send_channel_rich_message(
+        self,
+        channel_id,
+        *,
+        content="",
+        embed=None,
+        files=None,
+        allowed_mentions=None,
+    ):
+        self.sent_rich.append(
+            {
+                "channel_id": str(channel_id),
+                "content": str(content or ""),
+                "embed": embed,
+                "files": list(files or []),
+                "allowed_mentions": allowed_mentions,
+            }
+        )
+        return None
 
 
 class SprintGithubIssuePublisherTests(unittest.TestCase):
@@ -202,7 +230,7 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                     return GhResult(0, json.dumps(comments), "")
                 return GhResult(0, "", "")
 
-            issue_number = publish_sprint_issue(
+            metadata = publish_sprint_issue_metadata(
                 paths,
                 {
                     "sprint_id": sprint_id,
@@ -214,7 +242,9 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 runner=runner,
             )
 
-            self.assertEqual(issue_number, 42)
+            self.assertEqual(metadata.issue_number, 42)
+            self.assertEqual(metadata.issue_url, "https://github.com/owner/repo/issues/42")
+            self.assertEqual(metadata.repo, "owner/repo")
             create_call = next(stdin for args, stdin in calls if args[:2] == ["issue", "create"])
             self.assertIn("teams-runtime:sprint-issue:260501-Sprint-12:00", create_call or "")
             comment_call = next(stdin for args, stdin in calls if args[:2] == ["issue", "comment"])
@@ -333,7 +363,83 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             self.assertEqual(raised.exception.stage, "auth")
             self.assertIn("GitHub token missing", str(raised.exception))
 
-    def test_closeout_schedules_publisher_and_completion_still_succeeds_when_publisher_fails(self):
+    def test_publish_sprint_issue_best_effort_persists_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(milestone_title="GitHub metadata", trigger="manual")
+                metadata = SprintIssuePublishMetadata(
+                    issue_number=42,
+                    issue_url="https://github.com/owner/repo/issues/42",
+                    repo="owner/repo",
+                )
+
+                with patch(
+                    "teams_runtime.workflows.orchestration.team_service.publish_sprint_issue_metadata_async",
+                    AsyncMock(return_value=metadata),
+                ):
+                    result = asyncio.run(service._publish_sprint_issue_best_effort(sprint_state))
+
+                self.assertEqual(result, metadata)
+                self.assertEqual(sprint_state["github_issue_number"], 42)
+                self.assertEqual(sprint_state["github_issue_url"], "https://github.com/owner/repo/issues/42")
+                self.assertEqual(sprint_state["github_issue_publish_status"], "published")
+                self.assertTrue(sprint_state["github_issue_published_at"])
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated["github_issue_number"], 42)
+                self.assertEqual(updated["github_issue_url"], "https://github.com/owner/repo/issues/42")
+
+    def test_closeout_publishes_issue_before_terminal_discord_reports_and_sends_link_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            issue_url = "https://github.com/owner/repo/issues/42"
+            with patch("teams_runtime.core.orchestration.DiscordClient", RichFakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(milestone_title="GitHub publisher", trigger="manual")
+                service._prepare_and_archive_sprint_report = AsyncMock(return_value="report")
+                service._finish_scheduler_after_sprint = lambda *_args, **_kwargs: None
+                events: list[str] = []
+
+                async def fake_publish(state):
+                    events.append("publish")
+                    state["github_issue_number"] = 42
+                    state["github_issue_url"] = issue_url
+                    state["github_issue_publish_status"] = "published"
+                    state["github_issue_published_at"] = "2026-05-01T12:00:00+09:00"
+                    state["github_issue_publish_updated_at"] = "2026-05-01T12:00:00+09:00"
+                    service._save_sprint_state(state)
+                    return SprintIssuePublishMetadata(issue_number=42, issue_url=issue_url, repo="owner/repo")
+
+                original_send_terminal = service._send_terminal_sprint_reports
+
+                async def recording_send_terminal(**kwargs):
+                    events.append(f"send:{kwargs['sprint_state'].get('github_issue_url')}")
+                    return await original_send_terminal(**kwargs)
+
+                service._publish_sprint_issue_best_effort = fake_publish
+                service._send_terminal_sprint_reports = recording_send_terminal
+
+                result = asyncio.run(
+                    service._complete_terminal_sprint(
+                        sprint_state,
+                        status="completed",
+                        closeout_status="verified",
+                        terminal_title="done",
+                        message="done",
+                    )
+                )
+
+                self.assertEqual(result["status"], "verified")
+                self.assertEqual(events[:2], ["publish", f"send:{issue_url}"])
+                self.assertTrue(service.discord_client.sent_rich)
+                self.assertEqual(service.discord_client.sent_rich[0]["content"], f"GitHub issue: {issue_url}")
+                fields = service.discord_client.sent_rich[0]["embed"].get("fields", [])
+                field_names = [field["name"] for field in fields]
+                self.assertIn("GitHub Issue", field_names)
+                self.assertFalse(any(str(name).startswith("변경 요약") for name in field_names))
+
+    def test_closeout_completion_still_succeeds_when_publisher_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
             with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
@@ -359,6 +465,8 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 )
 
                 self.assertEqual(result["status"], "verified")
+                self.assertEqual(sprint_state["github_issue_publish_status"], "failed")
+                self.assertEqual(sprint_state["github_issue_url"], "")
                 service._send_terminal_sprint_reports.assert_awaited_once()
 
 
