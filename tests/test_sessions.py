@@ -15,6 +15,7 @@ from teams_runtime.models import MessageEnvelope, RoleRuntimeConfig
 from teams_runtime.runtime.base_runtime import RoleAgentRuntime, normalize_role_payload
 from teams_runtime.runtime.session_manager import RoleSessionManager
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
+from teams_runtime.shared.models import TEAM_ROLES
 from teams_runtime.runtime.internal.backlog_sourcing import BacklogSourcingRuntime
 from teams_runtime.runtime.identities import local_identity
 from teams_runtime.runtime.identities import local_runtime_identity
@@ -270,6 +271,27 @@ class TeamsRuntimeSessionTests(unittest.TestCase):
             self.assertTrue((workspace / ".agents").exists())
             self.assertTrue(skill_file.exists())
             self.assertIn("name: version_controller", skill_file.read_text(encoding="utf-8"))
+
+    def test_public_role_sessions_expose_github_issues_skill(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+
+            for role in TEAM_ROLES:
+                manager = RoleSessionManager(paths, role, "sprint-a")
+                state = manager.ensure_session()
+                workspace = Path(state.workspace_path)
+                agents_link = workspace / ".agents"
+                skill_file = agents_link / "skills" / "github_issues" / "SKILL.md"
+                list_script = agents_link / "skills" / "github_issues" / "scripts" / "list_issues.py"
+                view_script = agents_link / "skills" / "github_issues" / "scripts" / "view_issue.py"
+
+                self.assertTrue(agents_link.is_symlink())
+                self.assertEqual(agents_link.resolve(), paths.role_root(role) / ".agents")
+                self.assertTrue(skill_file.exists())
+                self.assertTrue(list_script.exists())
+                self.assertTrue(view_script.exists())
+                self.assertIn("name: github_issues", skill_file.read_text(encoding="utf-8"))
 
     def test_orchestrator_session_exposes_local_skills(self):
         with tempfile.TemporaryDirectory() as tmpdir:

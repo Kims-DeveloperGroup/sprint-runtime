@@ -88,6 +88,15 @@ PLANNER_BACKLOG_DECOMPOSITION_SKILL = _load_template_asset(
 PLANNER_SPRINT_PLANNING_SKILL = _load_template_asset(
     "scaffold/planner/.agents/skills/sprint_planning/SKILL.md"
 )
+PUBLIC_GITHUB_ISSUES_SKILL = _load_template_asset(
+    "scaffold/skills/github_issues/SKILL.md"
+)
+PUBLIC_GITHUB_ISSUES_LIST_SCRIPT = _load_template_asset(
+    "scaffold/skills/github_issues/scripts/list_issues.py"
+)
+PUBLIC_GITHUB_ISSUES_VIEW_SCRIPT = _load_template_asset(
+    "scaffold/skills/github_issues/scripts/view_issue.py"
+)
 VERSION_CONTROLLER_SKILL = _load_template_asset(
     "scaffold/internal/version_controller/.agents/skills/version_controller/SKILL.md"
 )
@@ -198,6 +207,9 @@ def build_default_workspace_files() -> dict[str, str]:
             write_shared_planning=write_shared_planning,
             write_shared_decisions=write_shared_decisions,
         )
+        files[f"{role}/.agents/skills/github_issues/SKILL.md"] = PUBLIC_GITHUB_ISSUES_SKILL
+        files[f"{role}/.agents/skills/github_issues/scripts/list_issues.py"] = PUBLIC_GITHUB_ISSUES_LIST_SCRIPT
+        files[f"{role}/.agents/skills/github_issues/scripts/view_issue.py"] = PUBLIC_GITHUB_ISSUES_VIEW_SCRIPT
     files["orchestrator/.agents/skills/sprint_orchestration/SKILL.md"] = ORCHESTRATOR_SPRINT_ORCHESTRATION_SKILL
     files["orchestrator/.agents/skills/agent_utilization/SKILL.md"] = ORCHESTRATOR_AGENT_UTILIZATION_SKILL
     files["orchestrator/.agents/skills/agent_utilization/policy.yaml"] = ORCHESTRATOR_AGENT_UTILIZATION_POLICY_YAML

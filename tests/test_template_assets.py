@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from teams_runtime.core.template import refresh_workspace_prompt_assets, scaffold_workspace
+from teams_runtime.shared.models import INTERNAL_TEAM_AGENTS, TEAM_ROLES
 
 
 class TeamsRuntimeTemplateAssetTests(unittest.TestCase):
@@ -71,6 +73,42 @@ class TeamsRuntimeTemplateAssetTests(unittest.TestCase):
 
         self.assertEqual(rendered_skill, expected_skill)
 
+    def test_scaffold_workspace_installs_github_issues_skill_for_public_roles_only(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        template_root = repo_root / "templates" / "scaffold" / "skills" / "github_issues"
+        expected_skill = (template_root / "SKILL.md").read_text(encoding="utf-8")
+        expected_list_script = (template_root / "scripts" / "list_issues.py").read_text(encoding="utf-8")
+        expected_view_script = (template_root / "scripts" / "view_issue.py").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir)
+            scaffold_workspace(workspace_root)
+
+            for role in TEAM_ROLES:
+                skill_root = workspace_root / role / ".agents" / "skills" / "github_issues"
+                self.assertEqual((skill_root / "SKILL.md").read_text(encoding="utf-8"), expected_skill)
+                self.assertEqual(
+                    (skill_root / "scripts" / "list_issues.py").read_text(encoding="utf-8"),
+                    expected_list_script,
+                )
+                self.assertEqual(
+                    (skill_root / "scripts" / "view_issue.py").read_text(encoding="utf-8"),
+                    expected_view_script,
+                )
+
+            for agent_name in INTERNAL_TEAM_AGENTS:
+                self.assertFalse(
+                    (
+                        workspace_root
+                        / "internal"
+                        / agent_name
+                        / ".agents"
+                        / "skills"
+                        / "github_issues"
+                        / "SKILL.md"
+                    ).exists()
+                )
+
     def test_teams_runtime_skill_documents_safe_default_init_refresh(self):
         repo_root = Path(__file__).resolve().parent.parent
         skill_path = repo_root / "templates" / "scaffold" / ".agents" / "skills" / "teams-runtime" / "SKILL.md"
@@ -127,6 +165,54 @@ class TeamsRuntimeTemplateAssetTests(unittest.TestCase):
                 (workspace_root / "shared_workspace" / "current_sprint.md").read_text(encoding="utf-8"),
                 "preserve current sprint",
             )
+            self.assertTrue((workspace_root / ".teams_runtime" / "state.json").exists())
+
+    def test_refresh_workspace_prompt_assets_backfills_public_github_issues_skill(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        template_root = repo_root / "templates" / "scaffold" / "skills" / "github_issues"
+        expected_skill = (template_root / "SKILL.md").read_text(encoding="utf-8")
+        expected_list_script = (template_root / "scripts" / "list_issues.py").read_text(encoding="utf-8")
+        expected_view_script = (template_root / "scripts" / "view_issue.py").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir).resolve()
+            scaffold_workspace(workspace_root)
+            for role in TEAM_ROLES:
+                agents_dir = workspace_root / role / ".agents"
+                if role in {"orchestrator", "planner"}:
+                    shutil.rmtree(agents_dir / "skills" / "github_issues")
+                else:
+                    shutil.rmtree(agents_dir)
+            (workspace_root / "planner" / "history.md").write_text("preserve role history", encoding="utf-8")
+            (workspace_root / ".teams_runtime").mkdir(exist_ok=True)
+            (workspace_root / ".teams_runtime" / "state.json").write_text('{"preserve": true}', encoding="utf-8")
+
+            updated = refresh_workspace_prompt_assets(workspace_root)
+
+            for role in TEAM_ROLES:
+                skill_root = workspace_root / role / ".agents" / "skills" / "github_issues"
+                skill_path = skill_root / "SKILL.md"
+                list_script = skill_root / "scripts" / "list_issues.py"
+                view_script = skill_root / "scripts" / "view_issue.py"
+                self.assertIn(skill_path, updated)
+                self.assertEqual(skill_path.read_text(encoding="utf-8"), expected_skill)
+                self.assertIn(list_script, updated)
+                self.assertEqual(list_script.read_text(encoding="utf-8"), expected_list_script)
+                self.assertIn(view_script, updated)
+                self.assertEqual(view_script.read_text(encoding="utf-8"), expected_view_script)
+            for agent_name in INTERNAL_TEAM_AGENTS:
+                self.assertFalse(
+                    (
+                        workspace_root
+                        / "internal"
+                        / agent_name
+                        / ".agents"
+                        / "skills"
+                        / "github_issues"
+                        / "SKILL.md"
+                    ).exists()
+                )
+            self.assertEqual((workspace_root / "planner" / "history.md").read_text(encoding="utf-8"), "preserve role history")
             self.assertTrue((workspace_root / ".teams_runtime" / "state.json").exists())
 
     def test_refresh_workspace_prompt_assets_requires_existing_workspace(self):
