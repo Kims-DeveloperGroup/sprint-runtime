@@ -85,6 +85,7 @@ from teams_runtime.workflows.sprints.reporting import (
     render_sprint_milestone_markdown,
     render_sprint_plan_markdown,
     render_sprint_status_report,
+    render_sprint_history_markdown,
     render_sprint_report_body,
     render_sprint_completion_user_report,
     render_sprint_spec_markdown,
@@ -170,6 +171,39 @@ class TeamsRuntimeSprintReportingTests(unittest.TestCase):
             self.assertTrue(refresh_sprint_history_archive(paths, sprint_state))
             self.assertEqual(sprint_state["report_path"], archived_path)
             self.assertFalse(refresh_sprint_history_archive(paths, sprint_state))
+
+    def test_sprint_history_markdown_renders_github_issue_url(self):
+        rendered = render_sprint_history_markdown(
+            {
+                "sprint_id": "260421-Sprint-13:50",
+                "status": "completed",
+                "started_at": "2026-04-21T13:00:00+00:00",
+                "ended_at": "2026-04-21T13:50:00+00:00",
+                "github_issue_url": "https://github.com/owner/repo/issues/42",
+                "github_issue_publish_status": "published",
+            },
+            "# Sprint Report\n\nDone.",
+        )
+
+        self.assertIn("- github_issue_url: <https://github.com/owner/repo/issues/42>", rendered)
+        self.assertIn("- github_issue_publish_status: published", rendered)
+
+    def test_sprint_history_markdown_renders_unavailable_github_issue_failure(self):
+        rendered = render_sprint_history_markdown(
+            {
+                "sprint_id": "260421-Sprint-13:55",
+                "status": "completed",
+                "started_at": "2026-04-21T13:00:00+00:00",
+                "ended_at": "2026-04-21T13:55:00+00:00",
+                "github_issue_publish_status": "failed",
+                "github_issue_publish_error": "GitHub token missing",
+            },
+            "# Sprint Report\n\nDone.",
+        )
+
+        self.assertIn("- github_issue_url: N/A", rendered)
+        self.assertIn("- github_issue_publish_status: failed", rendered)
+        self.assertIn("- github_issue_publish_error: GitHub token missing", rendered)
 
     def test_sprint_report_delivery_helpers_build_body_artifacts_and_progress_report(self):
         with tempfile.TemporaryDirectory() as tmpdir:

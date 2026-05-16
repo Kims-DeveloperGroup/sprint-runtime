@@ -432,6 +432,10 @@ def _load_preserved_sprint_history_metadata(history_path: Path) -> dict[str, obj
         "started_at": "",
         "ended_at": "",
         "commit_sha": "",
+        "github_issue_url": "",
+        "github_issue_number": "",
+        "github_issue_publish_status": "",
+        "github_issue_publish_error": "",
         "todo_count": 0,
     }
     todo_count = 0
@@ -459,5 +463,13 @@ def _load_preserved_sprint_history_metadata(history_path: Path) -> dict[str, obj
             metadata["ended_at"] = normalized_value
         elif normalized_key == "commit_sha":
             metadata["commit_sha"] = "" if normalized_value == "N/A" else normalized_value
+        elif normalized_key == "github_issue_url":
+            metadata["github_issue_url"] = "" if normalized_value == "N/A" else normalized_value.strip("<>")
+        elif normalized_key == "github_issue_number":
+            metadata["github_issue_number"] = "" if normalized_value == "N/A" else normalized_value
+        elif normalized_key == "github_issue_publish_status":
+            metadata["github_issue_publish_status"] = "" if normalized_value == "N/A" else normalized_value
+        elif normalized_key == "github_issue_publish_error":
+            metadata["github_issue_publish_error"] = "" if normalized_value == "N/A" else normalized_value
     metadata["todo_count"] = todo_count
     return metadata

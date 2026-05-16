@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,8 @@ SPRINT_ROLE_DISPLAY_NAMES = {
     "version_controller": "버전 컨트롤러",
 }
 WorkflowTransitionProvider = Callable[[dict[str, Any]], dict[str, Any]]
+_GITHUB_ISSUE_URL_NUMBER_RE = re.compile(r"/issues/(\d+)(?:[/?#]|$)")
+_MARKDOWN_LINK_RE = re.compile(r"^\[([^\]]*)\]\((.*)\)$")
 
 
 def decorate_sprint_report_title(title: str) -> str:
@@ -580,6 +583,70 @@ def _format_recent_activity_line(activity: dict[str, Any]) -> str:
     return line
 
 
+def _normalize_markdown_link_destination(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized.startswith("<") and normalized.endswith(">"):
+        return normalized[1:-1].strip()
+    return normalized
+
+
+def _normalize_github_issue_url(value: Any) -> str:
+    normalized = _normalize_markdown_link_destination(str(value or "").strip())
+    if not normalized or normalized.upper() == "N/A":
+        return ""
+    return normalized
+
+
+def _normalize_github_issue_number(value: Any, *, issue_url: str = "") -> int | str:
+    normalized = str(value or "").strip()
+    if normalized.startswith("#"):
+        normalized = normalized[1:].strip()
+    if normalized.isdigit():
+        return int(normalized)
+    match = _GITHUB_ISSUE_URL_NUMBER_RE.search(str(issue_url or ""))
+    if match:
+        return int(match.group(1))
+    return ""
+
+
+def _format_github_issue_history_url(value: Any) -> str:
+    url = _normalize_github_issue_url(value)
+    return f"<{url}>" if url else "N/A"
+
+
+def _format_github_issue_index_cell(row: dict[str, Any]) -> str:
+    url = _normalize_github_issue_url(row.get("github_issue_url") or "")
+    if not url:
+        return "N/A"
+    issue_number = _normalize_github_issue_number(row.get("github_issue_number") or "", issue_url=url)
+    if issue_number:
+        return f"[#{issue_number}]({url})"
+    return f"[issue]({url})"
+
+
+def _parse_github_issue_index_cell(value: str) -> dict[str, Any]:
+    normalized = str(value or "").strip()
+    if not normalized or normalized.upper() == "N/A":
+        return {
+            "github_issue_url": "",
+            "github_issue_number": "",
+            "github_issue_publish_status": "",
+        }
+    label = ""
+    url = normalized
+    match = _MARKDOWN_LINK_RE.match(normalized)
+    if match:
+        label = str(match.group(1) or "").strip()
+        url = str(match.group(2) or "").strip()
+    issue_url = _normalize_github_issue_url(url)
+    issue_number = _normalize_github_issue_number(label, issue_url=issue_url)
+    return {
+        "github_issue_url": issue_url,
+        "github_issue_number": issue_number,
+        "github_issue_publish_status": "published" if issue_url else "",
+    }
+
+
 def render_sprint_history_markdown(sprint_state: dict[str, Any], report_body: str) -> str:
     lines = [
         "# Sprint History",
@@ -595,10 +662,15 @@ def render_sprint_history_markdown(sprint_state: dict[str, Any], report_body: st
         f"- started_at: {sprint_state.get('started_at') or ''}",
         f"- ended_at: {sprint_state.get('ended_at') or ''}",
         f"- commit_sha: {sprint_state.get('commit_sha') or 'N/A'}",
-        "",
-        "## Todo List",
-        "",
     ]
+    lines.append(f"- github_issue_url: {_format_github_issue_history_url(sprint_state.get('github_issue_url') or '')}")
+    github_issue_publish_status = str(sprint_state.get("github_issue_publish_status") or "").strip()
+    if github_issue_publish_status:
+        lines.append(f"- github_issue_publish_status: {github_issue_publish_status}")
+    github_issue_publish_error = str(sprint_state.get("github_issue_publish_error") or "").strip()
+    if github_issue_publish_error:
+        lines.append(f"- github_issue_publish_error: {github_issue_publish_error}")
+    lines.extend(["", "## Todo List", ""])
     todos = sprint_state.get("todos") or []
     if todos:
         for todo in todos:
@@ -638,6 +710,11 @@ def build_sprint_history_index_row(payload: dict[str, Any]) -> dict[str, Any]:
     milestone_title = str(
         payload.get("milestone_title") or payload.get("requested_milestone_title") or ""
     ).strip()
+    github_issue_url = _normalize_github_issue_url(payload.get("github_issue_url") or "")
+    github_issue_number = _normalize_github_issue_number(
+        payload.get("github_issue_number") or "",
+        issue_url=github_issue_url,
+    )
     return {
         "sprint_id": payload.get("sprint_id") or "",
         "status": payload.get("status") or "",
@@ -646,6 +723,9 @@ def build_sprint_history_index_row(payload: dict[str, Any]) -> dict[str, Any]:
         "ended_at": payload.get("ended_at") or "",
         "commit_sha": payload.get("commit_sha") or "",
         "todo_count": len(payload.get("todos") or []) if "todos" in payload else int(payload.get("todo_count") or 0),
+        "github_issue_url": github_issue_url,
+        "github_issue_number": github_issue_number,
+        "github_issue_publish_status": str(payload.get("github_issue_publish_status") or "").strip(),
     }
 
 
@@ -654,12 +734,15 @@ def render_sprint_history_index_rows(rows: list[dict[str, Any]]) -> str:
     lines = [
         "# Sprint History Index",
         "",
-        "| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha |",
-        "| --- | --- | --- | --- | --- | ---: | --- |",
+        "| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha | github_issue |",
+        "| --- | --- | --- | --- | --- | ---: | --- | --- |",
     ]
     for row in ordered_rows:
         lines.append(
-            "| {sprint_id} | {status} | {milestone_title} | {started_at} | {ended_at} | {todo_count} | {commit_sha} |".format(
+            (
+                "| {sprint_id} | {status} | {milestone_title} | {started_at} | {ended_at} "
+                "| {todo_count} | {commit_sha} | {github_issue} |"
+            ).format(
                 sprint_id=row.get("sprint_id") or "",
                 status=row.get("status") or "",
                 milestone_title=row.get("milestone_title") or "N/A",
@@ -667,6 +750,7 @@ def render_sprint_history_index_rows(rows: list[dict[str, Any]]) -> str:
                 ended_at=row.get("ended_at") or "",
                 todo_count=row.get("todo_count") or 0,
                 commit_sha=row.get("commit_sha") or "N/A",
+                github_issue=_format_github_issue_index_cell(row),
             )
         )
     return "\n".join(lines).rstrip() + "\n"
@@ -692,6 +776,21 @@ def load_sprint_history_index(path: Path) -> list[dict[str, Any]]:
         parts = [part.strip() for part in normalized.strip("|").split("|")]
         if not parts or parts[0] == "sprint_id":
             continue
+        if len(parts) == 8:
+            issue_metadata = _parse_github_issue_index_cell(parts[7])
+            rows.append(
+                {
+                    "sprint_id": parts[0],
+                    "status": parts[1],
+                    "milestone_title": parts[2] if parts[2] != "N/A" else "",
+                    "started_at": parts[3],
+                    "ended_at": parts[4],
+                    "todo_count": int(parts[5]) if parts[5].isdigit() else 0,
+                    "commit_sha": parts[6],
+                    **issue_metadata,
+                }
+            )
+            continue
         if len(parts) == 7:
             rows.append(
                 {
@@ -702,6 +801,9 @@ def load_sprint_history_index(path: Path) -> list[dict[str, Any]]:
                     "ended_at": parts[4],
                     "todo_count": int(parts[5]) if parts[5].isdigit() else 0,
                     "commit_sha": parts[6],
+                    "github_issue_url": "",
+                    "github_issue_number": "",
+                    "github_issue_publish_status": "",
                 }
             )
             continue
@@ -715,6 +817,9 @@ def load_sprint_history_index(path: Path) -> list[dict[str, Any]]:
                     "ended_at": parts[3],
                     "todo_count": int(parts[4]) if parts[4].isdigit() else 0,
                     "commit_sha": parts[5],
+                    "github_issue_url": "",
+                    "github_issue_number": "",
+                    "github_issue_publish_status": "",
                 }
             )
     return rows

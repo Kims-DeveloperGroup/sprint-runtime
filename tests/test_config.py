@@ -178,16 +178,19 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             "started_at": "2026-03-24T09:00:00+09:00",
             "ended_at": "2026-03-24T11:00:00+09:00",
             "commit_sha": "abc1234",
+            "github_issue_number": 42,
+            "github_issue_url": "https://github.com/owner/repo/issues/42",
+            "github_issue_publish_status": "published",
             "todos": [{}, {}],
         }
         rendered = render_sprint_history_index([], sprint_state)
 
         self.assertIn(
-            "| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha |",
+            "| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha | github_issue |",
             rendered,
         )
         self.assertIn(
-            "| 260324-Sprint-09:00 | completed | CLI status | 2026-03-24T09:00:00+09:00 | 2026-03-24T11:00:00+09:00 | 2 | abc1234 |",
+            "| 260324-Sprint-09:00 | completed | CLI status | 2026-03-24T09:00:00+09:00 | 2026-03-24T11:00:00+09:00 | 2 | abc1234 | [#42](https://github.com/owner/repo/issues/42) |",
             rendered,
         )
 
@@ -199,6 +202,9 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(len(loaded_rows), 1)
         self.assertEqual(loaded_rows[0]["milestone_title"], "CLI status")
         self.assertEqual(loaded_rows[0]["todo_count"], 2)
+        self.assertEqual(loaded_rows[0]["github_issue_number"], 42)
+        self.assertEqual(loaded_rows[0]["github_issue_url"], "https://github.com/owner/repo/issues/42")
+        self.assertEqual(loaded_rows[0]["github_issue_publish_status"], "published")
 
     def test_load_sprint_history_index_supports_legacy_rows_without_milestone_column(self):
         legacy_index = """# Sprint History Index
@@ -216,6 +222,51 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(loaded_rows[0]["sprint_id"], "260101-Sprint-09:00")
         self.assertEqual(loaded_rows[0]["milestone_title"], "")
         self.assertEqual(loaded_rows[0]["todo_count"], 1)
+        self.assertEqual(loaded_rows[0]["github_issue_url"], "")
+
+    def test_load_sprint_history_index_supports_current_rows_without_github_issue_column(self):
+        current_index = """# Sprint History Index
+
+| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha |
+| --- | --- | --- | --- | --- | ---: | --- |
+| 260101-Sprint-09:00 | completed | Current milestone | 2026-01-01T09:00:00+09:00 | 2026-01-01T10:00:00+09:00 | 1 | currentsha |
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = Path(tmpdir) / "index.md"
+            index_path.write_text(current_index, encoding="utf-8")
+            loaded_rows = load_sprint_history_index(index_path)
+
+        self.assertEqual(len(loaded_rows), 1)
+        self.assertEqual(loaded_rows[0]["sprint_id"], "260101-Sprint-09:00")
+        self.assertEqual(loaded_rows[0]["milestone_title"], "Current milestone")
+        self.assertEqual(loaded_rows[0]["todo_count"], 1)
+        self.assertEqual(loaded_rows[0]["github_issue_url"], "")
+
+    def test_sprint_history_index_renders_issue_cell_fallbacks(self):
+        rendered = render_sprint_history_index(
+            [
+                {
+                    "sprint_id": "260101-Sprint-09:00",
+                    "status": "completed",
+                    "started_at": "2026-01-01T09:00:00+09:00",
+                    "ended_at": "2026-01-01T10:00:00+09:00",
+                    "todo_count": 1,
+                    "commit_sha": "sha1",
+                    "github_issue_url": "https://github.com/owner/repo/discussions/42",
+                }
+            ],
+            {
+                "sprint_id": "260102-Sprint-09:00",
+                "status": "completed",
+                "started_at": "2026-01-02T09:00:00+09:00",
+                "ended_at": "2026-01-02T10:00:00+09:00",
+                "commit_sha": "sha2",
+                "todos": [],
+            },
+        )
+
+        self.assertIn("[issue](https://github.com/owner/repo/discussions/42)", rendered)
+        self.assertIn("| 260102-Sprint-09:00 | completed | N/A | 2026-01-02T09:00:00+09:00 | 2026-01-02T10:00:00+09:00 | 0 | sha2 | N/A |", rendered)
 
     def test_scaffold_workspace_and_load_configs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1201,7 +1252,9 @@ agents:
                 "- trigger: manual_start\n"
                 "- started_at: 2026-03-24T09:00:00+09:00\n"
                 "- ended_at: 2026-03-24T11:00:00+09:00\n"
-                "- commit_sha: abc1234\n\n"
+                "- commit_sha: abc1234\n"
+                "- github_issue_url: <https://github.com/owner/repo/issues/87>\n"
+                "- github_issue_publish_status: published\n\n"
                 "## Todo List\n\n"
                 "### 첫 번째 할 일\n"
                 "- status: completed\n\n"
@@ -1238,10 +1291,11 @@ agents:
                 encoding="utf-8"
             )
             self.assertIn(
-                "| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha |",
+                "| sprint_id | status | milestone | started_at | ended_at | todo_count | commit_sha | github_issue |",
                 rendered_index,
             )
             self.assertIn("Preserved milestone", rendered_index)
+            self.assertIn("[#87](https://github.com/owner/repo/issues/87)", rendered_index)
 
     def test_background_start_env_includes_package_parent_on_pythonpath(self):
         env = build_background_env()

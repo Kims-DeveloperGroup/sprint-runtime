@@ -21,7 +21,7 @@ from teams_runtime.workflows.sprints.github_issue_publisher import (
 )
 from teams_runtime.workflows.state.request_store import save_request
 
-from orchestration_test_utils import FakeDiscordClient, scaffold_workspace
+from teams_runtime.tests.orchestration_test_utils import FakeDiscordClient, scaffold_workspace
 
 
 class RichFakeDiscordClient(FakeDiscordClient):
@@ -397,9 +397,14 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
             with patch("teams_runtime.core.orchestration.DiscordClient", RichFakeDiscordClient):
                 service = TeamService(tmpdir, "orchestrator")
                 sprint_state = service._build_manual_sprint_state(milestone_title="GitHub publisher", trigger="manual")
-                service._prepare_and_archive_sprint_report = AsyncMock(return_value="report")
                 service._finish_scheduler_after_sprint = lambda *_args, **_kwargs: None
                 events: list[str] = []
+
+                async def fake_prepare(state, closeout_result):
+                    report_body = f"sprint_id={state['sprint_id']}\ncloseout_status={closeout_result['status']}"
+                    state["report_body"] = report_body
+                    state["report_path"] = service._archive_sprint_history(state, report_body)
+                    return report_body
 
                 async def fake_publish(state):
                     events.append("publish")
@@ -418,6 +423,7 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                     return await original_send_terminal(**kwargs)
 
                 service._publish_sprint_issue_best_effort = fake_publish
+                service._prepare_and_archive_sprint_report = fake_prepare
                 service._send_terminal_sprint_reports = recording_send_terminal
 
                 result = asyncio.run(
@@ -438,6 +444,10 @@ class SprintGithubIssuePublisherTests(unittest.TestCase):
                 field_names = [field["name"] for field in fields]
                 self.assertIn("GitHub Issue", field_names)
                 self.assertFalse(any(str(name).startswith("변경 요약") for name in field_names))
+                history_text = service.paths.sprint_history_file(sprint_state["sprint_id"]).read_text(encoding="utf-8")
+                index_text = service.paths.sprint_history_index_file.read_text(encoding="utf-8")
+                self.assertIn(f"- github_issue_url: <{issue_url}>", history_text)
+                self.assertIn(f"[#42]({issue_url})", index_text)
 
     def test_closeout_completion_still_succeeds_when_publisher_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
