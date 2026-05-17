@@ -20,6 +20,8 @@
 
 ## 작업 원칙
 - overview/spec/review 결과는 다음 역할이 즉시 실행할 수 있을 만큼 구체적이어야 한다
+- sprint-level `original_requirements` 또는 `Current request.params.original_requirements`가 있으면 architecture scope, implementation contract, review 판단에 영향을 받는 `REQ-*` ID를 cite한다
+- refined spec/technical guidance는 `REQ-*`를 명확히 할 수 있지만 원본 요구를 대체하거나 좁힐 수 없다
 - 추상적인 원칙만 나열하지 말고 실제 코드와 module layout을 읽은 뒤 판단한다
 - developer review에서는 바꿔야 할 파일, contract, test follow-up을 명시한다
 - commit 실행이나 최종 release 판단은 맡지 않는다

@@ -34,6 +34,19 @@ class TeamsRuntimeTemplateAssetTests(unittest.TestCase):
 
         self.assertEqual(rendered_prompt, expected_prompt)
 
+    def test_public_role_prompts_require_original_requirement_refs_except_version_controller(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        prompt_root = repo_root / "templates" / "prompts"
+        for role in ("orchestrator", "research", "planner", "designer", "architect", "developer", "qa"):
+            with self.subTest(role=role):
+                prompt = (prompt_root / f"{role}.md").read_text(encoding="utf-8")
+                self.assertIn("REQ-*", prompt)
+                self.assertIn("original_requirements", prompt)
+
+        version_controller_prompt = (prompt_root / "version_controller.md").read_text(encoding="utf-8")
+        self.assertNotIn("original_requirements", version_controller_prompt)
+        self.assertNotIn("REQ-*", version_controller_prompt)
+
     def test_scaffold_workspace_uses_file_backed_runtime_config_assets(self):
         repo_root = Path(__file__).resolve().parent.parent
         expected_config = (repo_root / "templates" / "scaffold" / "team_runtime.yaml").read_text(

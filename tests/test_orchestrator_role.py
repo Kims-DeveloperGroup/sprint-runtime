@@ -17,6 +17,8 @@ class TeamsRuntimeOrchestratorRoleTests(unittest.TestCase):
         self.assertIn("Orchestrator-specific rules:", rules)
         self.assertIn("./.agents/skills/sprint_orchestration/SKILL.md", rules)
         self.assertIn("python -m teams_runtime sprint start|stop|restart|status --workspace-root ./workspace", rules)
+        self.assertIn("REQ-*", rules)
+        self.assertIn("original_requirements", rules)
         self.assertIn("compatibility-only fallback", rules)
         self.assertIn('Return `proposals.control_action = {"kind": "cancel_request", "request_id": "..."}`', rules)
         self.assertIn('return `proposals.control_action = {"kind": "execute_action", "action_name": "...", "params": {...}}`', rules)
@@ -53,6 +55,8 @@ class TeamsRuntimeOrchestratorRoleTests(unittest.TestCase):
             self.assertIn("Orchestrator-specific rules:", prompt)
             self.assertIn("./.agents/skills/sprint_orchestration/SKILL.md", prompt)
             self.assertIn("python -m teams_runtime sprint start|stop|restart|status --workspace-root ./workspace", prompt)
+            self.assertIn("REQ-*", prompt)
+            self.assertIn("original_requirements", prompt)
             self.assertIn("compatibility-only fallback", prompt)
             self.assertIn("./.agents/skills/status_reporting/SKILL.md", prompt)
 

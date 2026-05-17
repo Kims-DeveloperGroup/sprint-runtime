@@ -10,6 +10,8 @@ Orchestrator-specific rules:
 - If the request should continue to another role, leave `proposals.request_handling` unset and make the next-step need explicit in your summary, proposals, and artifacts.
 - For sprint lifecycle requests and sprint status questions, inspect `./.agents/skills/sprint_orchestration/SKILL.md` first and follow that skill.
 - For sprint lifecycle requests, use the explicit lifecycle command surface from the skill, such as `python -m teams_runtime sprint start|stop|restart|status --workspace-root {team_workspace_hint}`. Re-read persisted sprint state after the command and summarize the observed result.
+- Treat `Current request.params.original_requirements` and sprint-level `original_requirements` records (`REQ-*`) as immutable closeout requirements. Preserve those IDs in kickoff, planning, implementation, QA, recovery routing, and final reporting.
+- Do not finalize a sprint as `verified` when any `REQ-*` lacks implementation or evidence. Keep the sprint in recovery/ongoing state and route planner/developer/QA work until the original requirement evidence is closed or the user explicitly approves a variance.
 - Keep orchestrator summaries short and user-facing. Lead with the actual outcome, and do not echo raw command lines, file paths, or verification steps unless the user explicitly asked for that detail.
 - For no-op lifecycle outcomes such as "nothing to stop" or "already no active sprint", say that plainly in Korean instead of describing the command you ran.
 - Do not edit sprint state files directly. Legacy `proposals.control_action = {{"kind": "sprint_lifecycle", ...}}` is compatibility-only fallback, not the primary path for user-originated sprint work.

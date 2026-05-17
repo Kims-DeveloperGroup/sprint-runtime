@@ -832,6 +832,102 @@ def qa_result_is_runtime_sync_anomaly(
     )
 
 
+def qa_result_requires_evidence_recovery(
+    *,
+    workflow_state: dict[str, Any],
+    role: str,
+    result: dict[str, Any],
+    transition: dict[str, Any],
+) -> bool:
+    if str((workflow_state or {}).get("step") or "").strip().lower() != WORKFLOW_STEP_QA_VALIDATION:
+        return False
+    if str(role or "").strip().lower() != "qa":
+        return False
+    if qa_result_requires_planner_reopen(
+        workflow_state=workflow_state,
+        role=role,
+        result=result,
+        transition=transition,
+    ):
+        return False
+    combined = " ".join(
+        [
+            str(result.get("summary") or ""),
+            str(result.get("error") or ""),
+            str(transition.get("reason") or ""),
+            *[
+                str(item).strip()
+                for item in (result.get("insights") or [])
+                if str(item).strip()
+            ],
+            *[
+                str(item).strip()
+                for item in (transition.get("unresolved_items") or [])
+                if str(item).strip()
+            ],
+        ]
+    ).lower()
+    has_missing_evidence_signal = any(
+        token in combined
+        for token in (
+            "missing evidence",
+            "evidence missing",
+            "not_checked",
+            "not checked",
+            "live test missing",
+            "live-test missing",
+            "test not run",
+            "tests not run",
+            "테스트를 실행하지",
+            "검증 근거 부족",
+            "근거가 부족",
+        )
+    )
+    if not has_missing_evidence_signal:
+        return False
+    outcome = str(transition.get("outcome") or "").strip().lower()
+    status = str(result.get("status") or "").strip().lower()
+    qa_validation = dict(result.get("proposals", {}).get("qa_validation") or {}) if isinstance(result.get("proposals"), dict) else {}
+    decision = str(qa_validation.get("decision") or "").strip().lower()
+    return outcome in {"", "reopen", "block"} or status in {"blocked", "failed"} or decision in {"blocked", "fail"}
+
+
+def qa_evidence_recovery_result(
+    result: dict[str, Any],
+    *,
+    transition: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_result = dict(result)
+    proposals = dict(normalized_result.get("proposals") or {})
+    unresolved_items = [
+        str(item).strip()
+        for item in (transition.get("unresolved_items") or [])
+        if str(item).strip()
+    ]
+    for required in (
+        "missing evidence/live-test gap을 developer 또는 QA recovery evidence로 닫을 것",
+        "수행하지 못한 테스트나 확인하지 못한 artifact는 실행 또는 직접 관찰 후 다시 QA에 제출할 것",
+    ):
+        if required not in unresolved_items:
+            unresolved_items.append(required)
+    proposals["workflow_transition"] = {
+        "outcome": "reopen",
+        "target_phase": "implementation",
+        "target_step": WORKFLOW_STEP_DEVELOPER_REVISION,
+        "reopen_category": "verification",
+        "reason": (
+            str(transition.get("reason") or "").strip()
+            or "QA가 original requirement evidence/live-test gap을 확인해 verification recovery가 필요합니다."
+        ),
+        "unresolved_items": unresolved_items,
+        "finalize_phase": False,
+    }
+    normalized_result["proposals"] = proposals
+    normalized_result["status"] = "completed"
+    normalized_result["error"] = ""
+    return normalized_result
+
+
 def sanitize_implementation_result(
     *,
     workflow_state: dict[str, Any],
@@ -877,6 +973,7 @@ def enforce_workflow_role_report_contract(
     result: dict[str, Any],
     planner_doc_contract: tuple[list[str], list[str], list[str]] | None = None,
     qa_requires_planner_reopen_flag: bool = False,
+    qa_requires_evidence_recovery_flag: bool = False,
     qa_runtime_sync_anomaly_flag: bool = False,
     transition: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -900,6 +997,11 @@ def enforce_workflow_role_report_contract(
             result,
             transition=dict(transition or {}),
         )
+    if normalized_role == "qa" and qa_requires_evidence_recovery_flag:
+        return qa_evidence_recovery_result(
+            result,
+            transition=dict(transition or {}),
+        )
     return sanitize_implementation_result(
         workflow_state=workflow_state,
         role=normalized_role,
@@ -917,6 +1019,8 @@ _WORKFLOW_ROLE_POLICY_EXPORTS = [
     "normalize_artifact_hint",
     "planner_contract_reopen_result",
     "qa_planner_reopen_result",
+    "qa_evidence_recovery_result",
+    "qa_result_requires_evidence_recovery",
     "qa_result_is_runtime_sync_anomaly",
     "qa_result_requires_planner_reopen",
     "qa_runtime_sync_result",

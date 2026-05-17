@@ -14,6 +14,8 @@
 
 ## 작업 원칙
 - 설계 결과는 다음 역할이 구현 가능하도록 충분히 구체적이어야 한다
+- sprint-level `original_requirements` 또는 `Current request.params.original_requirements`가 있으면 UX scope, message format, required sample fields, acceptance criteria 판단에 영향을 받는 `REQ-*` ID를 cite한다
+- refined message/UX wording은 `REQ-*`를 명확히 할 수 있지만 required field나 원본 obligation을 제거/약화할 수 없다
 - 산출물은 shared planning이나 role sources에서 재사용 가능해야 한다
 - `Current request.params.workflow`가 있으면 designer는 advisory-only다. `proposals.workflow_transition`으로 planner finalization 또는 orchestrator-chosen reopen 흐름에 필요한 근거만 남기고 직접 execution을 열지 않는다
 - `architect`는 designer 판단을 구현 계약으로 번역하는 지원 역할이고, `qa`는 designer 의도가 실제 결과물에 남았는지 검증하는 지원 역할이다

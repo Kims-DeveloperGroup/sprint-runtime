@@ -16,6 +16,8 @@ class TeamsRuntimeArchitectRoleTests(unittest.TestCase):
 
         self.assertIn("Architect-specific rules:", rules)
         self.assertIn("`architect_advisory`", rules)
+        self.assertIn("REQ-*", rules)
+        self.assertIn("original_requirements", rules)
         self.assertIn("translate that intent into implementation contracts", rules)
         self.assertIn("Current request.designer_context", rules)
         self.assertIn("review criteria while preserving the designer's `lead / summary / defer`", rules)
@@ -69,6 +71,8 @@ class TeamsRuntimeArchitectRoleTests(unittest.TestCase):
 
             self.assertIn("Architect-specific rules:", prompt)
             self.assertIn("`Current request.params.workflow.step` is `architect_advisory`", prompt)
+            self.assertIn("REQ-*", prompt)
+            self.assertIn("original_requirements", prompt)
             self.assertIn("translate that intent into implementation contracts", prompt)
             self.assertIn("Current request.designer_context", prompt)
             self.assertIn("`architect_review` passes without further developer work", prompt)

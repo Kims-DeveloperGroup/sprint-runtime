@@ -41,8 +41,10 @@
 - backlog 추가 요청은 planner 결정과 planner 직접 persistence로 이어져야 하며, orchestrator는 해당 backlog state를 읽어 운영 흐름만 조정한다
 - 역할 보고의 `proposals.backlog_item` 또는 `proposals.backlog_items`는 planner reasoning/context용이다. planner가 실제 backlog를 반영했다면 `proposals.backlog_writes` receipt를 남기고, orchestrator는 그 receipt와 persisted backlog state만 검증한다
 - backlog-only 요청이 아닌 action-required 요청은 planner 정리 단계에서 끝내지 말고 다음 실행 역할까지 이어가야 한다
-- manual daily sprint에서는 `initial -> ongoing -> wrap_up` phase를 유지하고, `initial` phase는 `milestone_refinement -> artifact_sync -> backlog_prioritization -> todo_finalization`의 4-step planner sequence를 거친다. prioritized todo를 만들기 전에는 task execution을 시작하지 않는다
+- manual daily sprint에서는 `initial -> ongoing -> wrap_up` phase를 유지하고, `initial` phase는 `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`의 5-step planner sequence를 거친다. prioritized todo를 만들기 전에는 task execution을 시작하지 않는다
 - sprint 시작 시 사용자가 준 kickoff brief/requirements/reference docs는 보존 대상이다. refined `milestone_title`과 derived framing은 planner가 바꿀 수 있지만 원본 kickoff 내용은 덮어쓰지 않는다
+- sprint-level `original_requirements`의 `REQ-*` ID는 immutable closeout requirement다. kickoff, plan, spec, todo, iteration log, final report, recovery routing에서 이 ID를 보존한다
+- 어떤 `REQ-*`도 구현/evidence가 닫히지 않았으면 closeout을 `verified`로 확정하지 않는다. sprint를 recovery/ongoing 상태로 유지하고 planner/developer/QA recovery work를 큐에 넣는다
 - active sprint 중 sourcer 후보가 생기면 planner review request로 대기시키고, planner가 backlog 반영과 milestone 연관 todo 승격 여부를 함께 결정한다
 - `22:00` cutoff 또는 명시적 finalize 요청이 오면 새 todo admission을 멈추고 현재 진행 중 task가 끝난 뒤 wrap up으로 전환한다
 - 스프린트 종료 시 새 squash commit을 만들지 않고 기존 sprint 식별 커밋과 미커밋 변경만 검증한다

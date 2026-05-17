@@ -5,7 +5,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from teams_runtime.shared.formatting import build_backlog_item, priority_rank_sort_value
+from teams_runtime.shared.formatting import build_backlog_item
 from teams_runtime.shared.models import TEAM_ROLES
 from teams_runtime.shared.persistence import utc_now_iso
 from teams_runtime.workflows.repository_ops import capture_git_baseline
@@ -208,7 +208,7 @@ def select_backlog_items_for_sprint(service: Any) -> list[dict[str, Any]]:
     def priority(item: dict[str, Any]) -> tuple[int, int, int, str]:
         priority_rank = int(item.get("priority_rank") or 0)
         if priority_rank > 0:
-            return (0, priority_rank_sort_value(priority_rank), 0, str(item.get("created_at") or ""))
+            return (0, -priority_rank, 0, str(item.get("created_at") or ""))
         source_rank = 0 if str(item.get("source") or "") == "user" else 1
         kind = str(item.get("kind") or "").strip().lower()
         kind_rank = {"bug": 0, "feature": 1, "enhancement": 2, "chore": 3}.get(kind, 4)

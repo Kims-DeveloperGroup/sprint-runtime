@@ -144,6 +144,8 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
         self.assertIn("research_subject_definition", prompt)
         self.assertIn("planning_decision", prompt)
         self.assertIn("external_boundary", prompt)
+        self.assertIn("REQ-*", prompt)
+        self.assertIn("original_requirements", prompt)
         self.assertIn("Local sources already checked:", prompt)
 
     def test_build_research_prompt_uses_external_provider_payload(self):
@@ -213,6 +215,10 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
         self.assertIn("repo implementation details", prompt_payload["sources"]["excluded_subjects"])
         self.assertIn("Backing Sources", prompt_payload["report"]["required_headings"])
         self.assertIn("Backing Reasoning", prompt_payload["report"]["required_headings"])
+        self.assertIn(
+            "cite the affected IDs",
+            " ".join(prompt_payload["report"]["rules"]),
+        )
         self.assertEqual(
             sorted(prompt_payload["report"]["backing_source_fields"].keys()),
             ["published_at", "relevance", "summary", "title", "url"],

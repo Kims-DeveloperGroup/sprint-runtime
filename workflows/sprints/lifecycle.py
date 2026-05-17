@@ -185,6 +185,20 @@ def build_sprint_cutoff_at(cutoff_time: str, *, now: datetime | None = None) -> 
 
 def build_todo_item(backlog_item: dict[str, Any], *, owner_role: str = "planner") -> dict[str, Any]:
     created_at = utc_now().isoformat()
+    origin = dict(backlog_item.get("origin") or {}) if isinstance(backlog_item.get("origin"), dict) else {}
+    requirement_refs = normalize_trace_list(
+        backlog_item.get("requirement_refs")
+        or backlog_item.get("original_requirement_refs")
+        or origin.get("requirement_refs")
+        or origin.get("original_requirement_refs")
+        or []
+    )
+    supporting_requirement_refs = normalize_trace_list(
+        backlog_item.get("supports_requirement_refs")
+        or backlog_item.get("supporting_requirement_refs")
+        or origin.get("supports_requirement_refs")
+        or []
+    )
     return {
         "todo_id": new_todo_id(),
         "backlog_id": str(backlog_item.get("backlog_id") or "").strip(),
@@ -204,6 +218,11 @@ def build_todo_item(backlog_item: dict[str, Any], *, owner_role: str = "planner"
         "ended_at": "",
         "summary": "",
         "carry_over_backlog_id": "",
+        "requirement_refs": requirement_refs,
+        "original_requirement_refs": requirement_refs,
+        "supporting_todo": bool(backlog_item.get("supporting_todo")),
+        "supports_requirement_refs": supporting_requirement_refs,
+        "recovery_todo": bool(backlog_item.get("recovery_todo")),
     }
 
 
@@ -415,6 +434,28 @@ def build_recovered_sprint_todo_from_request(
         for item in (source_backlog.get("acceptance_criteria") or [])
         if str(item).strip()
     ]
+    origin = dict(source_backlog.get("origin") or {}) if isinstance(source_backlog.get("origin"), dict) else {}
+    requirement_refs = normalize_trace_list(
+        source_backlog.get("requirement_refs")
+        or source_backlog.get("original_requirement_refs")
+        or origin.get("requirement_refs")
+        or origin.get("original_requirement_refs")
+        or []
+    )
+    if requirement_refs:
+        todo["requirement_refs"] = requirement_refs
+        todo["original_requirement_refs"] = requirement_refs
+    supporting_refs = normalize_trace_list(
+        source_backlog.get("supports_requirement_refs")
+        or origin.get("supports_requirement_refs")
+        or []
+    )
+    if supporting_refs:
+        todo["supports_requirement_refs"] = supporting_refs
+    if bool(source_backlog.get("supporting_todo")):
+        todo["supporting_todo"] = True
+    if bool(source_backlog.get("recovery_todo")):
+        todo["recovery_todo"] = True
     todo["request_id"] = request_id
     todo["status"] = todo_status_from_request_record(request_record)
     todo["artifacts"] = list(artifacts or [])
@@ -542,6 +583,466 @@ def normalize_trace_list(values: Any) -> list[str]:
         normalized = str(values).strip()
         return [normalized] if normalized else []
     return []
+
+
+ORIGINAL_REQUIREMENT_ID_PATTERN = re.compile(r"\bREQ-\d{3}\b", re.IGNORECASE)
+
+
+def _normalize_requirement_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _requirement_id_for_index(index: int) -> str:
+    return f"REQ-{index:03d}"
+
+
+def normalize_original_requirements(
+    value: Any,
+    *,
+    fallback_requirements: Any = None,
+    default_source: str = "kickoff_requirements",
+) -> list[dict[str, Any]]:
+    raw_records = value if isinstance(value, list) else []
+    records: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    seen_ids: set[str] = set()
+    next_index = 1
+
+    def next_requirement_id() -> str:
+        nonlocal next_index
+        while _requirement_id_for_index(next_index) in seen_ids:
+            next_index += 1
+        requirement_id = _requirement_id_for_index(next_index)
+        next_index += 1
+        return requirement_id
+
+    for raw_record in raw_records:
+        if isinstance(raw_record, dict):
+            text = _normalize_requirement_text(raw_record.get("text") or raw_record.get("requirement") or "")
+            if not text:
+                continue
+            raw_id = str(raw_record.get("id") or "").strip().upper()
+            requirement_id = (
+                raw_id
+                if ORIGINAL_REQUIREMENT_ID_PATTERN.fullmatch(raw_id) and raw_id not in seen_ids
+                else next_requirement_id()
+            )
+            source = str(raw_record.get("source") or default_source).strip() or default_source
+            must = bool(raw_record.get("must", True))
+            closeout_required = bool(raw_record.get("closeout_required", True))
+        else:
+            text = _normalize_requirement_text(raw_record)
+            if not text:
+                continue
+            requirement_id = next_requirement_id()
+            source = default_source
+            must = True
+            closeout_required = True
+        text_key = text.lower()
+        if text_key in seen_text:
+            continue
+        seen_text.add(text_key)
+        seen_ids.add(requirement_id)
+        records.append(
+            {
+                "id": requirement_id,
+                "text": text,
+                "source": source,
+                "must": must,
+                "closeout_required": closeout_required,
+            }
+        )
+
+    if records:
+        return records
+
+    fallback_values = _normalize_sprint_requirements(fallback_requirements)
+    for text in fallback_values:
+        requirement_id = next_requirement_id()
+        seen_ids.add(requirement_id)
+        records.append(
+            {
+                "id": requirement_id,
+                "text": text,
+                "source": default_source,
+                "must": True,
+                "closeout_required": True,
+            }
+        )
+    return records
+
+
+def ensure_sprint_original_requirements(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements = normalize_original_requirements(
+        sprint_state.get("original_requirements"),
+        fallback_requirements=sprint_state.get("kickoff_requirements"),
+    )
+    if requirements != sprint_state.get("original_requirements"):
+        sprint_state["original_requirements"] = requirements
+    return requirements
+
+
+def format_original_requirement_ref(requirement: dict[str, Any]) -> str:
+    requirement_id = str(requirement.get("id") or "").strip()
+    text = str(requirement.get("text") or "").strip()
+    return f"{requirement_id}: {text}" if requirement_id and text else requirement_id or text
+
+
+def original_requirement_ids(requirements: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(item.get("id") or "").strip()
+        for item in requirements
+        if str(item.get("id") or "").strip()
+    ]
+
+
+def original_requirement_lookup(requirements: list[dict[str, Any]]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for requirement in requirements:
+        requirement_id = str(requirement.get("id") or "").strip()
+        text = _normalize_requirement_text(requirement.get("text") or "")
+        if not requirement_id:
+            continue
+        lookup[requirement_id.lower()] = requirement_id
+        if text:
+            lookup[text.lower()] = requirement_id
+    return lookup
+
+
+def requirement_refs_for_item(item: dict[str, Any]) -> list[str]:
+    origin = dict(item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}
+    refs = _collect_string_candidates(
+        item.get("requirement_refs"),
+        item.get("original_requirement_refs"),
+        item.get("supports_requirement_refs"),
+        item.get("supporting_requirement_refs"),
+        origin.get("requirement_refs"),
+        origin.get("original_requirement_refs"),
+        origin.get("supports_requirement_refs"),
+    )
+    return refs
+
+
+def requirement_ids_from_refs(
+    refs: Any,
+    requirements: list[dict[str, Any]],
+) -> list[str]:
+    normalized_refs = normalize_trace_list(refs)
+    lookup = original_requirement_lookup(requirements)
+    matched_ids: list[str] = []
+    for ref in normalized_refs:
+        normalized_ref = _normalize_requirement_text(ref)
+        if not normalized_ref:
+            continue
+        for match in ORIGINAL_REQUIREMENT_ID_PATTERN.findall(normalized_ref):
+            requirement_id = lookup.get(match.lower())
+            if requirement_id and requirement_id not in matched_ids:
+                matched_ids.append(requirement_id)
+        direct = lookup.get(normalized_ref.lower())
+        if direct and direct not in matched_ids:
+            matched_ids.append(direct)
+            continue
+        for key, requirement_id in lookup.items():
+            if key.startswith("req-"):
+                continue
+            if key and (key in normalized_ref.lower() or normalized_ref.lower() in key):
+                if requirement_id not in matched_ids:
+                    matched_ids.append(requirement_id)
+    return matched_ids
+
+
+def requirement_ids_for_item(
+    item: dict[str, Any],
+    requirements: list[dict[str, Any]],
+) -> list[str]:
+    return requirement_ids_from_refs(requirement_refs_for_item(item), requirements)
+
+
+def item_is_supporting_todo(item: dict[str, Any]) -> bool:
+    return bool(item.get("supporting_todo")) or str(item.get("todo_type") or "").strip().lower() == "supporting"
+
+
+def requirement_coverage_matrix(
+    requirements: list[dict[str, Any]],
+    *,
+    backlog_items: list[dict[str, Any]] | None = None,
+    todos: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    backlog_items = [dict(item) for item in (backlog_items or []) if isinstance(item, dict)]
+    todos = [dict(item) for item in (todos or []) if isinstance(item, dict)]
+    matrix: list[dict[str, Any]] = []
+    for requirement in requirements:
+        requirement_id = str(requirement.get("id") or "").strip()
+        matching_backlog: list[dict[str, Any]] = []
+        matching_todos: list[dict[str, Any]] = []
+        evidence_todos: list[dict[str, Any]] = []
+        completed_requirement_todos: list[dict[str, Any]] = []
+        for item in backlog_items:
+            if requirement_id and requirement_id in requirement_ids_for_item(item, requirements):
+                matching_backlog.append(item)
+        for todo in todos:
+            if requirement_id and requirement_id in requirement_ids_for_item(todo, requirements):
+                matching_todos.append(todo)
+                status = str(todo.get("status") or "").strip().lower()
+                has_evidence = bool(
+                    str(todo.get("summary") or "").strip()
+                    or [item for item in (todo.get("artifacts") or []) if str(item).strip()]
+                    or str(todo.get("request_id") or "").strip()
+                )
+                if has_evidence and status in {"completed", "committed"}:
+                    evidence_todos.append(todo)
+                if status in {"completed", "committed"} and not item_is_supporting_todo(todo):
+                    completed_requirement_todos.append(todo)
+        requirement_slice_todos = [
+            todo for todo in matching_todos if not item_is_supporting_todo(todo)
+        ]
+        matrix.append(
+            {
+                "id": requirement_id,
+                "text": str(requirement.get("text") or "").strip(),
+                "must": bool(requirement.get("must", True)),
+                "closeout_required": bool(requirement.get("closeout_required", True)),
+                "backlog_ids": [
+                    str(item.get("backlog_id") or "").strip()
+                    for item in matching_backlog
+                    if str(item.get("backlog_id") or "").strip()
+                ],
+                "todo_ids": [
+                    str(todo.get("todo_id") or "").strip()
+                    for todo in matching_todos
+                    if str(todo.get("todo_id") or "").strip()
+                ],
+                "requirement_slice_todo_ids": [
+                    str(todo.get("todo_id") or "").strip()
+                    for todo in requirement_slice_todos
+                    if str(todo.get("todo_id") or "").strip()
+                ],
+                "completed_requirement_todo_ids": [
+                    str(todo.get("todo_id") or "").strip()
+                    for todo in completed_requirement_todos
+                    if str(todo.get("todo_id") or "").strip()
+                ],
+                "evidence_todo_ids": [
+                    str(todo.get("todo_id") or "").strip()
+                    for todo in evidence_todos
+                    if str(todo.get("todo_id") or "").strip()
+                ],
+                "covered_by_backlog": bool(matching_backlog),
+                "covered_by_requirement_slice_todo": bool(requirement_slice_todos),
+                "implemented": bool(completed_requirement_todos),
+                "evidence_present": bool(evidence_todos),
+            }
+        )
+    return matrix
+
+
+def requirement_traceability_matrix_for_sprint(
+    sprint_state: dict[str, Any],
+    *,
+    backlog_items: list[dict[str, Any]] | None = None,
+    todos: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    requirements = ensure_sprint_original_requirements(sprint_state)
+    return requirement_coverage_matrix(
+        requirements,
+        backlog_items=backlog_items if backlog_items is not None else list(sprint_state.get("selected_items") or []),
+        todos=todos if todos is not None else list(sprint_state.get("todos") or []),
+    )
+
+
+def missing_requirement_backlog_coverage(
+    sprint_state: dict[str, Any],
+    relevant_items: list[dict[str, Any]],
+) -> list[str]:
+    requirements = ensure_sprint_original_requirements(sprint_state)
+    if not requirements:
+        return []
+    matrix = requirement_coverage_matrix(requirements, backlog_items=relevant_items, todos=[])
+    return [
+        entry["id"]
+        for entry in matrix
+        if entry.get("must") and not entry.get("covered_by_backlog")
+    ]
+
+
+def missing_requirement_todo_coverage(sprint_state: dict[str, Any]) -> list[str]:
+    requirements = ensure_sprint_original_requirements(sprint_state)
+    if not requirements:
+        return []
+    matrix = requirement_traceability_matrix_for_sprint(sprint_state)
+    return [
+        entry["id"]
+        for entry in matrix
+        if entry.get("must") and not entry.get("covered_by_requirement_slice_todo")
+    ]
+
+
+def validate_supporting_todo_requirement_refs(
+    items: list[dict[str, Any]],
+    requirements: list[dict[str, Any]],
+) -> list[str]:
+    errors: list[str] = []
+    if not requirements:
+        return errors
+    for item in items:
+        if not item_is_supporting_todo(item):
+            continue
+        if requirement_ids_for_item(item, requirements):
+            continue
+        title = str(item.get("title") or item.get("todo_id") or item.get("backlog_id") or "supporting item").strip()
+        errors.append(f"{title}: supporting_todo 원본 requirement_refs 없음")
+    return errors
+
+
+def inspect_original_requirement_closeout(sprint_state: dict[str, Any]) -> dict[str, Any]:
+    requirements = ensure_sprint_original_requirements(sprint_state)
+    if not requirements:
+        return {
+            "status": "verified",
+            "message": "original requirement가 없어 requirement closeout 검증을 생략했습니다.",
+            "matrix": [],
+            "missing_implementation": [],
+            "missing_evidence": [],
+        }
+    matrix = requirement_traceability_matrix_for_sprint(sprint_state)
+    missing_implementation = [
+        entry["id"]
+        for entry in matrix
+        if entry.get("closeout_required") and not entry.get("implemented")
+    ]
+    missing_evidence = [
+        entry["id"]
+        for entry in matrix
+        if entry.get("closeout_required") and entry.get("implemented") and not entry.get("evidence_present")
+    ]
+    if missing_implementation or missing_evidence:
+        details = []
+        if missing_implementation:
+            details.append("missing_implementation=" + ", ".join(missing_implementation))
+        if missing_evidence:
+            details.append("missing_evidence=" + ", ".join(missing_evidence))
+        return {
+            "status": "requirements_recovery",
+            "message": "original requirements closeout evidence가 아직 닫히지 않았습니다. " + "; ".join(details),
+            "matrix": matrix,
+            "missing_implementation": missing_implementation,
+            "missing_evidence": missing_evidence,
+        }
+    return {
+        "status": "verified",
+        "message": "모든 original requirements가 completed/committed todo evidence로 검증되었습니다.",
+        "matrix": matrix,
+        "missing_implementation": [],
+        "missing_evidence": [],
+    }
+
+
+def queue_original_requirement_recovery_work(
+    service: Any,
+    sprint_state: dict[str, Any],
+    closeout_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    requirements = {
+        str(item.get("id") or "").strip(): dict(item)
+        for item in ensure_sprint_original_requirements(sprint_state)
+        if str(item.get("id") or "").strip()
+    }
+    sprint_id = str(sprint_state.get("sprint_id") or "").strip()
+    milestone_title = str(sprint_state.get("milestone_title") or sprint_state.get("requested_milestone_title") or "").strip()
+    missing_implementation = [
+        str(item).strip()
+        for item in (closeout_result.get("missing_implementation") or [])
+        if str(item).strip()
+    ]
+    missing_evidence = [
+        str(item).strip()
+        for item in (closeout_result.get("missing_evidence") or [])
+        if str(item).strip()
+    ]
+    existing_recovery_ids = {
+        str(todo.get("recovery_for_requirement_id") or "").strip()
+        for todo in (sprint_state.get("todos") or [])
+        if str(todo.get("recovery_for_requirement_id") or "").strip()
+        and str(todo.get("status") or "").strip().lower() in {"queued", "running", "uncommitted"}
+    }
+    queued: list[dict[str, Any]] = []
+
+    def add_recovery_item(requirement_id: str, *, evidence_only: bool) -> None:
+        if not requirement_id or requirement_id in existing_recovery_ids:
+            return
+        requirement = requirements.get(requirement_id) or {"id": requirement_id, "text": requirement_id}
+        requirement_text = str(requirement.get("text") or requirement_id).strip()
+        if evidence_only:
+            title = f"Validate original requirement {requirement_id}"
+            summary = f"Collect QA/developer evidence proving `{requirement_id}`: {requirement_text}"
+            acceptance = [
+                f"{requirement_id} has directly observed QA/developer evidence.",
+                "Evidence artifact or role report is linked before closeout is retried.",
+            ]
+            supporting = True
+        else:
+            title = f"Implement original requirement {requirement_id}"
+            summary = f"Recover missing requirement-slice implementation for `{requirement_id}`: {requirement_text}"
+            acceptance = [
+                f"{requirement_id} is implemented by a non-supporting requirement-slice todo.",
+                "Closeout evidence references the completed implementation and verification.",
+            ]
+            supporting = False
+        backlog_item = build_backlog_item(
+            title=title,
+            summary=summary,
+            kind="enhancement",
+            source="requirement_recovery",
+            scope=summary,
+            acceptance_criteria=acceptance,
+            milestone_title=milestone_title,
+            priority_rank=1,
+            origin={
+                "sprint_id": sprint_id,
+                "requirement_refs": [requirement_id],
+                "original_requirement_ref": format_original_requirement_ref(requirement),
+                "recovery_reason": str(closeout_result.get("message") or "").strip(),
+            },
+        )
+        backlog_item["planned_in_sprint_id"] = sprint_id
+        backlog_item["selected_in_sprint_id"] = sprint_id
+        backlog_item["status"] = "selected"
+        backlog_item["recovery_todo"] = True
+        backlog_item["supporting_todo"] = supporting
+        if supporting:
+            backlog_item["supports_requirement_refs"] = [requirement_id]
+        service._save_backlog_item(backlog_item)
+        todo = build_todo_item(backlog_item, owner_role="qa" if evidence_only else "planner")
+        todo["recovery_todo"] = True
+        todo["recovery_for_requirement_id"] = requirement_id
+        todo["status"] = "queued"
+        todo["summary"] = ""
+        todo["requirement_refs"] = [requirement_id]
+        todo["original_requirement_refs"] = [requirement_id]
+        if supporting:
+            todo["supporting_todo"] = True
+            todo["supports_requirement_refs"] = [requirement_id]
+        queued.append(todo)
+        existing_recovery_ids.add(requirement_id)
+        selected_items = [dict(item) for item in (sprint_state.get("selected_items") or []) if isinstance(item, dict)]
+        selected_items.append(dict(backlog_item))
+        sprint_state["selected_items"] = selected_items
+        selected_backlog_ids = [
+            str(item).strip()
+            for item in (sprint_state.get("selected_backlog_ids") or [])
+            if str(item).strip()
+        ]
+        if str(backlog_item.get("backlog_id") or "").strip() not in selected_backlog_ids:
+            selected_backlog_ids.append(str(backlog_item.get("backlog_id") or "").strip())
+        sprint_state["selected_backlog_ids"] = selected_backlog_ids
+
+    for requirement_id in missing_implementation:
+        add_recovery_item(requirement_id, evidence_only=False)
+    for requirement_id in missing_evidence:
+        add_recovery_item(requirement_id, evidence_only=True)
+    if queued:
+        sprint_state["todos"] = sort_sprint_todos([*(sprint_state.get("todos") or []), *queued])
+    return queued
 
 
 def collect_sprint_relevant_backlog_items(
@@ -751,7 +1252,7 @@ def initial_phase_step_instruction(step: str) -> str:
     normalized = str(step or "").strip().lower()
     if normalized == INITIAL_PHASE_STEP_MILESTONE_REFINEMENT:
         return (
-            "Preserve the original kickoff brief, kickoff requirements, and kickoff reference artifacts first. "
+            "Preserve the original kickoff brief, kickoff requirements, original_requirements REQ-* IDs, and kickoff reference artifacts first. "
             "Refine the sprint milestone title and execution framing separately in milestone-facing docs such as milestone.md. "
             "Do not select backlog items or execution todos in this step."
         )
@@ -762,7 +1263,7 @@ def initial_phase_step_instruction(step: str) -> str:
         )
     if normalized == INITIAL_PHASE_STEP_BACKLOG_DEFINITION:
         return (
-            "Define sprint-relevant backlog from the current milestone, kickoff requirements, and spec before any selection. "
+            "Define sprint-relevant backlog from the current milestone, original_requirements REQ-* IDs, kickoff requirements, and spec before any selection. "
             "Create or reopen backlog items when the persisted queue does not fully cover the sprint contract. "
             "Backlog zero is invalid in this step. Each backlog item must include concrete acceptance criteria plus origin trace "
             "for milestone_ref, requirement_refs, and spec_refs. Each item must also be linkable to this sprint through "
@@ -779,7 +1280,9 @@ def initial_phase_step_instruction(step: str) -> str:
         return (
             "Finalize the execution-ready todo set for this sprint. "
             "Persist planned_in_sprint_id for the chosen backlog items and leave the prioritized todo set ready to run "
-            "in ascending priority_rank order. If selected backlog ids or todos are not persisted, the same step will reopen."
+            "in ascending priority_rank order. Every REQ-* needs at least one non-supporting requirement-slice todo; "
+            "supporting todos must set supporting_todo=true and cite the REQ-* they support. "
+            "If selected backlog ids or todos are not persisted, the same step will reopen."
         )
     return ""
 
@@ -811,10 +1314,10 @@ def build_sprint_planning_request_record(
     )
     body_lines = [
         "Current sprint requires planner-owned milestone refinement, plan/spec updates, mandatory backlog definition, and prioritized backlog/todo selection.",
-        "Preserve the original kickoff brief, kickoff requirements, and kickoff reference artifacts as immutable source-of-truth.",
+        "Preserve the original kickoff brief, kickoff requirements, original_requirements REQ-* IDs, and kickoff reference artifacts as immutable source-of-truth.",
         "Only include backlog items and sprint todos that directly advance this sprint's single milestone.",
         "Do not promote unrelated maintenance or side quests into planned_in_sprint_id for this sprint.",
-        "Use the persisted backlog artifacts in Current request.artifacts as backlog history and queue input, but if the current milestone, kickoff requirements, and spec are not fully covered, create or reopen sprint-relevant backlog before prioritization. backlog zero is invalid.",
+        "Use the persisted backlog artifacts in Current request.artifacts as backlog history and queue input, but if the current milestone, original_requirements, kickoff requirements, and spec are not fully covered, create or reopen sprint-relevant backlog before prioritization. backlog zero is invalid.",
         f"phase={normalized_phase}",
         f"iteration={iteration}",
         f"requested_milestone_title={sprint_state.get('requested_milestone_title') or ''}",
@@ -828,6 +1331,7 @@ def build_sprint_planning_request_record(
         for item in (sprint_state.get("kickoff_requirements") or [])
         if str(item).strip()
     ]
+    original_requirements = ensure_sprint_original_requirements(sprint_state)
     kickoff_source_request_id = str(sprint_state.get("kickoff_source_request_id") or "").strip()
     if kickoff_source_request_id:
         body_lines.append(f"kickoff_source_request_id={kickoff_source_request_id}")
@@ -836,6 +1340,9 @@ def build_sprint_planning_request_record(
     if kickoff_requirements:
         body_lines.append("kickoff_requirements:")
         body_lines.extend(f"- {item}" for item in kickoff_requirements)
+    if original_requirements:
+        body_lines.append("original_requirements:")
+        body_lines.extend(f"- {format_original_requirement_ref(item)}" for item in original_requirements)
     if normalized_phase == "initial" and normalized_step:
         body_lines.extend(
             [
@@ -876,6 +1383,7 @@ def build_sprint_planning_request_record(
             "milestone_title": sprint_state.get("milestone_title") or "",
             "kickoff_brief": sprint_state.get("kickoff_brief") or "",
             "kickoff_requirements": list(sprint_state.get("kickoff_requirements") or []),
+            "original_requirements": [dict(item) for item in original_requirements],
             "kickoff_request_text": sprint_state.get("kickoff_request_text") or "",
             "kickoff_source_request_id": kickoff_source_request_id,
             "kickoff_reference_artifacts": list(sprint_state.get("kickoff_reference_artifacts") or []),
@@ -1043,6 +1551,19 @@ def validate_initial_phase_step_result(
                 "initial phase 실행 todo 확정 단계에서 planned_in_sprint_id가 현재 sprint와 연결되지 않았습니다. "
                 + "; ".join(missing_planned[:4])
             )
+        original_requirements = ensure_sprint_original_requirements(sprint_state)
+        supporting_errors = validate_supporting_todo_requirement_refs(todos, original_requirements)
+        if supporting_errors:
+            return (
+                "initial phase 실행 todo 확정 단계에서 supporting_todo trace가 부족합니다. "
+                + "; ".join(supporting_errors[:4])
+            )
+        missing_requirement_ids = missing_requirement_todo_coverage(sprint_state)
+        if missing_requirement_ids:
+            return (
+                "initial phase 실행 todo 확정 단계에서 original requirement todo coverage가 부족합니다. "
+                + ", ".join(missing_requirement_ids)
+            )
         return ""
     if step != INITIAL_PHASE_STEP_BACKLOG_DEFINITION:
         return ""
@@ -1051,6 +1572,7 @@ def validate_initial_phase_step_result(
             "initial phase backlog 정의 단계에서 planner가 sprint-relevant backlog를 실제로 persist하지 않았습니다. "
             "문서 정리만으로는 다음 단계로 진행할 수 없습니다."
         )
+    original_requirements = ensure_sprint_original_requirements(sprint_state)
     kickoff_requirements = normalize_trace_list(sprint_state.get("kickoff_requirements") or [])
     validation_errors: list[str] = []
     for item in relevant_items:
@@ -1075,6 +1597,12 @@ def validate_initial_phase_step_result(
             validation_errors.append(f"{title}: origin.spec_refs 없음")
         if source_backed_research and not research_refs:
             validation_errors.append(f"{title}: origin.research_refs 없음")
+    validation_errors.extend(validate_supporting_todo_requirement_refs(relevant_items, original_requirements))
+    missing_requirement_ids = missing_requirement_backlog_coverage(sprint_state, relevant_items)
+    if missing_requirement_ids:
+        validation_errors.append(
+            "original requirement backlog coverage missing: " + ", ".join(missing_requirement_ids)
+        )
     if validation_errors:
         return (
             "initial phase backlog 정의 단계의 backlog trace가 부족합니다. "
@@ -1303,9 +1831,12 @@ def load_sprint_state_with_sync(service: Any, sprint_id: str) -> dict[str, Any]:
     sprint_state = load_sprint_state(service.paths, sprint_id)
     if not sprint_state:
         return {}
+    previous_original_requirements = list(sprint_state.get("original_requirements") or [])
+    ensure_sprint_original_requirements(sprint_state)
+    sprint_state_changed = previous_original_requirements != list(sprint_state.get("original_requirements") or [])
     service._ensure_sprint_folder_metadata(sprint_state)
     active_sprint_id = str(service._load_scheduler_state().get("active_sprint_id") or "").strip()
-    sprint_state_changed = service._recover_sprint_todos_from_requests(sprint_state)
+    sprint_state_changed = service._recover_sprint_todos_from_requests(sprint_state) or sprint_state_changed
     if service._normalize_sprint_reference_attachments(sprint_state):
         sprint_state_changed = True
     if service._synchronize_sprint_todo_backlog_state(sprint_state):
@@ -1330,6 +1861,7 @@ def save_sprint_state_with_sync(service: Any, sprint_state: dict[str, Any]) -> N
     sprint_id = str(sprint_state.get("sprint_id") or "").strip()
     if not sprint_id:
         return
+    ensure_sprint_original_requirements(sprint_state)
     service._ensure_sprint_folder_metadata(sprint_state)
     service._recover_sprint_todos_from_requests(sprint_state)
     service._normalize_sprint_reference_attachments(sprint_state)
@@ -1421,6 +1953,31 @@ def sync_manual_sprint_queue(service: Any, sprint_state: dict[str, Any]) -> None
             for value in (item.get("acceptance_criteria") or existing.get("acceptance_criteria") or [])
             if str(value).strip()
         ]
+        origin = dict(item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}
+        requirement_refs = normalize_trace_list(
+            item.get("requirement_refs")
+            or item.get("original_requirement_refs")
+            or origin.get("requirement_refs")
+            or origin.get("original_requirement_refs")
+            or existing.get("requirement_refs")
+            or existing.get("original_requirement_refs")
+            or []
+        )
+        if requirement_refs:
+            existing["requirement_refs"] = requirement_refs
+            existing["original_requirement_refs"] = requirement_refs
+        supporting_refs = normalize_trace_list(
+            item.get("supports_requirement_refs")
+            or origin.get("supports_requirement_refs")
+            or existing.get("supports_requirement_refs")
+            or []
+        )
+        if supporting_refs:
+            existing["supports_requirement_refs"] = supporting_refs
+        if bool(item.get("supporting_todo")):
+            existing["supporting_todo"] = True
+        if bool(item.get("recovery_todo")):
+            existing["recovery_todo"] = True
         updated_todos.append(existing)
     for backlog_id, todo in existing_by_backlog_id.items():
         status = str(todo.get("status") or "").strip().lower()
@@ -1889,6 +2446,10 @@ def build_manual_sprint_state(
     )
     normalized_brief = _clean_sprint_text(kickoff_brief)
     normalized_requirements = _normalize_sprint_requirements(kickoff_requirements)
+    original_requirements = normalize_original_requirements(
+        [],
+        fallback_requirements=normalized_requirements,
+    )
     normalized_request_text = _clean_sprint_text(kickoff_request_text)
     normalized_reference_artifacts = _dedupe_preserving_order(
         [str(item).strip() for item in (kickoff_reference_artifacts or []) if str(item).strip()]
@@ -1903,6 +2464,7 @@ def build_manual_sprint_state(
         "milestone_title": str(milestone_title or "").strip(),
         "kickoff_brief": normalized_brief,
         "kickoff_requirements": normalized_requirements,
+        "original_requirements": original_requirements,
         "kickoff_request_text": normalized_request_text,
         "kickoff_source_request_id": str(kickoff_source_request_id or "").strip(),
         "kickoff_reference_artifacts": normalized_reference_artifacts,
@@ -2415,6 +2977,60 @@ async def finalize_sprint(service: Any, sprint_state: dict[str, Any]) -> None:
         closeout_result["repo_root"] = str(baseline.get("repo_root") or "")
         closeout_result["missing_sections"] = list(documentation_closeout.get("missing_sections") or [])
     else:
+        requirement_closeout = service._inspect_original_requirement_closeout(sprint_state)
+        if str(requirement_closeout.get("status") or "").strip() != "verified":
+            queued_recovery = service._queue_original_requirement_recovery_work(sprint_state, requirement_closeout)
+            closeout_result = build_sprint_closeout_result(
+                sprint_state=sprint_state,
+                status=str(requirement_closeout.get("status") or "requirements_recovery").strip(),
+                message=str(requirement_closeout.get("message") or "").strip(),
+                commit_count=0,
+                commit_shas=[],
+                representative_commit_sha="",
+                uncommitted_paths=[],
+            )
+            closeout_result["repo_root"] = str(baseline.get("repo_root") or "")
+            closeout_result["requirement_traceability_matrix"] = list(requirement_closeout.get("matrix") or [])
+            closeout_result["missing_implementation"] = list(requirement_closeout.get("missing_implementation") or [])
+            closeout_result["missing_evidence"] = list(requirement_closeout.get("missing_evidence") or [])
+            sprint_state["phase"] = "ongoing"
+            sprint_state["status"] = "recovery"
+            sprint_state["closeout_status"] = str(closeout_result.get("status") or "requirements_recovery")
+            sprint_state["wrap_up_requested_at"] = ""
+            sprint_state["ended_at"] = ""
+            sprint_state["version_control_status"] = "not_needed"
+            sprint_state["version_control_sha"] = ""
+            sprint_state["version_control_paths"] = []
+            sprint_state["version_control_message"] = ""
+            sprint_state["version_control_error"] = ""
+            sprint_state["auto_commit_status"] = "not_needed"
+            sprint_state["auto_commit_sha"] = ""
+            sprint_state["auto_commit_paths"] = []
+            sprint_state["auto_commit_message"] = ""
+            service._append_sprint_event(
+                sprint_id,
+                event_type="requirements_recovery_queued",
+                summary=str(closeout_result.get("message") or "original requirement recovery work queued"),
+                payload={
+                    "missing_implementation": closeout_result["missing_implementation"],
+                    "missing_evidence": closeout_result["missing_evidence"],
+                    "queued_todo_ids": [
+                        str(todo.get("todo_id") or "")
+                        for todo in queued_recovery
+                        if str(todo.get("todo_id") or "")
+                    ],
+                },
+            )
+            service._save_sprint_state(sprint_state)
+            await service._send_sprint_report(
+                title="스프린트 요구사항 복구",
+                body=str(closeout_result.get("message") or ""),
+                status="진행중",
+                judgment="original requirements closeout이 아직 검증되지 않아 recovery todo를 큐에 넣었습니다.",
+                next_action="planner/developer/QA recovery",
+            )
+            service._finish_scheduler_after_sprint(sprint_state, clear_active=False)
+            return
         inspect_closeout = getattr(service, "_inspect_git_sprint_closeout", None)
         closeout_result = await asyncio.to_thread(
             inspect_closeout,
@@ -2539,6 +3155,17 @@ def create_internal_request_record(
 ) -> dict[str, Any]:
     request_id = new_request_id()
     workflow_state = service._initial_workflow_state_for_internal_request()
+    original_requirements = ensure_sprint_original_requirements(sprint_state)
+    backlog_origin = dict(backlog_item.get("origin") or {}) if isinstance(backlog_item.get("origin"), dict) else {}
+    todo_requirement_refs = normalize_trace_list(
+        todo.get("requirement_refs")
+        or todo.get("original_requirement_refs")
+        or backlog_item.get("requirement_refs")
+        or backlog_item.get("original_requirement_refs")
+        or backlog_origin.get("requirement_refs")
+        or backlog_origin.get("original_requirement_refs")
+        or []
+    )
     initial_role = str(
         workflow_state.get("phase_owner")
         or todo.get("owner_role")
@@ -2550,13 +3177,26 @@ def create_internal_request_record(
         "intent": "route",
         "urgency": "normal",
         "scope": str(backlog_item.get("scope") or backlog_item.get("title") or "").strip(),
-        "body": str(backlog_item.get("summary") or backlog_item.get("scope") or "").strip(),
+        "body": "\n".join(
+            line
+            for line in [
+                str(backlog_item.get("summary") or backlog_item.get("scope") or "").strip(),
+                "original_requirements:",
+                *[f"- {format_original_requirement_ref(item)}" for item in original_requirements],
+                "original_requirement_refs:",
+                *[f"- {item}" for item in todo_requirement_refs],
+            ]
+            if str(line).strip()
+        ),
         "artifacts": [],
         "params": {
             "_teams_kind": "sprint_internal",
             "sprint_id": sprint_state.get("sprint_id") or "",
             "backlog_id": todo.get("backlog_id") or "",
             "todo_id": todo.get("todo_id") or "",
+            "original_requirements": [dict(item) for item in original_requirements],
+            "requirement_refs": todo_requirement_refs,
+            "supporting_todo": bool(todo.get("supporting_todo")),
             "workflow": workflow_state,
         },
         "current_role": "orchestrator",

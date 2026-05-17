@@ -16,6 +16,8 @@ class TeamsRuntimeDesignerRoleTests(unittest.TestCase):
 
         self.assertIn("Designer-specific rules:", rules)
         self.assertIn("planning advisory pass", rules)
+        self.assertIn("REQ-*", rules)
+        self.assertIn("original_requirements", rules)
         self.assertIn("orchestrator-triggered UX reopen pass", rules)
         self.assertIn("Put durable usability judgment in `proposals.design_feedback`.", rules)
         self.assertIn("`entry_point`: one of `planning_route`, `message_readability`, `info_prioritization`, `ux_reopen`", rules)
@@ -63,6 +65,8 @@ class TeamsRuntimeDesignerRoleTests(unittest.TestCase):
 
             self.assertIn("Designer-specific rules:", prompt)
             self.assertIn("planning advisory pass or an orchestrator-triggered UX reopen pass", prompt)
+            self.assertIn("REQ-*", prompt)
+            self.assertIn("original_requirements", prompt)
             self.assertIn("`proposals.design_feedback` should include:", prompt)
             self.assertIn("intent, audience, urgency, required action, and the scan path", prompt)
             self.assertIn("`lead / summary / defer` hierarchy", prompt)

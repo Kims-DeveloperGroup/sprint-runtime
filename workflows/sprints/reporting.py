@@ -20,10 +20,13 @@ from teams_runtime.workflows.sprints.lifecycle import (
     INITIAL_PHASE_STEP_TODO_FINALIZATION,
     INITIAL_PHASE_STEPS,
     build_sprint_artifact_folder_name,
+    ensure_sprint_original_requirements,
+    format_original_requirement_ref,
     initial_phase_step,
     initial_phase_step_position,
     initial_phase_step_title,
     next_initial_phase_step,
+    requirement_traceability_matrix_for_sprint,
     slugify_sprint_value,
     utc_now,
 )
@@ -111,6 +114,46 @@ def _markdown_table_cell(value: Any) -> str:
     if not normalized:
         return "-"
     return normalized.replace("|", "\\|")
+
+
+def original_requirement_lines(sprint_state: dict[str, Any]) -> list[str]:
+    requirements = ensure_sprint_original_requirements(sprint_state)
+    if not requirements:
+        return ["- original requirement 없음"]
+    return [f"- {format_original_requirement_ref(item)}" for item in requirements]
+
+
+def requirement_traceability_lines(sprint_state: dict[str, Any]) -> list[str]:
+    matrix = requirement_traceability_matrix_for_sprint(sprint_state)
+    if not matrix:
+        return ["- original requirement 없음"]
+    lines = ["| Requirement | Backlog | Todo | Implemented | Evidence |", "| --- | --- | --- | --- | --- |"]
+    for entry in matrix:
+        requirement = _markdown_table_cell(
+            f"{entry.get('id') or ''}: {entry.get('text') or ''}".strip(": ")
+        )
+        backlog_ids = _markdown_table_cell(", ".join(entry.get("backlog_ids") or []) or "missing")
+        todo_ids = _markdown_table_cell(", ".join(entry.get("requirement_slice_todo_ids") or []) or "missing")
+        implemented = "yes" if entry.get("implemented") else "no"
+        evidence = "yes" if entry.get("evidence_present") else "no"
+        lines.append(f"| {requirement} | {backlog_ids} | {todo_ids} | {implemented} | {evidence} |")
+    return lines
+
+
+def requirement_refs_display(item: dict[str, Any]) -> str:
+    origin = dict(item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}
+    refs = [
+        str(ref).strip()
+        for ref in (
+            item.get("requirement_refs")
+            or item.get("original_requirement_refs")
+            or origin.get("requirement_refs")
+            or origin.get("original_requirement_refs")
+            or []
+        )
+        if str(ref).strip()
+    ]
+    return ", ".join(refs) if refs else "N/A"
 
 
 def sprint_status_label(status: str) -> str:
@@ -996,6 +1039,8 @@ def render_sprint_kickoff_markdown(
         lines.extend(f"- {item}" for item in kickoff_requirements)
     else:
         lines.append("- kickoff requirement 없음")
+    lines.extend(["", "## Original Requirements", ""])
+    lines.extend(original_requirement_lines(sprint_state))
     lines.extend(["", "## Kickoff Reference Artifacts", ""])
     if kickoff_reference_artifacts:
         lines.extend(f"- {item}" for item in kickoff_reference_artifacts)
@@ -1022,6 +1067,10 @@ def render_sprint_milestone_markdown(sprint_state: dict[str, Any]) -> str:
         "- Preserve the original kickoff brief in `kickoff.md`.",
         "- Use this file for refined milestone framing only.",
         "",
+        "## Original Requirements",
+        "",
+        *original_requirement_lines(sprint_state),
+        "",
         "## Latest Derived Framing",
         "",
         str(latest_entry.get("summary") or "planner output 없음").strip(),
@@ -1045,6 +1094,14 @@ def render_sprint_plan_markdown(sprint_state: dict[str, Any]) -> str:
         "",
         str(latest_entry.get("summary") or "planner output 없음").strip(),
         "",
+        "## Original Requirements",
+        "",
+        *original_requirement_lines(sprint_state),
+        "",
+        "## Requirement Traceability Matrix",
+        "",
+        *requirement_traceability_lines(sprint_state),
+        "",
     ]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1055,6 +1112,14 @@ def render_sprint_todo_backlog_markdown(sprint_state: dict[str, Any]) -> str:
         "",
         f"- sprint_name: {sprint_state.get('sprint_name') or 'N/A'}",
         f"- milestone_title: {sprint_state.get('milestone_title') or 'N/A'}",
+        "",
+        "## Original Requirements",
+        "",
+        *original_requirement_lines(sprint_state),
+        "",
+        "## Requirement Traceability Matrix",
+        "",
+        *requirement_traceability_lines(sprint_state),
         "",
         "## Items",
         "",
@@ -1071,6 +1136,8 @@ def render_sprint_todo_backlog_markdown(sprint_state: dict[str, Any]) -> str:
                 f"- status: {item.get('status') or ''}",
                 f"- priority_rank: {item.get('priority_rank') or 0}",
                 f"- summary: {item.get('summary') or ''}",
+                f"- requirement_refs: {requirement_refs_display(item)}",
+                f"- supporting_todo: {'yes' if item.get('supporting_todo') else 'no'}",
                 "",
             ]
         )
@@ -1143,6 +1210,14 @@ def render_sprint_spec_markdown(
         f"- milestone_title: {sprint_state.get('milestone_title') or 'N/A'}",
         f"- requested_milestone_title: {sprint_state.get('requested_milestone_title') or 'N/A'}",
         "",
+        "## Original Requirements",
+        "",
+        *original_requirement_lines(sprint_state),
+        "",
+        "## Requirement Traceability Matrix",
+        "",
+        *requirement_traceability_lines(sprint_state),
+        "",
         "## Planner Insights",
         "",
     ]
@@ -1208,7 +1283,18 @@ def render_sprint_iteration_log_markdown(
     request_entries: list[dict[str, Any]],
     workflow_transition_provider: WorkflowTransitionProvider,
 ) -> str:
-    lines = ["# Sprint Iteration Log", ""]
+    lines = [
+        "# Sprint Iteration Log",
+        "",
+        "## Original Requirements",
+        "",
+        *original_requirement_lines(sprint_state),
+        "",
+        "## Requirement Traceability Matrix",
+        "",
+        *requirement_traceability_lines(sprint_state),
+        "",
+    ]
     iterations = list(sprint_state.get("planning_iterations") or [])
     lines.extend(["## Planning Sync", ""])
     if not iterations:
@@ -1470,7 +1556,9 @@ def build_sprint_spec_todo_report_sections(
         sections.append(report_section("우선순위", [format_backlog_report_line(item) for item in backlog_items]))
     else:
         sections.append(report_section("우선순위", ["- 우선순위 backlog 없음"]))
-    evidence_lines = [f"- requirement: {item}" for item in kickoff_requirements]
+    sections.append(report_section("Requirement Traceability Matrix", requirement_traceability_lines(sprint_state)))
+    evidence_lines = [f"- kickoff_requirement: {item}" for item in kickoff_requirements]
+    evidence_lines.extend(f"- original_requirement: {line.removeprefix('- ').strip()}" for line in original_requirement_lines(sprint_state))
     evidence_lines.extend(f"- doc: {hint}" for hint in artifact_hints if str(hint).strip())
     sections.append(report_section("근거 문서", evidence_lines[:12]))
     return sections
@@ -1507,6 +1595,8 @@ def build_sprint_spec_todo_report_body(
         lines.extend(f"  - {item}" for item in kickoff_requirements[:5])
     else:
         lines.append("  - 없음")
+    lines.append("- original requirements:")
+    lines.extend(f"  {item}" for item in original_requirement_lines(sprint_state)[:8])
     lines.append("- planner insights:")
     insights = [
         str(item).strip()
@@ -2850,13 +2940,19 @@ def build_sprint_artifact_lines(
         ]
     lines: list[str] = []
     for entry in snapshot.get("linked_artifacts") or []:
-        lines.append(
-            "- 참고: [{status}] {title} -> {path}".format(
-                status=entry["status"],
-                title=_render_text(format_text, entry["title"], full_detail=full_detail, limit=72),
-                path=entry["path"],
-            )
+        path = str(entry.get("path") or "").strip()
+        line = "- 참고: [{status}] {title} -> {path}".format(
+            status=entry["status"],
+            title=_render_text(format_text, entry["title"], full_detail=full_detail, limit=72),
+            path=path,
         )
+        request_id = str(entry.get("request_id") or "").strip()
+        if request_id:
+            line += f" | request_id={request_id}"
+        status = str(entry.get("status") or "").strip().lower()
+        if status in {"committed", "completed"} and path and "/" not in path and "\\" not in path:
+            line += f" | artifact={path}"
+        lines.append(line)
     if lines:
         return lines
     commit_paths: list[str] = []
@@ -3124,16 +3220,28 @@ def build_terminal_sprint_report_sections(
     build_achievement_lines: Callable[..., list[str]],
     build_artifact_lines: Callable[..., list[str]],
 ) -> list[ReportSection]:
-    return [
+    sections = [
         report_section("한눈에 보기", build_overview_lines(sprint_state, snapshot, full_detail=True)),
         report_section("변경 요약", build_change_summary_lines(sprint_state, snapshot, full_detail=True)),
         report_section("후속 조치", build_followup_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("Sprint A to Z", build_timeline_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("에이전트 기여", build_agent_contribution_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("핵심 이슈", build_issue_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("성과", build_achievement_lines(sprint_state, snapshot, full_detail=True)),
-        report_section("참고 아티팩트", build_artifact_lines(sprint_state, snapshot, full_detail=True)),
     ]
+    if ensure_sprint_original_requirements(sprint_state):
+        sections.extend(
+            [
+                report_section("Original Requirements", original_requirement_lines(sprint_state)),
+                report_section("Requirement Traceability Matrix", requirement_traceability_lines(sprint_state)),
+            ]
+        )
+    sections.extend(
+        [
+            report_section("Sprint A to Z", build_timeline_lines(sprint_state, snapshot, full_detail=True)),
+            report_section("에이전트 기여", build_agent_contribution_lines(sprint_state, snapshot, full_detail=True)),
+            report_section("핵심 이슈", build_issue_lines(sprint_state, snapshot, full_detail=True)),
+            report_section("성과", build_achievement_lines(sprint_state, snapshot, full_detail=True)),
+            report_section("참고 아티팩트", build_artifact_lines(sprint_state, snapshot, full_detail=True)),
+        ]
+    )
+    return sections
 
 
 def render_live_sprint_report_markdown(
@@ -3325,6 +3433,14 @@ def render_sprint_report_body(
         "## 후속 조치",
         "",
         *build_followup_lines(sprint_state, snapshot, True),
+        "",
+        "## Original Requirements",
+        "",
+        *original_requirement_lines(sprint_state),
+        "",
+        "## Requirement Traceability Matrix",
+        "",
+        *requirement_traceability_lines(sprint_state),
         "",
         "## Sprint A to Z",
         "",
@@ -3560,6 +3676,24 @@ def build_machine_sprint_report_lines(
         display_sprint_report_path(sprint_state, item, workspace_root=Path.cwd(), full_detail=True)
         for item in uncommitted_paths
     ]
+    requirement_matrix = requirement_traceability_matrix_for_sprint(sprint_state)
+    original_requirement_ids_text = ", ".join(
+        str(entry.get("id") or "").strip()
+        for entry in requirement_matrix
+        if str(entry.get("id") or "").strip()
+    )
+    missing_requirement_ids_text = ", ".join(
+        str(entry.get("id") or "").strip()
+        for entry in requirement_matrix
+        if str(entry.get("id") or "").strip()
+        and (
+            not bool(entry.get("implemented"))
+            or (
+                bool(entry.get("closeout_required"))
+                and not bool(entry.get("evidence_present"))
+            )
+        )
+    )
     lines = [
         f"sprint_id={sprint_state.get('sprint_id') or ''}",
         f"sprint_name={sprint_state.get('sprint_name') or sprint_state.get('sprint_display_name') or 'N/A'}",
@@ -3580,6 +3714,8 @@ def build_machine_sprint_report_lines(
         f"sprint_tagged_commit_shas={', '.join(sprint_tagged_commit_shas) if sprint_tagged_commit_shas else 'N/A'}",
         f"uncommitted_paths={', '.join(uncommitted_paths) if uncommitted_paths else 'N/A'}",
         f"display_uncommitted_paths={', '.join(display_uncommitted_paths) if display_uncommitted_paths else 'N/A'}",
+        f"original_requirements={original_requirement_ids_text or 'N/A'}",
+        f"original_requirement_gaps={missing_requirement_ids_text or 'N/A'}",
         (
             "todo_status_counts="
             + format_count_summary(

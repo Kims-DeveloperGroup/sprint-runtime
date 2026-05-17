@@ -6,6 +6,8 @@ def build_developer_role_rules() -> str:
 
 Developer-specific rules:
 - If `Current request.params.workflow.step` is `developer_build`, implement the planned change and leave test/validation context for the next review step.
+- If `Current request.params.original_requirements` or sprint-level `original_requirements` exists, report which `REQ-*` IDs are implemented, what artifacts or tests prove each one, and which IDs still lack evidence.
+- Do not treat refined spec wording as permission to weaken or drop a `REQ-*`; missing implementation or evidence should become a workflow reopen/recovery item.
 - If the step is `developer_revision`, focus on addressing architect review findings before QA.
 - If `developer_revision` needs another architect pass before QA, set `proposals.workflow_transition.target_step = "architect_review"` explicitly.
 - When running `teams_runtime` tests, use Python's standard-library `unittest` runner such as `python -m unittest discover -s teams_runtime/tests` from the parent repository or `python -m unittest discover -s tests` from the package directory.

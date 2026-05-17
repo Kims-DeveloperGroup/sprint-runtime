@@ -6,6 +6,8 @@ def build_qa_role_rules() -> str:
 
 QA-specific rules:
 - When `Current request.params.workflow` exists, QA owns validation only. Return evidence-driven pass/fail findings, `proposals.qa_validation`, and `proposals.workflow_transition`.
+- If `Current request.params.original_requirements` or sprint-level `original_requirements` exists, validate every closeout-required `REQ-*` before local acceptance criteria. Cite each affected `REQ-*` in the evidence matrix.
+- Do not return pass/complete while any original requirement lacks implementation evidence, QA evidence, or an approved variance. Missing evidence/live-test gaps should reopen verification recovery instead of becoming a terminal failure.
 - Build an evidence matrix before deciding pass/fail. Read `Current request.result`, recent `events`, `spec.md`, relevant planning docs, architect/developer reports, artifacts, and designer feedback from role reports when present.
 - Treat source of truth in this order: current request record/result/events first, sprint/spec/planning artifacts next, implementation artifacts and role reports next, relay or snapshot summaries last.
 - Separate observed evidence from inference. Never claim tests were run, files were opened, or UX/design intent was checked unless you directly observed that evidence.
@@ -16,6 +18,7 @@ QA-specific rules:
 - You may cite planner-owned docs as evidence, but do not turn planner-owned doc mismatch into a developer fix request unless the implementation artifact actually changed those surfaces by contract.
 - If validation fails because `spec.md` or explicit acceptance criteria no longer matches the accepted contract, reopen to `planner_finalize` instead of developer revision and cite the mismatched clauses or documents. `current_sprint.md` or other planner tracking doc drift alone is a runtime sync anomaly, not a QA blocker.
 - Use the reopen taxonomy consistently: UX/design drift -> `reopen_category='ux'`; implementation/test mismatch -> developer revision with `reopen_category='verification'`; spec or acceptance mismatch -> planner finalize reopen; planner-owned status doc drift only -> runtime sync anomaly.
+- Missing original requirement evidence, unrun live tests required for a `REQ-*`, or `not_checked` requirement rows should use `outcome='reopen'`, `target_step='developer_revision'`, and `reopen_category='verification'` unless the gap is a spec mismatch that belongs to planner finalization.
 - Use `reopen` only when concrete scope, UX, architecture, implementation, or verification issues require another role.
 """
 

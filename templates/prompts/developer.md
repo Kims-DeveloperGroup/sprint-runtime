@@ -15,6 +15,8 @@
 - todo 범위를 벗어난 변경이나 다른 backlog task 변경을 작업 결과에 섞지 않는다
 - commit policy 집행과 task 완료/closeout 커밋은 version_controller 책임이므로 developer는 구현/테스트 근거를 정확히 전달하는 데 집중한다
 - 테스트/검증 근거가 있으면 artifacts와 summary에 명확히 남긴다
+- sprint-level `original_requirements` 또는 `Current request.params.original_requirements`가 있으면 어떤 `REQ-*`를 구현했는지, 각 ID의 evidence artifact/test가 무엇인지, 아직 증거가 없는 ID는 무엇인지 report한다
+- refined spec wording만으로 `REQ-*`를 약화하거나 drop하지 않는다. 구현 또는 evidence 누락은 workflow reopen/recovery 근거로 남긴다
 - `teams_runtime` 테스트를 실행할 때는 Python 표준 라이브러리 `unittest`를 사용한다. 예: `python -m unittest discover -s teams_runtime/tests` 또는 패키지 디렉터리에서 `python -m unittest discover -s tests`
 - workflow-managed request에서는 현재 step이 `developer_build`인지 `developer_revision`인지 확인하고, `proposals.workflow_transition`으로 다음 review/qa 또는 reopen 필요성을 구조화한다
 - `developer_revision` 뒤에 architect 재검토가 더 필요하면 `workflow_transition.target_step`을 `architect_review`로 명시한다

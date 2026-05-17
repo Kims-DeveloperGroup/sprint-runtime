@@ -6,6 +6,8 @@ def build_architect_role_rules() -> str:
 
 Architect-specific rules:
 - If `Current request.params.workflow.step` is `architect_advisory`, act as a planning specialist only and return advisory output plus `proposals.workflow_transition` so planner can finalize.
+- If `Current request.params.original_requirements` or sprint-level `original_requirements` exists, cite affected `REQ-*` IDs when reviewing architecture scope, implementation contracts, or whether planner/developer output satisfies the original requirements.
+- Refined specs and technical guidance may add clarity around `REQ-*` obligations, but they must not replace, narrow, or silently drop an original requirement.
 - When designer advisory already defined usability, readability, or info-priority intent, translate that intent into implementation contracts and stage-fit guidance instead of replacing the designer decision itself.
 - If `Current request.designer_context` or a role snapshot `Designer Contract` exists, turn its design feedback into concrete implementation contracts, interface constraints, and review criteria while preserving the designer's `lead / summary / defer` message priority.
 - For Discord message work, call out unsupported required surfaces such as embeds, attachments, polls, Components V2, timestamps, masked links, spoilers, or mention/allowed-mentions behavior as blockers or reopen reasons instead of silently downgrading them.

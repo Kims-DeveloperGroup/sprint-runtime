@@ -310,6 +310,7 @@ def build_research_decision_prompt(
             "- `knowledge_gap`: what planner cannot responsibly decide from local request/repo/sprint context alone.",
             "- `external_boundary`: why outside/current/domain knowledge is needed instead of repo inspection.",
             "- `planner_impact`: how answers should affect milestone wording, spec boundaries, acceptance criteria, dependencies, priorities, or backlog slicing.",
+            "- If `original_requirements` / `REQ-*` records exist, cite affected IDs in planner_guidance and do not recommend weakened scope without user-approved variance.",
             "- `candidate_subject`: the smallest researchable external subject; it must be narrower than the whole milestone and must not copy the user request.",
             "- `research_query`: the exact query/instruction for deep research.",
             "- `source_requirements`: official/primary/recency/comparison/source-diversity needs for deep research.",
@@ -419,6 +420,8 @@ def build_research_prompt(
                 },
                 "rules": [
                     "Focus only on the external research subject in this request.",
+                    "When original requirements or REQ-* IDs are present, cite the affected IDs in Planner Guidance, hints, and open questions.",
+                    "If a requirement appears impossible or unsafe, recommend planner recovery or user-approved variance instead of narrowing the requirement yourself.",
                     "Planner Guidance must explain how findings affect milestone framing, spec boundaries, or todo decomposition.",
                     "Backing Reasoning must connect sources to planning recommendations.",
                     "Backing Sources must include title and http(s) URL.",

@@ -31,9 +31,13 @@ from teams_runtime.workflows.sprints.lifecycle import (
     is_manual_sprint_cutoff_reached,
     is_sprint_planning_request,
     merge_recovered_sprint_todo,
+    inspect_original_requirement_closeout,
+    missing_requirement_todo_coverage,
+    normalize_original_requirements,
     normalize_trace_list,
     next_initial_phase_step,
     record_sprint_planning_iteration,
+    requirement_traceability_matrix_for_sprint,
     recover_sprint_todos_from_recovered,
     sort_sprint_todos,
     sprint_todo_dependencies_satisfied,
@@ -525,6 +529,125 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             "",
         )
 
+    def test_validate_initial_phase_step_result_requires_each_original_requirement_in_backlog(self) -> None:
+        sprint_state = {
+            "kickoff_requirements": ["requirement-a", "requirement-b"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "requirement-a",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                },
+                {
+                    "id": "REQ-002",
+                    "text": "requirement-b",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                },
+            ],
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+            },
+        }
+        item = {
+            "title": "REQ-001 slice",
+            "milestone_title": "workflow initial",
+            "acceptance_criteria": ["REQ-001 passes."],
+            "origin": {
+                "milestone_ref": "workflow initial",
+                "requirement_refs": ["REQ-001"],
+                "spec_refs": ["./shared_workspace/sprints/current/spec.md#req-001"],
+            },
+        }
+
+        error = validate_initial_phase_step_result(
+            sprint_state,
+            request_record=request_record,
+            sync_summary={"planner_persisted_backlog": True},
+            relevant_items=[item],
+        )
+
+        self.assertIn("original requirement backlog coverage missing: REQ-002", error)
+
+    def test_validate_initial_phase_step_result_requires_requirement_slice_todo_not_only_supporting(self) -> None:
+        sprint_state = {
+            "sprint_id": "Sprint-01",
+            "kickoff_requirements": ["requirement-a"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "requirement-a",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "selected_items": [
+                {
+                    "backlog_id": "backlog-1",
+                    "title": "Support only",
+                    "planned_in_sprint_id": "Sprint-01",
+                    "origin": {"requirement_refs": ["REQ-001"]},
+                }
+            ],
+            "selected_backlog_ids": ["backlog-1"],
+            "todos": [
+                {
+                    "todo_id": "todo-1",
+                    "backlog_id": "backlog-1",
+                    "title": "Support only",
+                    "requirement_refs": ["REQ-001"],
+                    "supporting_todo": True,
+                    "supports_requirement_refs": ["REQ-001"],
+                }
+            ],
+        }
+        todo_request = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_TODO_FINALIZATION,
+            },
+        }
+
+        self.assertEqual(missing_requirement_todo_coverage(sprint_state), ["REQ-001"])
+        self.assertIn(
+            "original requirement todo coverage",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=todo_request,
+                sync_summary={},
+                relevant_items=sprint_state["selected_items"],
+            ),
+        )
+
+        sprint_state["todos"].append(
+            {
+                "todo_id": "todo-2",
+                "backlog_id": "backlog-2",
+                "title": "Requirement slice",
+                "requirement_refs": ["REQ-001"],
+            }
+        )
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=todo_request,
+                sync_summary={},
+                relevant_items=sprint_state["selected_items"],
+            ),
+            "",
+        )
+
     def test_validate_initial_phase_step_result_enforces_prioritization_and_todo_completion(self) -> None:
         sprint_state = {
             "sprint_id": "Sprint-01",
@@ -813,6 +936,25 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             self.assertEqual(sprint_state["milestone_title"], "Login cleanup")
             self.assertEqual(sprint_state["kickoff_brief"], "Keep scope")
             self.assertEqual(sprint_state["kickoff_requirements"], ["Draft plan", "Review"])
+            self.assertEqual(
+                sprint_state["original_requirements"],
+                [
+                    {
+                        "id": "REQ-001",
+                        "text": "Draft plan",
+                        "source": "kickoff_requirements",
+                        "must": True,
+                        "closeout_required": True,
+                    },
+                    {
+                        "id": "REQ-002",
+                        "text": "Review",
+                        "source": "kickoff_requirements",
+                        "must": True,
+                        "closeout_required": True,
+                    },
+                ],
+            )
             self.assertEqual(sprint_state["kickoff_request_text"], "start sprint\nrequirements")
             self.assertEqual(sprint_state["kickoff_source_request_id"], "request-1")
             self.assertEqual(sprint_state["kickoff_reference_artifacts"], ["a.md", "b.md"])
@@ -824,6 +966,83 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             self.assertEqual(sprint_state["cutoff_at"], "2026-04-20T22:00:00+09:00")
             self.assertEqual(sprint_state["selected_items"], [])
             self.assertEqual(sprint_state["todos"], [])
+
+    def test_normalize_original_requirements_preserves_existing_ids_and_fallbacks(self) -> None:
+        self.assertEqual(
+            normalize_original_requirements(
+                [
+                    {"id": "REQ-010", "text": "Keep original scope", "source": "user"},
+                    {"id": "bad-id", "text": "Add trace matrix"},
+                    {"id": "REQ-010", "text": "Close evidence"},
+                ]
+            ),
+            [
+                {
+                    "id": "REQ-010",
+                    "text": "Keep original scope",
+                    "source": "user",
+                    "must": True,
+                    "closeout_required": True,
+                },
+                {
+                    "id": "REQ-001",
+                    "text": "Add trace matrix",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                },
+                {
+                    "id": "REQ-002",
+                    "text": "Close evidence",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                },
+            ],
+        )
+        self.assertEqual(
+            [item["id"] for item in normalize_original_requirements([], fallback_requirements=["a", "b"])],
+            ["REQ-001", "REQ-002"],
+        )
+
+    def test_requirement_traceability_matrix_tracks_todo_coverage_and_closeout_evidence(self) -> None:
+        sprint_state = {
+            "kickoff_requirements": ["Need audit trail"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "Need audit trail",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "selected_items": [
+                {
+                    "backlog_id": "backlog-1",
+                    "title": "Audit trail",
+                    "origin": {"requirement_refs": ["REQ-001"]},
+                }
+            ],
+            "todos": [
+                {
+                    "todo_id": "todo-1",
+                    "backlog_id": "backlog-1",
+                    "title": "Audit trail",
+                    "status": "completed",
+                    "requirement_refs": ["REQ-001"],
+                    "summary": "Implemented audit trail.",
+                }
+            ],
+        }
+
+        matrix = requirement_traceability_matrix_for_sprint(sprint_state)
+        self.assertEqual(matrix[0]["id"], "REQ-001")
+        self.assertEqual(matrix[0]["backlog_ids"], ["backlog-1"])
+        self.assertEqual(matrix[0]["requirement_slice_todo_ids"], ["todo-1"])
+        self.assertTrue(matrix[0]["implemented"])
+        self.assertTrue(matrix[0]["evidence_present"])
+        self.assertEqual(inspect_original_requirement_closeout(sprint_state)["status"], "verified")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from teams_runtime.core.workflow_role_policy import (
     is_planner_owned_surface_artifact_hint,
     is_planning_surface_artifact_hint,
     qa_result_is_runtime_sync_anomaly,
+    qa_result_requires_evidence_recovery,
     qa_result_requires_planner_reopen,
     required_workflow_planner_doc_hints,
     workflow_planner_doc_contract_violation,
@@ -128,6 +129,55 @@ class TeamsRuntimeWorkflowRolePolicyTests(unittest.TestCase):
                 transition=transition,
             )
         )
+
+    def test_qa_missing_evidence_reopens_verification_recovery(self):
+        workflow_state = default_workflow_state()
+        workflow_state["phase"] = "validation"
+        workflow_state["step"] = "qa_validation"
+        workflow_state["phase_owner"] = "qa"
+
+        result = {
+            "role": "qa",
+            "status": "blocked",
+            "summary": "REQ-001 live test missing; evidence_matrix row is not_checked.",
+            "error": "missing evidence",
+            "insights": [],
+            "proposals": {
+                "qa_validation": {
+                    "decision": "blocked",
+                    "not_checked": ["REQ-001"],
+                }
+            },
+        }
+        transition = {
+            "outcome": "block",
+            "target_step": "",
+            "reopen_category": "",
+            "reason": "missing evidence for REQ-001",
+            "unresolved_items": ["REQ-001 not_checked"],
+        }
+
+        self.assertTrue(
+            qa_result_requires_evidence_recovery(
+                workflow_state=workflow_state,
+                role="qa",
+                result=result,
+                transition=transition,
+            )
+        )
+
+        updated = enforce_workflow_role_report_contract(
+            workflow_state=workflow_state,
+            role="qa",
+            result=result,
+            qa_requires_evidence_recovery_flag=True,
+            transition=transition,
+        )
+
+        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(updated["error"], "")
+        self.assertEqual(updated["proposals"]["workflow_transition"]["target_step"], "developer_revision")
+        self.assertEqual(updated["proposals"]["workflow_transition"]["reopen_category"], "verification")
 
     def test_enforce_workflow_role_report_contract_blocks_missing_planner_docs(self):
         workflow_state = default_workflow_state()

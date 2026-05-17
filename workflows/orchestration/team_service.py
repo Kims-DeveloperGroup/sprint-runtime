@@ -142,6 +142,7 @@ from teams_runtime.workflows.orchestration.engine import (
     normalize_workflow_state,
     preferred_skill_matches as preferred_skill_matches_helper,
     qa_result_is_runtime_sync_anomaly,
+    qa_result_requires_evidence_recovery,
     qa_result_requires_planner_reopen,
     request_indicates_execution as request_indicates_execution_helper,
     required_workflow_planner_doc_hints,
@@ -394,10 +395,12 @@ from teams_runtime.workflows.sprints.lifecycle import (
     fail_sprint_due_to_exception as fail_sprint_due_to_exception_helper,
     finalize_sprint as finalize_sprint_helper,
     finish_scheduler_after_sprint as finish_scheduler_after_sprint_helper,
+    ensure_sprint_original_requirements as ensure_sprint_original_requirements_helper,
     initial_phase_step as initial_phase_step_helper,
     initial_phase_step_instruction as initial_phase_step_instruction_helper,
     initial_phase_step_position as initial_phase_step_position_helper,
     initial_phase_step_title as initial_phase_step_title_helper,
+    inspect_original_requirement_closeout as inspect_original_requirement_closeout_helper,
     is_executable_todo_status as is_executable_todo_status_helper,
     is_initial_phase_planner_request as is_initial_phase_planner_request_helper,
     is_manual_sprint_cutoff_reached as is_manual_sprint_cutoff_reached_helper,
@@ -409,9 +412,12 @@ from teams_runtime.workflows.sprints.lifecycle import (
     maybe_update_sprint_name_from_result as maybe_update_sprint_name_from_result_helper,
     merge_recovered_sprint_todo as merge_recovered_sprint_todo_helper,
     next_initial_phase_step as next_initial_phase_step_helper,
+    normalize_original_requirements as normalize_original_requirements_helper,
     normalize_trace_list as normalize_trace_list_helper,
     prepare_requested_restart_checkpoint as prepare_requested_restart_checkpoint_helper,
+    queue_original_requirement_recovery_work as queue_original_requirement_recovery_work_helper,
     record_sprint_planning_iteration as record_sprint_planning_iteration_helper,
+    requirement_traceability_matrix_for_sprint as requirement_traceability_matrix_for_sprint_helper,
     recover_sprint_todos_from_requests as recover_sprint_todos_from_requests_helper,
     resume_active_sprint as resume_active_sprint_helper,
     resume_uncommitted_sprint_todo as resume_uncommitted_sprint_todo_helper,
@@ -1061,6 +1067,29 @@ class TeamService:
         return normalize_kickoff_requirements_helper(value)
 
     @staticmethod
+    def _normalize_original_requirements(value: Any, *, fallback_requirements: Any = None) -> list[dict[str, Any]]:
+        return normalize_original_requirements_helper(value, fallback_requirements=fallback_requirements)
+
+    @staticmethod
+    def _ensure_sprint_original_requirements(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
+        return ensure_sprint_original_requirements_helper(sprint_state)
+
+    @staticmethod
+    def _requirement_traceability_matrix_for_sprint(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
+        return requirement_traceability_matrix_for_sprint_helper(sprint_state)
+
+    @staticmethod
+    def _inspect_original_requirement_closeout(sprint_state: dict[str, Any]) -> dict[str, Any]:
+        return inspect_original_requirement_closeout_helper(sprint_state)
+
+    def _queue_original_requirement_recovery_work(
+        self,
+        sprint_state: dict[str, Any],
+        closeout_result: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return queue_original_requirement_recovery_work_helper(self, sprint_state, closeout_result)
+
+    @staticmethod
     def _clean_kickoff_text(value: Any) -> str:
         return clean_kickoff_text_helper(value)
 
@@ -1339,6 +1368,9 @@ class TeamService:
             if role == "planner"
             else None,
             qa_requires_planner_reopen_flag=self._qa_result_requires_planner_reopen(request_record, result)
+            if role == "qa"
+            else False,
+            qa_requires_evidence_recovery_flag=self._qa_result_requires_evidence_recovery(request_record, result)
             if role == "qa"
             else False,
             qa_runtime_sync_anomaly_flag=self._qa_result_is_runtime_sync_anomaly(request_record, result)
@@ -3723,6 +3755,23 @@ class TeamService:
         role = str(result.get("role") or request_record.get("current_role") or "").strip().lower()
         transition = self._workflow_transition(result)
         return qa_result_is_runtime_sync_anomaly(
+            workflow_state=workflow_state,
+            role=role,
+            result=result,
+            transition=transition,
+        )
+
+    def _qa_result_requires_evidence_recovery(
+        self,
+        request_record: dict[str, Any],
+        result: dict[str, Any],
+    ) -> bool:
+        workflow_state = self._request_workflow_state(request_record)
+        if not workflow_state:
+            return False
+        role = str(result.get("role") or request_record.get("current_role") or "").strip().lower()
+        transition = self._workflow_transition(result)
+        return qa_result_requires_evidence_recovery(
             workflow_state=workflow_state,
             role=role,
             result=result,

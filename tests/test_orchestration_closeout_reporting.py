@@ -2312,6 +2312,48 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertIn("auto_commit_status=committed", history_text)
                 self.assertIn("auto_commit_paths=workspace/app.py", history_text)
 
+    def test_finalize_sprint_queues_recovery_when_original_requirements_lack_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="requirement recovery",
+                    trigger="manual_start",
+                    kickoff_requirements=["Must preserve original requirement evidence"],
+                )
+                sprint_state["phase"] = "wrap_up"
+                sprint_state["status"] = "running"
+                sprint_state["wrap_up_requested_at"] = "2026-04-20T10:00:00+09:00"
+                sprint_state["git_baseline"] = {"repo_root": "/repo", "head_sha": "base123", "dirty_paths": []}
+                service._save_sprint_state(sprint_state)
+                scheduler_state = service._load_scheduler_state()
+                scheduler_state["active_sprint_id"] = sprint_state["sprint_id"]
+                service._save_scheduler_state(scheduler_state)
+
+                with (
+                    patch.object(
+                        service,
+                        "_inspect_sprint_documentation_closeout",
+                        return_value={"status": "verified", "message": "doc verified"},
+                    ),
+                    patch("teams_runtime.core.orchestration.inspect_sprint_closeout") as inspect_git,
+                    patch.object(service, "_draft_sprint_report_via_planner", AsyncMock(return_value={})),
+                ):
+                    asyncio.run(service._finalize_sprint(sprint_state))
+
+                inspect_git.assert_not_called()
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated["status"], "recovery")
+                self.assertEqual(updated["phase"], "ongoing")
+                self.assertEqual(updated["closeout_status"], "requirements_recovery")
+                self.assertEqual(updated["wrap_up_requested_at"], "")
+                self.assertEqual(service._load_scheduler_state()["active_sprint_id"], sprint_state["sprint_id"])
+                recovery_todos = [todo for todo in updated["todos"] if todo.get("recovery_todo")]
+                self.assertEqual(len(recovery_todos), 1)
+                self.assertEqual(recovery_todos[0]["requirement_refs"], ["REQ-001"])
+                self.assertFalse(recovery_todos[0].get("supporting_todo"))
+
     def test_finalize_sprint_completes_with_warning_when_commit_lacks_sprint_tag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

@@ -16,6 +16,8 @@
 - 테스트를 실제로 못 돌렸으면 그 사실을 명확히 적는다
 - `teams_runtime` 테스트를 실행할 때는 Python 표준 라이브러리 `unittest`를 사용한다. 예: `python -m unittest discover -s teams_runtime/tests` 또는 패키지 디렉터리에서 `python -m unittest discover -s tests`
 - workflow-managed request에서는 `proposals.qa_validation`과 `proposals.workflow_transition`으로 validation pass, reopen category, unresolved items를 구조화한다
+- sprint-level `original_requirements` 또는 `Current request.params.original_requirements`가 있으면 local acceptance criteria보다 먼저 모든 closeout-required `REQ-*`를 검증하고 evidence matrix에서 각 ID를 cite한다
+- 어떤 `REQ-*`라도 구현/evidence/live-test 근거가 없고 user-approved variance도 없으면 pass/complete로 닫지 않는다. evidence gap은 terminal failure가 아니라 verification recovery reopen으로 보낸다
 - QA는 pass/fail 전에 evidence matrix를 먼저 만든다. `Current request.result`, 최근 `events`, `spec.md`, 관련 planning 문서, architect/developer report, artifacts, designer feedback이 있으면 role report의 designer intent까지 읽고 검증한다
 - source of truth 순서는 current request record/result/events, sprint/spec/planning artifact, implementation artifact와 role report, relay/snapshot summary 순서다
 - 관찰한 evidence와 inference를 분리한다. 열지 않은 파일, 실행하지 않은 테스트, 확인하지 않은 designer intent를 확인했다고 쓰지 않는다
@@ -26,6 +28,7 @@
 - spec.md 또는 explicit acceptance criteria mismatch가 검증 실패의 핵심이면 developer가 아니라 planner finalize reopen으로 되돌리고, 어떤 조항이 어긋났는지 명시한다. current_sprint/todo_backlog/iteration_log drift만으로는 blocker를 만들지 말고 runtime sync anomaly로 남긴다
 - qa는 designer 판단을 대체하지 않고, 결과물 보존 여부를 검증하는 마지막 안전장치로 동작한다
 - reopen taxonomy: UX/design drift는 `reopen_category='ux'`, 구현/테스트 mismatch는 developer revision + `reopen_category='verification'`, spec 또는 acceptance mismatch는 planner finalize reopen, planner-owned status doc drift만 있으면 QA blocker가 아니라 runtime sync anomaly로 남긴다
+- missing original requirement evidence, required live-test 미실행, 또는 `not_checked` requirement row는 spec mismatch가 아닌 한 `outcome='reopen'`, `target_step='developer_revision'`, `reopen_category='verification'`로 라우팅한다
 
 ## handoff/context 원칙
 - relay 메시지의 handoff summary는 빠른 참고용일 뿐 전체 문맥이 아니다

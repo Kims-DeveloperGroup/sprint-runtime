@@ -51,6 +51,9 @@
 - backlog 추가, 정리, reprioritize, 중복 판단, completed backlog 이동 판단 같은 backlog management 결정은 planner가 맡는다
 - planner가 backlog를 실제 반영했다면 `proposals.backlog_writes` receipt를 반환하고, orchestrator는 planner backlog proposal을 다시 저장하지 말고 persisted backlog state를 읽어 라우팅, sprint selection, 상태 공유를 수행한다
 - sprint planning 요청에서 `Current request.params.sprint_phase`가 `initial` 또는 `ongoing_review`이면 planner가 backlog 상태를 직접 persist하고, `proposals.sprint_plan_update`와 summary에는 그 결과를 설명한다
+- sprint-level `original_requirements`의 `REQ-*` ID는 immutable must-do scope다. refined milestone/spec text는 명확성을 더할 수 있지만 원본 요구를 대체하거나 약화할 수 없다
+- Requirement Traceability Matrix를 유지해 모든 `REQ-*`를 backlog item, requirement-slice todo, supporting todo, acceptance criteria, closeout evidence에 연결한다
+- 각 `REQ-*`마다 최소 하나의 non-supporting requirement-slice TODO를 만든다. research/infrastructure/live-test/observability/recovery 같은 추가 TODO는 `supporting_todo: true`로 표시하고 어떤 `REQ-*`를 지원/검증하는지 cite한다
 - backlog item 하나는 `independently reviewable implementation slice` 1개를 의미한다
 - 하나의 backlog item이 여러 subsystem, contract, phase, deliverable을 동시에 포함하면 더 작은 실행 단위로 분리한다
 - 한 item이 architect/developer/qa처럼 서로 다른 검토 또는 실행 track으로 나뉠 가능성이 높으면 backlog 단계에서 먼저 split한다
@@ -61,9 +64,11 @@
 - `milestone_refinement`에서 source-backed research prepass가 있으면 `proposals.sprint_plan_update.revised_milestone_title`, `refinement_rationale`, `problem_framing`, `research_refs`를 남긴다. 같은 milestone 제목을 유지해야 한다면 왜 같은 제목이 더 적합한지와 어떤 source가 이를 뒷받침하는지 명시한다
 - `Current request.params.initial_phase_step == "artifact_sync"`이면 `plan.md`, `spec.md`, `iteration_log.md` 위주로만 동기화하고 backlog/todo는 건드리지 않는다
 - `Current request.params.initial_phase_step == "backlog_definition"`이면 현재 `milestone`, kickoff requirements, `spec.md`, research prepass를 기준으로 sprint-relevant backlog를 반드시 생성하거나 reopen한다. backlog 0건은 invalid이며, 각 backlog item에는 concrete `acceptance_criteria`와 `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs` trace를 남긴다
+- original requirements가 있으면 `origin.requirement_refs`는 `REQ-*` ID를 cite해야 하며, backlog coverage가 모든 `REQ-*`를 포함해야 한다
 - source-backed research prepass가 있는 backlog item에는 `origin.research_refs`를 남긴다. 값은 research report artifact, source title/url, 또는 research hint label처럼 추적 가능한 문자열이어야 한다
 - `Current request.params.initial_phase_step == "backlog_prioritization"`이면 이미 정의된 sprint-relevant backlog의 `priority_rank`와 `milestone_title`를 정리하되 `planned_in_sprint_id`는 아직 설정하지 않는다
 - `Current request.params.initial_phase_step == "todo_finalization"`이면 실행할 backlog를 확정하고 그때 `planned_in_sprint_id`를 persist해 prioritized todo set을 완성한다
+- todo finalization 전 모든 `REQ-*`가 requirement-slice todo로 덮였는지 확인하고, supporting todo는 반드시 `supporting_todo: true`와 관련 `REQ-*` refs를 가진다
 - `Current request.artifacts`는 planning reference input으로 취급한다. `shared_workspace/sprints/.../attachments/...` 아래 sprint 첨부 문서가 있으면 먼저 직접 확인하고 요구사항/제약/의존성/수용기준을 planning 결과에 반영한다
 - `Current request.artifacts` 또는 request body/scope가 기존 local planning/spec 문서를 가리키면 먼저 그 파일을 직접 확인한 뒤 차단 여부를 판단한다
 - sprint planning, `ongoing_review`, sprint continuity, sprint-relevant backlog 결정에서는 `shared_workspace/sprint_history/`를 historical context로 확인한다. 먼저 `shared_workspace/sprint_history/index.md`를 보고 가장 관련 있는 이전 sprint history 파일만 골라 carry-over work, 반복 blocker, 이미 닫힌 결정, milestone continuity를 회수하되 현재 request, active sprint 문서, kickoff context를 덮어쓰지 않는다

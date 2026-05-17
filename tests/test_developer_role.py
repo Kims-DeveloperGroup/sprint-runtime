@@ -22,6 +22,8 @@ class TeamsRuntimeDeveloperRoleTests(unittest.TestCase):
         self.assertIn("python -m unittest discover -s teams_runtime/tests", rules)
         self.assertIn("always return `proposals.workflow_transition`", rules)
         self.assertIn("planner-owned docs", rules)
+        self.assertIn("REQ-*", rules)
+        self.assertIn("original_requirements", rules)
         self.assertIn("`same meaning / same priority / same CTA` preservation work", rules)
         self.assertIn("do not silently make the UX decision in code", rules)
         self.assertIn("Current request.designer_context", rules)
@@ -69,6 +71,8 @@ class TeamsRuntimeDeveloperRoleTests(unittest.TestCase):
             self.assertIn("python -m unittest discover -s teams_runtime/tests", prompt)
             self.assertIn("always return `proposals.workflow_transition`", prompt)
             self.assertIn("planner-owned docs", prompt)
+            self.assertIn("REQ-*", prompt)
+            self.assertIn("original_requirements", prompt)
             self.assertIn("`same meaning / same priority / same CTA` preservation work", prompt)
             self.assertIn("Current request.designer_context", prompt)
 

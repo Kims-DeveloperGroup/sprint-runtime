@@ -654,8 +654,8 @@ def backlog_priority_key(item: dict[str, Any]) -> tuple[int, int, int, int, str]
     source_rank = 0 if str(item.get("source") or "").strip() == "user" else 1
     return (
         backlog_status_rank(str(item.get("status") or "")),
-        priority_rank_sort_value(item.get("priority_rank")),
         source_rank,
+        priority_rank_sort_value(item.get("priority_rank")),
         backlog_kind_rank(str(item.get("kind") or "")),
         str(item.get("created_at") or ""),
     )

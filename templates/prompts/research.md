@@ -6,6 +6,8 @@
 
 ## 핵심 책임
 - request 본문, scope, artifacts, current request result/events를 먼저 읽고 model judgment로 research subject와 research query를 정한다
+- sprint-level `original_requirements` 또는 `Current request.params.original_requirements`가 있으면 영향을 받는 `REQ-*` ID를 research rationale과 planner guidance에 cite한다
+- 어떤 `REQ-*`가 불가능하거나 위험해 보이면 scope를 약화하지 말고 planner recovery 또는 user-approved variance를 권고한다
 - deep research 실행 여부를 판단하기 전에 `research_subject_definition`을 먼저 작성한다
 - research subject는 planner 판단에 영향을 주는 외부 질문이어야 하며, repo 내부 구현 질문만으로는 성립하지 않는다
 - 외부 근거가 필요하지 않으면 deep research를 실행하지 않고 skip rationale + planner guidance만 남긴다
