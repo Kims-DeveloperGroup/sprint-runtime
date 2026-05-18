@@ -10,9 +10,17 @@ PROMPT_PLACEHOLDER_SUMMARIES = frozenset(
     {
         PROMPT_PLACEHOLDER_SUMMARY,
         "이 세션에서 직접 확인한 실제 한국어 요약",
+        "실제 실행 근거를 반영한 구체적 한국어 요약",
+        "<실제 실행 근거를 반영한 한국어 요약 작성>",
     }
 )
 PROMPT_PLACEHOLDER_INSIGHT = "private role insight for journal.md"
+PROMPT_PLACEHOLDER_WORKFLOW_REASONS = frozenset(
+    {
+        "구체적인 workflow 전환 사유",
+        "<실제 workflow 전환 사유를 작성>",
+    }
+)
 WORKFLOW_TRANSITION_ALLOWED_OUTCOMES = {"continue", "advance", "reopen", "block", "complete"}
 WORKFLOW_TRANSITION_REQUIRED_KEYS = (
     "outcome",
@@ -45,6 +53,11 @@ def is_prompt_placeholder_summary(value: Any) -> bool:
     return normalized in {summary.casefold() for summary in PROMPT_PLACEHOLDER_SUMMARIES}
 
 
+def is_prompt_placeholder_workflow_reason(value: Any) -> bool:
+    normalized = str(value or "").strip().casefold()
+    return normalized in {reason.casefold() for reason in PROMPT_PLACEHOLDER_WORKFLOW_REASONS}
+
+
 def render_role_result_contract(
     *,
     request_id: str,
@@ -59,7 +72,7 @@ def render_role_result_contract(
       "target_phase": "",
       "target_step": "",
       "reopen_category": "",
-      "reason": "구체적인 workflow 전환 사유",
+      "reason": "<실제 workflow 전환 사유를 작성>",
       "unresolved_items": [],
       "finalize_phase": false
     }
@@ -73,7 +86,7 @@ Allowed `status` values are exactly `completed`, `blocked`, or `failed`.
   "request_id": "{request_id}",
   "role": "{role}",
   "status": "completed",
-  "summary": "실제 실행 근거를 반영한 구체적 한국어 요약",
+  "summary": "<실제 실행 근거를 반영한 한국어 요약 작성>",
   "insights": [],
   "proposals": {proposals_block},
   "artifacts": [],
@@ -114,6 +127,8 @@ def validate_role_result_contract(
             missing_keys = [key for key in WORKFLOW_TRANSITION_REQUIRED_KEYS if key not in transition]
             if missing_keys:
                 issues.append(f"workflow_transition_missing_keys:{','.join(missing_keys)}")
+            if is_prompt_placeholder_workflow_reason(transition.get("reason")):
+                issues.append("copied_workflow_transition_placeholder")
             outcome = str(transition.get("outcome") or "").strip().lower()
             if outcome and outcome not in WORKFLOW_TRANSITION_ALLOWED_OUTCOMES:
                 issues.append(f"invalid_workflow_transition_outcome:{outcome}")
@@ -144,6 +159,8 @@ def describe_contract_issues(issues: list[str]) -> list[str]:
             descriptions.append("insights에 placeholder 예시가 그대로 복사되었습니다.")
         elif issue == "missing_workflow_transition":
             descriptions.append("workflow-managed request인데 `proposals.workflow_transition`이 없습니다.")
+        elif issue == "copied_workflow_transition_placeholder":
+            descriptions.append("`workflow_transition.reason`에 prompt placeholder가 그대로 복사되었습니다.")
         elif issue.startswith("workflow_transition_missing_keys:"):
             missing = issue.split(":", 1)[1]
             descriptions.append(f"`proposals.workflow_transition`에 필수 키가 없습니다: {missing}.")
@@ -189,9 +206,15 @@ def is_invalid_contract_payload(payload: dict[str, Any]) -> bool:
 
 
 def is_restart_repairable_invalid_contract_payload(payload: dict[str, Any]) -> bool:
-    if not is_invalid_contract_payload(payload):
+    if not isinstance(payload, dict):
         return False
-    if not bool(payload.get("contract_repair_attempted")):
+    if is_prompt_placeholder_summary(payload.get("summary")):
+        return True
+    proposals = payload.get("proposals")
+    transition = proposals.get("workflow_transition") if isinstance(proposals, dict) else None
+    if isinstance(transition, dict) and is_prompt_placeholder_workflow_reason(transition.get("reason")):
+        return True
+    if not is_invalid_contract_payload(payload) or not bool(payload.get("contract_repair_attempted")):
         return False
     issues = {
         str(issue or "").strip()
@@ -200,8 +223,6 @@ def is_restart_repairable_invalid_contract_payload(payload: dict[str, Any]) -> b
     }
     if "missing_workflow_transition" not in issues:
         return False
-    proposals = payload.get("proposals")
-    transition = proposals.get("workflow_transition") if isinstance(proposals, dict) else None
     if isinstance(transition, dict):
         return False
     return True

@@ -2628,9 +2628,10 @@ context compacted
 
             payload = runtime.run_task(envelope, request_record)
 
-            self.assertEqual(len(fake_runner.calls), 2)
+            self.assertEqual(len(fake_runner.calls), 3)
             self.assertIn('"workflow_transition"', str(fake_runner.calls[0]["prompt"]))
             self.assertIn('"workflow_transition"', str(fake_runner.calls[1]["prompt"]))
+            self.assertIn('"workflow_transition"', str(fake_runner.calls[2]["prompt"]))
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["contract_status"], "invalid")
             self.assertTrue(payload["contract_repair_attempted"])

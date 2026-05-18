@@ -401,6 +401,68 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(sprint_state["todos"][0]["request_id"], "request-invalid-json")
         self.assertEqual(sprint_state["last_resume_checkpoint_status"], "failed")
 
+    def test_restart_checkpoint_requeues_terminal_scaffold_copy_failed_todo(self) -> None:
+        request_record = {
+            "request_id": "request-scaffold-copy",
+            "status": "failed",
+            "updated_at": "2026-04-21T01:00:00+00:00",
+            "result": {
+                "status": "completed",
+                "summary": "<실제 실행 근거를 반영한 한국어 요약 작성>",
+                "proposals": {
+                    "workflow_transition": {
+                        "outcome": "complete",
+                        "target_phase": "",
+                        "target_step": "",
+                        "reopen_category": "",
+                        "reason": "<실제 workflow 전환 사유를 작성>",
+                        "unresolved_items": [],
+                        "finalize_phase": False,
+                    }
+                },
+            },
+        }
+
+        class _Service:
+            def _load_request(self, request_id):
+                return request_record if request_id == "request-scaffold-copy" else {}
+
+            def _select_restart_checkpoint_todo(self, sprint_state):
+                return select_restart_checkpoint_todo(self, sprint_state)
+
+            def _parse_datetime(self, value):
+                return datetime.fromisoformat(value)
+
+            def _mark_restart_checkpoint_backlog_selected(self, _sprint_state, *, backlog_id):
+                return None
+
+            def _append_sprint_event(self, *_args, **_kwargs):
+                return None
+
+        sprint_state = {
+            "sprint_id": "sprint-1",
+            "resume_from_checkpoint_requested_at": "2026-04-21T02:00:00+00:00",
+            "todos": [
+                {
+                    "todo_id": "todo-scaffold-copy",
+                    "request_id": "request-scaffold-copy",
+                    "backlog_id": "backlog-1",
+                    "status": "failed",
+                    "ended_at": "2026-04-21T01:00:00+00:00",
+                }
+            ],
+        }
+
+        service = _Service()
+
+        candidate = select_restart_checkpoint_todo(service, sprint_state)
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate[1], "failed")
+        self.assertTrue(prepare_requested_restart_checkpoint(service, sprint_state))
+        self.assertEqual(sprint_state["todos"][0]["status"], "queued")
+        self.assertEqual(sprint_state["todos"][0]["request_id"], "")
+        self.assertEqual(sprint_state["todos"][0]["retry_of_request_id"], "request-scaffold-copy")
+
     def test_merge_recovered_sprint_todo_prefers_newer_recovery_and_merges_artifacts(self) -> None:
         existing = {
             "todo_id": "todo-1",

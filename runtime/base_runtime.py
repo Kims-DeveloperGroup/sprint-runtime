@@ -29,7 +29,7 @@ from teams_runtime.workflows.roles import render_role_prompt_spec
 from teams_runtime.workflows.roles.planner import normalize_planner_proposals
 
 
-CONTRACT_REPAIR_MAX_ATTEMPTS = 1
+CONTRACT_REPAIR_MAX_ATTEMPTS = 2
 WRITE_DENIAL_TERMS = (
     "operation not permitted",
     "permissionerror",

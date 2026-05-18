@@ -2678,7 +2678,7 @@ def select_restart_checkpoint_todo(
         if priority is None:
             if not (
                 normalized_status == "failed"
-                and str(request_record.get("status") or "").strip().lower() == "delegated"
+                and str(request_record.get("status") or "").strip().lower() in {"delegated", "failed"}
                 and is_restart_repairable_invalid_contract_payload(
                     dict(request_record.get("result") or {})
                     if isinstance(request_record.get("result"), dict)
@@ -2769,9 +2769,10 @@ def prepare_requested_restart_checkpoint(service: Any, sprint_state: dict[str, A
     todo_id = str(todo.get("todo_id") or "").strip()
     previous_request_id = str(todo.get("request_id") or "").strip()
     backlog_id = str(todo.get("backlog_id") or "").strip()
+    request_status = str(request_record.get("status") or "").strip().lower()
     repairable_invalid_contract = (
         previous_status == "failed"
-        and str(request_record.get("status") or "").strip().lower() == "delegated"
+        and request_status in {"delegated", "failed"}
         and is_restart_repairable_invalid_contract_payload(
             dict(request_record.get("result") or {})
             if isinstance(request_record.get("result"), dict)
@@ -2793,8 +2794,14 @@ def prepare_requested_restart_checkpoint(service: Any, sprint_state: dict[str, A
         service._mark_restart_checkpoint_backlog_selected(sprint_state, backlog_id=backlog_id)
         summary = "마지막 blocked todo를 재시도하도록 restart checkpoint를 복원했습니다."
     elif repairable_invalid_contract:
-        todo["request_id"] = previous_request_id
-        todo["status"] = "running"
+        if request_status == "failed":
+            if previous_request_id:
+                todo["retry_of_request_id"] = previous_request_id
+            todo["request_id"] = ""
+            todo["status"] = "queued"
+        else:
+            todo["request_id"] = previous_request_id
+            todo["status"] = "running"
         todo["dependency_gate_bypass"] = "restart_checkpoint"
         todo["ended_at"] = ""
         todo["carry_over_backlog_id"] = ""

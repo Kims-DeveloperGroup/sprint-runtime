@@ -138,7 +138,7 @@ class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
         contract = render_role_result_contract(request_id="request-1", role="developer")
 
         self.assertNotIn("이 세션에서 직접 확인한 실제 한국어 요약", contract)
-        self.assertIn("실제 실행 근거를 반영한 구체적 한국어 요약", contract)
+        self.assertIn("<실제 실행 근거를 반영한 한국어 요약 작성>", contract)
         self.assertIn('"proposals": {}', contract)
         self.assertNotIn('"workflow_transition"', contract)
 
@@ -153,6 +153,43 @@ class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
         self.assertIn('"workflow_transition"', contract)
         self.assertIn('"outcome": "complete"', contract)
         self.assertIn('"unresolved_items": []', contract)
+        self.assertIn("<실제 workflow 전환 사유를 작성>", contract)
+
+    def test_workflow_transition_prompt_reason_is_invalid_placeholder(self):
+        payload = {
+            "role": "planner",
+            "status": "completed",
+            "summary": "planner finalize를 수행했습니다.",
+            "insights": [],
+            "proposals": {
+                "workflow_transition": {
+                    "outcome": "complete",
+                    "target_phase": "",
+                    "target_step": "",
+                    "reopen_category": "",
+                    "reason": "<실제 workflow 전환 사유를 작성>",
+                    "unresolved_items": [],
+                    "finalize_phase": False,
+                }
+            },
+            "artifacts": [],
+            "error": "",
+        }
+
+        issues = validate_role_result_contract(
+            payload,
+            request_record={
+                "params": {
+                    "workflow": {
+                        "phase": "planning",
+                        "step": "planner_finalize",
+                    }
+                }
+            },
+            role="planner",
+        )
+
+        self.assertIn("copied_workflow_transition_placeholder", issues)
 
     def test_restart_repairable_invalid_contract_requires_missing_transition(self):
         self.assertTrue(
@@ -172,6 +209,19 @@ class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
                     "contract_repair_attempted": True,
                     "contract_issues": ["copied_placeholder_summary", "missing_workflow_transition"],
                     "proposals": {"workflow_transition": self._transition()},
+                }
+            )
+        )
+        self.assertTrue(
+            is_restart_repairable_invalid_contract_payload(
+                {
+                    "status": "completed",
+                    "summary": "<실제 실행 근거를 반영한 한국어 요약 작성>",
+                    "proposals": {
+                        "workflow_transition": {
+                            "reason": "<실제 workflow 전환 사유를 작성>",
+                        }
+                    },
                 }
             )
         )
