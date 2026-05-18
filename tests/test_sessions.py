@@ -2512,6 +2512,22 @@ context compacted
                     self.outputs = [
                         (invalid_output, "session-developer-1"),
                         (repaired_output, "session-developer-2"),
+                        (
+                            json.dumps(
+                                {
+                                    "request_id": "request-2",
+                                    "role": "developer",
+                                    "status": "completed",
+                                    "summary": "다음 developer 작업은 repair-only 세션을 재사용하지 않고 새 세션에서 시작했습니다.",
+                                    "insights": [],
+                                    "proposals": {},
+                                    "artifacts": [],
+                                    "error": "",
+                                },
+                                ensure_ascii=False,
+                            ),
+                            "session-developer-3",
+                        ),
                     ]
 
                 def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
@@ -2560,6 +2576,28 @@ context compacted
             self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
             self.assertIn("copied_placeholder_summary", payload["contract_issues"])
             self.assertEqual(payload["summary"], "구현과 검증 범위를 정리해 QA handoff 조건을 명시했습니다.")
+            self.assertEqual(runtime.session_manager.load().session_id, "")
+
+            second_payload = runtime.run_task(
+                MessageEnvelope(
+                    request_id="request-2",
+                    sender="orchestrator",
+                    target="developer",
+                    intent="implement",
+                    urgency="normal",
+                    scope="continue after repair",
+                ),
+                {
+                    "request_id": "request-2",
+                    "scope": "continue after repair",
+                    "body": "",
+                    "artifacts": [],
+                },
+            )
+
+            self.assertEqual(len(fake_runner.calls), 3)
+            self.assertIsNone(fake_runner.calls[2]["session_id"])
+            self.assertEqual(second_payload["session_id"], "session-developer-3")
 
     def test_role_runtime_restarts_repairable_invalid_payload_in_fresh_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2658,6 +2696,7 @@ context compacted
             self.assertIn('"workflow_transition"', str(fake_runner.calls[0]["prompt"]))
             self.assertEqual(payload["status"], "completed")
             self.assertEqual(payload["session_id"], "session-planner-fresh")
+            self.assertEqual(runtime.session_manager.load().session_id, "session-planner-fresh")
             self.assertNotIn("contract_status", payload)
             self.assertEqual(payload["summary"], "planner_finalize 재개 요청을 검토했고 QA 검증 단계로 넘길 조건을 정리했습니다.")
 
@@ -2746,6 +2785,7 @@ context compacted
             self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
             self.assertIn("copied_placeholder_summary", payload["contract_issues"])
             self.assertIn("missing_workflow_transition", payload["contract_issues"])
+            self.assertEqual(runtime.session_manager.load().session_id, "")
 
     def test_normalize_role_payload_coerces_common_shape_issues(self):
         payload = normalize_role_payload(

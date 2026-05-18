@@ -391,7 +391,7 @@ class RoleAgentRuntime:
                     )
                     active_session_id = resolved_session_id or active_session_id
                     payload = self._parse_role_output(output, request_record)
-                payload, active_session_id = self._repair_invalid_role_payload_once(
+                payload, active_session_id, clear_role_session_after_task = self._repair_invalid_role_payload_once(
                     payload,
                     request_record,
                     current_sprint_id=current_sprint_id,
@@ -421,7 +421,13 @@ class RoleAgentRuntime:
                     "error": str(exc) or "role execution failed",
                 }
                 payload = normalize_role_payload(payload)
-            state = session_manager.finalize_session_id(state, active_session_id)
+                clear_role_session_after_task = False
+            result_session_id = active_session_id
+            if clear_role_session_after_task:
+                state.session_id = ""
+                state = session_manager.finalize_session_id(state, None)
+            else:
+                state = session_manager.finalize_session_id(state, active_session_id)
             payload["request_id"] = request_record["request_id"]
             payload["role"] = self.role
             payload.setdefault("status", "completed")
@@ -431,7 +437,7 @@ class RoleAgentRuntime:
             payload.setdefault("artifacts", [])
             payload.setdefault("next_role", "")
             payload.setdefault("error", "")
-            payload.setdefault("session_id", state.session_id)
+            payload.setdefault("session_id", result_session_id or state.session_id)
             payload.setdefault("session_workspace", state.workspace_path)
             LOGGER.info(
                 "[%s] task_result request_id=%s sprint_id=%s todo_id=%s backlog_id=%s status=%s next_role=%s session_id=%s workspace=%s artifacts=%s summary=%s error=%s",
@@ -442,7 +448,7 @@ class RoleAgentRuntime:
                 backlog_id,
                 str(payload.get("status") or ""),
                 str(payload.get("next_role") or ""),
-                state.session_id or "unknown",
+                str(payload.get("session_id") or state.session_id or "unknown"),
                 state.workspace_path,
                 len(payload.get("artifacts") or []),
                 _truncate_log_text(payload.get("summary") or "", limit=180) or "없음",
@@ -487,14 +493,15 @@ class RoleAgentRuntime:
         workspace_path: Path,
         active_session_id: str | None,
         bypass_sandbox: bool,
-    ) -> tuple[RoleResult, str | None]:
+    ) -> tuple[RoleResult, str | None, bool]:
         if not is_invalid_contract_payload(payload):
-            return payload, active_session_id
+            return payload, active_session_id, False
 
         observed_issues = _merge_contract_issue_lists(list(payload.get("contract_issues") or []))
         attempts = 0
         latest_payload = dict(payload)
         latest_session_id = active_session_id
+        used_fresh_repair_session = False
         while attempts < CONTRACT_REPAIR_MAX_ATTEMPTS and is_invalid_contract_payload(latest_payload):
             attempts += 1
             issue_summary = summarize_contract_issues(observed_issues) or "role result contract validation failed"
@@ -514,6 +521,8 @@ class RoleAgentRuntime:
                 current_sprint_id=current_sprint_id,
             )
             repair_session_id = None if _contract_issues_include_scaffold_copy(observed_issues) else latest_session_id
+            if repair_session_id is None:
+                used_fresh_repair_session = True
             if repair_session_id is None and latest_session_id:
                 LOGGER.info(
                     "[%s] invalid_role_payload_fresh_repair_session request_id=%s sprint_id=%s attempt=%s previous_session_id=%s",
@@ -544,6 +553,7 @@ class RoleAgentRuntime:
                     contract_repair_attempted=attempts > 0,
                 ),
                 latest_session_id,
+                used_fresh_repair_session,
             )
 
         if attempts > 0:
@@ -551,7 +561,7 @@ class RoleAgentRuntime:
             latest_payload["contract_status"] = CONTRACT_STATUS_REPAIRED
             latest_payload["contract_issues"] = observed_issues
             latest_payload["contract_repair_attempted"] = True
-        return latest_payload, latest_session_id
+        return latest_payload, latest_session_id, used_fresh_repair_session
 
     def _build_invalid_role_payload_result(
         self,
