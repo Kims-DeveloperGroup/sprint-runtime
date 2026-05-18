@@ -2945,7 +2945,12 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                     "scope": "planner finalize invalid contract",
                     "body": "planner finalize invalid contract",
                     "artifacts": [],
-                    "params": {},
+                    "params": {
+                        "workflow": {
+                            "phase": "planning",
+                            "step": "planner_finalize",
+                        }
+                    },
                     "current_role": "planner",
                     "next_role": "planner",
                     "owner_role": "orchestrator",
@@ -2991,8 +2996,10 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
 
                 updated = service._load_request("20260428-invalid-contract-1")
                 self.assertEqual(updated["status"], "failed")
+                self.assertEqual(updated["result"]["status"], "failed")
                 self.assertEqual(updated["result"]["contract_status"], "invalid")
                 self.assertIn("copied_prompt_status_enum_literal", updated["result"]["contract_issues"])
+                self.assertIn("missing_workflow_transition", updated["result"]["contract_issues"])
                 history_text = service.paths.role_history_file("orchestrator").read_text(encoding="utf-8")
                 journal_text = service.paths.role_journal_file("orchestrator").read_text(encoding="utf-8")
                 self.assertIn("invalid_role_payload", history_text)

@@ -45,16 +45,37 @@ def is_prompt_placeholder_summary(value: Any) -> bool:
     return normalized in {summary.casefold() for summary in PROMPT_PLACEHOLDER_SUMMARIES}
 
 
-def render_role_result_contract(*, request_id: str, role: str, extra_fields: str = "") -> str:
+def render_role_result_contract(
+    *,
+    request_id: str,
+    role: str,
+    extra_fields: str = "",
+    workflow_required: bool = False,
+) -> str:
+    proposals_block = (
+        """{
+    "workflow_transition": {
+      "outcome": "complete",
+      "target_phase": "",
+      "target_step": "",
+      "reopen_category": "",
+      "reason": "구체적인 workflow 전환 사유",
+      "unresolved_items": [],
+      "finalize_phase": false
+    }
+  }"""
+        if workflow_required
+        else "{}"
+    )
     return f"""Use concrete values from this run only. Do not copy schema enums or placeholder example text literally.
 Allowed `status` values are exactly `completed`, `blocked`, or `failed`.
 {{
   "request_id": "{request_id}",
   "role": "{role}",
   "status": "completed",
-  "summary": "이 세션에서 직접 확인한 실제 한국어 요약",
+  "summary": "실제 실행 근거를 반영한 구체적 한국어 요약",
   "insights": [],
-  "proposals": {{}},
+  "proposals": {proposals_block},
   "artifacts": [],
   "error": ""
 {extra_fields}

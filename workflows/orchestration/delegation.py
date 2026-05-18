@@ -2054,6 +2054,15 @@ async def apply_role_result(
     contract_issues = _normalize_string_list(result.get("contract_issues"))
     contract_summary = summarize_contract_issues(contract_issues)
     if contract_invalid:
+        result = dict(result)
+        result["status"] = "failed"
+        result["next_role"] = ""
+        if not str(result.get("error") or "").strip():
+            result["error"] = (
+                f"invalid_role_payload: {contract_summary}"
+                if contract_summary
+                else "invalid_role_payload: role result contract validation failed"
+            )
         service._record_internal_sprint_activity(
             request_record,
             event_type="invalid_role_payload",
@@ -2144,11 +2153,15 @@ async def apply_role_result(
         request_record["result"] = result
     result_status = str(result.get("status") or "").strip().lower()
     if result_status in {"failed", "blocked"} or str(result.get("error") or "").strip():
-        workflow_terminal_decision = service._derive_workflow_routing_decision(
-            request_record,
-            result,
-            sender_role=sender_role,
-        ) or {}
+        workflow_terminal_decision = (
+            {}
+            if contract_invalid
+            else service._derive_workflow_routing_decision(
+                request_record,
+                result,
+                sender_role=sender_role,
+            ) or {}
+        )
         workflow_state = dict(workflow_terminal_decision.get("workflow_state") or {})
         if workflow_state:
             service._set_request_workflow_state(request_record, workflow_state)

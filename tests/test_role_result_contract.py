@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from teams_runtime.runtime.role_result_contract import validate_role_result_contract
+from teams_runtime.runtime.role_result_contract import (
+    render_role_result_contract,
+    validate_role_result_contract,
+)
 
 
 class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
@@ -129,6 +132,26 @@ class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
         issues = validate_role_result_contract(payload, role="developer")
 
         self.assertIn("copied_placeholder_summary", issues)
+
+    def test_rendered_contract_does_not_prompt_rejected_summary_placeholder(self):
+        contract = render_role_result_contract(request_id="request-1", role="developer")
+
+        self.assertNotIn("이 세션에서 직접 확인한 실제 한국어 요약", contract)
+        self.assertIn("실제 실행 근거를 반영한 구체적 한국어 요약", contract)
+        self.assertIn('"proposals": {}', contract)
+        self.assertNotIn('"workflow_transition"', contract)
+
+    def test_workflow_rendered_contract_includes_transition_shape(self):
+        contract = render_role_result_contract(
+            request_id="request-1",
+            role="planner",
+            workflow_required=True,
+        )
+
+        self.assertNotIn("이 세션에서 직접 확인한 실제 한국어 요약", contract)
+        self.assertIn('"workflow_transition"', contract)
+        self.assertIn('"outcome": "complete"', contract)
+        self.assertIn('"unresolved_items": []', contract)
 
 
 if __name__ == "__main__":

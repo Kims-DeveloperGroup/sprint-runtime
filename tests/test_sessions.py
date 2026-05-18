@@ -2618,17 +2618,29 @@ context compacted
                 "scope": "planner finalize",
                 "body": "",
                 "artifacts": [],
+                "params": {
+                    "workflow": {
+                        "phase": "planning",
+                        "step": "planner_finalize",
+                    }
+                },
             }
 
             payload = runtime.run_task(envelope, request_record)
 
             self.assertEqual(len(fake_runner.calls), 2)
+            self.assertIn('"workflow_transition"', str(fake_runner.calls[0]["prompt"]))
+            self.assertIn('"workflow_transition"', str(fake_runner.calls[1]["prompt"]))
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["contract_status"], "invalid")
             self.assertTrue(payload["contract_repair_attempted"])
             self.assertIn("invalid_role_payload:", payload["error"])
+            self.assertEqual(payload["proposals"]["workflow_transition"]["outcome"], "block")
+            self.assertEqual(payload["proposals"]["workflow_transition"]["target_phase"], "planning")
+            self.assertEqual(payload["proposals"]["workflow_transition"]["target_step"], "planner_finalize")
             self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
             self.assertIn("copied_placeholder_summary", payload["contract_issues"])
+            self.assertIn("missing_workflow_transition", payload["contract_issues"])
 
     def test_normalize_role_payload_coerces_common_shape_issues(self):
         payload = normalize_role_payload(

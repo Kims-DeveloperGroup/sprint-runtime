@@ -15,6 +15,7 @@ from teams_runtime.runtime.role_result_contract import (
     CONTRACT_STATUS_REPAIRED,
     PROMPT_PLACEHOLDER_INSIGHT,
     PROMPT_STATUS_ENUM_LITERAL,
+    WORKFLOW_TRANSITION_REQUIRED_ROLES,
     describe_contract_issues,
     is_prompt_placeholder_summary,
     is_invalid_contract_payload,
@@ -105,6 +106,37 @@ def _merge_contract_issue_lists(*issue_groups: list[str]) -> list[str]:
             seen.add(normalized)
             merged.append(normalized)
     return merged
+
+
+def _request_workflow_state(request_record: RequestRecord) -> dict[str, Any]:
+    params = request_record.get("params") if isinstance(request_record, dict) else None
+    workflow = params.get("workflow") if isinstance(params, dict) else None
+    if not isinstance(workflow, dict):
+        workflow = request_record.get("workflow") if isinstance(request_record, dict) else None
+    return dict(workflow) if isinstance(workflow, dict) and workflow else {}
+
+
+def _role_requires_workflow_transition(request_record: RequestRecord, role: str) -> bool:
+    normalized_role = str(role or "").strip().lower()
+    return bool(_request_workflow_state(request_record)) and normalized_role in WORKFLOW_TRANSITION_REQUIRED_ROLES
+
+
+def _invalid_payload_workflow_transition(
+    request_record: RequestRecord,
+    issues: list[str],
+    *,
+    error_summary: str,
+) -> dict[str, Any]:
+    workflow = _request_workflow_state(request_record)
+    return {
+        "outcome": "block",
+        "target_phase": str(workflow.get("phase") or "").strip(),
+        "target_step": str(workflow.get("step") or "").strip(),
+        "reopen_category": "",
+        "reason": f"role result JSON contract repair failed: {error_summary}",
+        "unresolved_items": describe_contract_issues(issues),
+        "finalize_phase": False,
+    }
 
 
 def normalize_role_payload(payload: dict[str, Any]) -> RoleResult:
@@ -493,6 +525,13 @@ class RoleAgentRuntime:
         contract_repair_attempted: bool,
     ) -> RoleResult:
         error_summary = summarize_contract_issues(issues) or "role result contract validation failed"
+        proposals: dict[str, Any] = {}
+        if _role_requires_workflow_transition(request_record, self.role):
+            proposals["workflow_transition"] = _invalid_payload_workflow_transition(
+                request_record,
+                issues,
+                error_summary=error_summary,
+            )
         payload = normalize_role_payload(
             {
                 "request_id": request_record["request_id"],
@@ -500,7 +539,7 @@ class RoleAgentRuntime:
                 "status": "failed",
                 "summary": "역할 결과 JSON contract를 복구하지 못했습니다.",
                 "insights": [],
-                "proposals": {},
+                "proposals": proposals,
                 "artifacts": [],
                 "error": f"invalid_role_payload: {error_summary}",
             }
@@ -524,6 +563,7 @@ class RoleAgentRuntime:
             request_id=str(request_record["request_id"]),
             role=self.role,
             extra_fields=extra_fields,
+            workflow_required=_role_requires_workflow_transition(request_record, self.role),
         )
         issue_lines = "\n".join(f"- {line}" for line in describe_contract_issues(issues)) or "- unknown contract error"
         return f"""Your previous teams_runtime role result was rejected by contract validation.
@@ -617,6 +657,7 @@ Current request:
             request_id=str(request_record["request_id"]),
             role=self.role,
             extra_fields=extra_fields,
+            workflow_required=_role_requires_workflow_transition(request_record, self.role),
         )
         return f"""You are the {self.role} role inside teams_runtime.
 

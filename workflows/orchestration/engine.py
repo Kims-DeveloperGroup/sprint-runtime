@@ -966,6 +966,10 @@ def sanitize_implementation_result(
     return normalized_result
 
 
+def _is_invalid_role_result_contract(result: dict[str, Any]) -> bool:
+    return str((result or {}).get("contract_status") or "").strip().lower() == "invalid"
+
+
 def enforce_workflow_role_report_contract(
     *,
     workflow_state: dict[str, Any],
@@ -978,6 +982,8 @@ def enforce_workflow_role_report_contract(
     transition: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not workflow_state:
+        return result
+    if _is_invalid_role_result_contract(result):
         return result
     normalized_role = str(role or "").strip().lower()
     if normalized_role == "planner":

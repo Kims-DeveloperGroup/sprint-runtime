@@ -211,6 +211,45 @@ class TeamsRuntimeWorkflowRolePolicyTests(unittest.TestCase):
         self.assertIn("planner 문서 계약", updated["summary"])
         self.assertEqual(updated["proposals"]["workflow_transition"]["target_step"], "planner_finalize")
 
+    def test_enforce_workflow_role_report_contract_leaves_invalid_contract_terminal(self):
+        workflow_state = default_workflow_state()
+        workflow_state["phase"] = "planning"
+        workflow_state["step"] = "planner_finalize"
+        workflow_state["phase_owner"] = "planner"
+
+        result = {
+            "role": "planner",
+            "status": "failed",
+            "summary": "역할 결과 JSON contract를 복구하지 못했습니다.",
+            "insights": [],
+            "proposals": {
+                "workflow_transition": {
+                    "outcome": "block",
+                    "target_phase": "planning",
+                    "target_step": "planner_finalize",
+                    "reopen_category": "",
+                    "reason": "role result JSON contract repair failed.",
+                    "unresolved_items": ["missing workflow transition"],
+                    "finalize_phase": False,
+                }
+            },
+            "artifacts": [],
+            "error": "invalid_role_payload: workflow-managed request인데 `proposals.workflow_transition`이 없습니다.",
+            "contract_status": "invalid",
+        }
+
+        updated = enforce_workflow_role_report_contract(
+            workflow_state=workflow_state,
+            role="planner",
+            result=result,
+            planner_doc_contract=([], ["shared_workspace/current_sprint.md"], []),
+            transition={},
+        )
+
+        self.assertIs(updated, result)
+        self.assertEqual(updated["status"], "failed")
+        self.assertNotIn("planner 문서 계약", updated["summary"])
+
     def test_enforce_workflow_role_report_contract_strips_planner_owned_impl_artifacts(self):
         workflow_state = default_workflow_state()
         workflow_state["phase"] = "implementation"
