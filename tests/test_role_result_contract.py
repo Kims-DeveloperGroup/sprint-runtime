@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from teams_runtime.runtime.role_result_contract import (
+    is_restart_repairable_invalid_contract_payload,
     render_role_result_contract,
     validate_role_result_contract,
 )
@@ -152,6 +153,28 @@ class TeamsRuntimeRoleResultContractTests(unittest.TestCase):
         self.assertIn('"workflow_transition"', contract)
         self.assertIn('"outcome": "complete"', contract)
         self.assertIn('"unresolved_items": []', contract)
+
+    def test_restart_repairable_invalid_contract_requires_missing_transition(self):
+        self.assertTrue(
+            is_restart_repairable_invalid_contract_payload(
+                {
+                    "contract_status": "invalid",
+                    "contract_repair_attempted": True,
+                    "contract_issues": ["copied_placeholder_summary", "missing_workflow_transition"],
+                    "proposals": {},
+                }
+            )
+        )
+        self.assertFalse(
+            is_restart_repairable_invalid_contract_payload(
+                {
+                    "contract_status": "invalid",
+                    "contract_repair_attempted": True,
+                    "contract_issues": ["copied_placeholder_summary", "missing_workflow_transition"],
+                    "proposals": {"workflow_transition": self._transition()},
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

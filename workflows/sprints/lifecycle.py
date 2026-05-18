@@ -24,6 +24,7 @@ from teams_runtime.shared.formatting import (
     priority_rank_sort_key,
     priority_rank_sort_value,
 )
+from teams_runtime.runtime.role_result_contract import is_restart_repairable_invalid_contract_payload
 from teams_runtime.workflows.repository_ops import capture_git_baseline, inspect_sprint_closeout
 from teams_runtime.workflows.state.request_store import append_request_event
 from teams_runtime.workflows.state.backlog_store import (
@@ -287,9 +288,12 @@ def sprint_todo_dependencies_satisfied(
 
 def todo_status_from_request_record(request_record: dict[str, Any]) -> str:
     result = dict(request_record.get("result") or {}) if isinstance(request_record.get("result"), dict) else {}
+    request_status = str(request_record.get("status") or "").strip().lower()
+    if request_status == "delegated" and is_restart_repairable_invalid_contract_payload(result):
+        return "running"
     candidates = [
         str(result.get("status") or "").strip().lower(),
-        str(request_record.get("status") or "").strip().lower(),
+        request_status,
     ]
     valid_statuses = {"queued", "running", "uncommitted", "committed", "completed", "blocked", "failed"}
     for candidate in candidates:
@@ -2666,12 +2670,23 @@ def select_restart_checkpoint_todo(
     status_priority = {"running": 3, "uncommitted": 2, "blocked": 1}
     for index, todo in enumerate(todos):
         normalized_status = str(todo.get("status") or "").strip().lower()
-        if normalized_status not in status_priority:
-            continue
         request_record: dict[str, Any] = {}
         request_id = str(todo.get("request_id") or "").strip()
         if request_id:
             request_record = service._load_request(request_id)
+        priority = status_priority.get(normalized_status)
+        if priority is None:
+            if not (
+                normalized_status == "failed"
+                and str(request_record.get("status") or "").strip().lower() == "delegated"
+                and is_restart_repairable_invalid_contract_payload(
+                    dict(request_record.get("result") or {})
+                    if isinstance(request_record.get("result"), dict)
+                    else {}
+                )
+            ):
+                continue
+            priority = 3
         checkpoint_at = service._parse_datetime(
             str(
                 request_record.get("updated_at")
@@ -2682,7 +2697,7 @@ def select_restart_checkpoint_todo(
             )
         )
         candidate_key = (
-            status_priority[normalized_status],
+            priority,
             1 if checkpoint_at is not None else 0,
             checkpoint_at.timestamp() if checkpoint_at is not None else float("-inf"),
             index,
@@ -2754,6 +2769,15 @@ def prepare_requested_restart_checkpoint(service: Any, sprint_state: dict[str, A
     todo_id = str(todo.get("todo_id") or "").strip()
     previous_request_id = str(todo.get("request_id") or "").strip()
     backlog_id = str(todo.get("backlog_id") or "").strip()
+    repairable_invalid_contract = (
+        previous_status == "failed"
+        and str(request_record.get("status") or "").strip().lower() == "delegated"
+        and is_restart_repairable_invalid_contract_payload(
+            dict(request_record.get("result") or {})
+            if isinstance(request_record.get("result"), dict)
+            else {}
+        )
+    )
     if previous_status == "blocked":
         if previous_request_id:
             todo["retry_of_request_id"] = previous_request_id
@@ -2768,6 +2792,18 @@ def prepare_requested_restart_checkpoint(service: Any, sprint_state: dict[str, A
         todo["version_control_error"] = ""
         service._mark_restart_checkpoint_backlog_selected(sprint_state, backlog_id=backlog_id)
         summary = "마지막 blocked todo를 재시도하도록 restart checkpoint를 복원했습니다."
+    elif repairable_invalid_contract:
+        todo["request_id"] = previous_request_id
+        todo["status"] = "running"
+        todo["dependency_gate_bypass"] = "restart_checkpoint"
+        todo["ended_at"] = ""
+        todo["carry_over_backlog_id"] = ""
+        todo["version_control_status"] = ""
+        todo["version_control_paths"] = []
+        todo["version_control_message"] = ""
+        todo["version_control_error"] = ""
+        service._mark_restart_checkpoint_backlog_selected(sprint_state, backlog_id=backlog_id)
+        summary = "이전 invalid role-result JSON을 해당 역할이 자체 복구하도록 restart checkpoint를 복원했습니다."
     else:
         summary = "마지막 execution checkpoint부터 sprint를 재개합니다."
     todos = list(sprint_state.get("todos") or [])

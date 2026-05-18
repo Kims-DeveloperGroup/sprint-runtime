@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from teams_runtime.runtime.base_runtime import normalize_role_payload
 from teams_runtime.runtime.role_result_contract import (
     is_invalid_contract_payload,
+    is_restart_repairable_invalid_contract_payload,
     summarize_contract_issues,
     validate_role_result_contract,
 )
@@ -98,6 +99,20 @@ def _annotate_contract_validation(
             contract_issues,
         )
     return normalized
+
+
+def _should_defer_restart_repair_invalid_role_report(
+    request_record: dict[str, Any],
+    envelope: MessageEnvelope,
+    result: dict[str, Any],
+) -> bool:
+    if not is_restart_repairable_invalid_contract_payload(result):
+        return False
+    if str(request_record.get("status") or "").strip().lower() != "delegated":
+        return False
+    report_role = str(envelope.sender or result.get("role") or "").strip().lower()
+    current_role = str(request_record.get("current_role") or "").strip().lower()
+    return bool(report_role and current_role and report_role == current_role)
 
 
 def _extract_proposal_acceptance_criteria(proposals: dict[str, Any]) -> list[str]:
@@ -2606,6 +2621,24 @@ async def handle_role_report(service: Any, message: Any, envelope: MessageEnvelo
             str(envelope.sender or result.get("role") or "unknown").strip() or "unknown",
             stale_reason,
         )
+        return
+    if _should_defer_restart_repair_invalid_role_report(request_record, envelope, result):
+        append_request_event(
+            request_record,
+            event_type="invalid_role_payload_repair_deferred",
+            actor="orchestrator",
+            summary="이전 invalid role-result JSON은 역할 재시작 경로에서 해당 역할이 자체 복구하도록 보류했습니다.",
+            payload=result,
+        )
+        service._record_internal_sprint_activity(
+            request_record,
+            event_type="invalid_role_payload_repair_deferred",
+            role=str(result.get("role") or envelope.sender or ""),
+            status="delegated",
+            summary="이전 invalid role-result JSON은 역할 재시작 경로에서 해당 역할이 자체 복구하도록 보류했습니다.",
+            payload=result,
+        )
+        service._save_request(request_record)
         return
     result = service._enforce_workflow_role_report_contract(request_record, result)
     await service._apply_role_result(

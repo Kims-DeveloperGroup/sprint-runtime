@@ -46,6 +46,7 @@ from teams_runtime.workflows.state.backlog_store import (
     save_backlog_item,
 )
 from teams_runtime.shared.config import load_discord_agents_config, load_team_runtime_config
+from teams_runtime.runtime.role_result_contract import is_restart_repairable_invalid_contract_payload
 from teams_runtime.workflows.orchestration.relay import (
     archive_internal_relay_file,
     build_internal_relay_message_stub as render_internal_relay_message_stub,
@@ -3631,6 +3632,7 @@ class TeamService:
             if (
                 str(result.get("request_id") or "").strip() == request_id
                 and str(result.get("role") or "").strip() == self.role
+                and not is_restart_repairable_invalid_contract_payload(result)
             ):
                 result_envelope = MessageEnvelope(
                     request_id=request_id,
@@ -3649,12 +3651,23 @@ class TeamService:
                 )
                 await self._send_relay(result_envelope, request_record=request_record)
                 return
+            repair_invalid_payload_on_resume = is_restart_repairable_invalid_contract_payload(result)
+            if repair_invalid_payload_on_resume:
+                self._record_internal_sprint_activity(
+                    request_record,
+                    event_type="invalid_role_payload_repair_retry",
+                    role=self.role,
+                    status="running",
+                    summary="재시작 중 이전 invalid role-result JSON을 재전송하지 않고 역할이 자체 재실행으로 복구합니다.",
+                    payload=result,
+                )
             envelope = self._build_delegate_envelope(
                 request_record,
                 self.role,
                 extra_params={
                     **dict(request_record.get("params") or {}),
                     "_resumed_after_reconnect": True,
+                    **({"_repair_invalid_role_payload_on_resume": True} if repair_invalid_payload_on_resume else {}),
                 },
             )
             await self._process_delegated_request(envelope, request_record)

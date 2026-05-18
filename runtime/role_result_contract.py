@@ -188,6 +188,25 @@ def is_invalid_contract_payload(payload: dict[str, Any]) -> bool:
     return str(payload.get("contract_status") or "").strip().lower() == CONTRACT_STATUS_INVALID
 
 
+def is_restart_repairable_invalid_contract_payload(payload: dict[str, Any]) -> bool:
+    if not is_invalid_contract_payload(payload):
+        return False
+    if not bool(payload.get("contract_repair_attempted")):
+        return False
+    issues = {
+        str(issue or "").strip()
+        for issue in (payload.get("contract_issues") or [])
+        if str(issue or "").strip()
+    }
+    if "missing_workflow_transition" not in issues:
+        return False
+    proposals = payload.get("proposals")
+    transition = proposals.get("workflow_transition") if isinstance(proposals, dict) else None
+    if isinstance(transition, dict):
+        return False
+    return True
+
+
 def _normalize_string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]

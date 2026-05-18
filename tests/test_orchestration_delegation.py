@@ -1429,6 +1429,76 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                 self.assertEqual(len(service.discord_client.sent_channels), 1)
                 self.assertIn("reconnected and resumed", service.discord_client.sent_channels[0][1])
 
+    def test_non_orchestrator_resume_reruns_restart_repairable_invalid_contract_result(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "planner")
+                request_record = {
+                    "request_id": "20260324-invalid-resume",
+                    "status": "delegated",
+                    "intent": "plan",
+                    "urgency": "normal",
+                    "scope": "resume invalid role JSON",
+                    "body": "resume invalid role JSON",
+                    "artifacts": [],
+                    "params": {},
+                    "current_role": "planner",
+                    "next_role": "planner",
+                    "owner_role": "orchestrator",
+                    "created_at": "2026-03-24T00:00:00+00:00",
+                    "updated_at": "2026-03-24T00:00:00+00:00",
+                    "fingerprint": "resume-invalid-fp",
+                    "reply_route": {},
+                    "events": [],
+                    "result": {
+                        "request_id": "20260324-invalid-resume",
+                        "role": "planner",
+                        "status": "failed",
+                        "summary": "역할 결과 JSON contract를 복구하지 못했습니다.",
+                        "insights": [],
+                        "proposals": {},
+                        "artifacts": [],
+                        "error": "invalid_role_payload",
+                        "contract_status": "invalid",
+                        "contract_issues": ["copied_placeholder_summary", "missing_workflow_transition"],
+                        "contract_repair_attempted": True,
+                    },
+                }
+                service._save_request(request_record)
+
+                async def fake_send_relay(envelope):
+                    service.discord_client.sent_channels.append((service.discord_config.relay_channel_id, envelope.body))
+
+                service._send_relay = fake_send_relay
+                calls: list[str] = []
+
+                def fake_run_task(*_args, **_kwargs):
+                    calls.append("run")
+                    return {
+                        "request_id": "20260324-invalid-resume",
+                        "role": "planner",
+                        "status": "completed",
+                        "summary": "role repaired JSON after restart",
+                        "insights": [],
+                        "proposals": {},
+                        "artifacts": [],
+                        "next_role": "",
+                        "approval_needed": False,
+                        "error": "",
+                    }
+
+                service.role_runtime.run_task = fake_run_task
+
+                asyncio.run(service._resume_pending_role_requests())
+
+                self.assertEqual(calls, ["run"])
+                self.assertEqual(len(service.discord_client.sent_channels), 1)
+                self.assertIn("role repaired JSON after restart", service.discord_client.sent_channels[0][1])
+                updated = service._load_request("20260324-invalid-resume")
+                self.assertEqual(updated["result"]["status"], "completed")
+                self.assertNotEqual(updated["result"].get("contract_status"), "invalid")
+
     def test_orchestrator_ignores_trusted_relay_messages_without_supported_kind(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

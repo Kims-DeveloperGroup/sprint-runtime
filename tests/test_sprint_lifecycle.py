@@ -36,6 +36,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     normalize_original_requirements,
     normalize_trace_list,
     next_initial_phase_step,
+    prepare_requested_restart_checkpoint,
     record_sprint_planning_iteration,
     requirement_traceability_matrix_for_sprint,
     recover_sprint_todos_from_recovered,
@@ -46,6 +47,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     sprint_planning_phase_ready,
     sprint_attachment_filename,
     sprint_uses_manual_flow,
+    select_restart_checkpoint_todo,
     todo_status_from_request_record,
     todo_status_rank,
     uses_manual_daily_sprint,
@@ -318,6 +320,86 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         )
         self.assertEqual(todo_status_from_request_record({"status": "delegated", "result": {}}), "running")
         self.assertEqual(todo_status_from_request_record({"status": "unknown", "result": {}}), "queued")
+
+    def test_todo_status_keeps_restart_repairable_invalid_contract_running(self) -> None:
+        self.assertEqual(
+            todo_status_from_request_record(
+                {
+                    "status": "delegated",
+                    "result": {
+                        "status": "failed",
+                        "contract_status": "invalid",
+                        "contract_repair_attempted": True,
+                        "contract_issues": ["missing_workflow_transition"],
+                        "proposals": {},
+                    },
+                }
+            ),
+            "running",
+        )
+
+    def test_restart_checkpoint_recovers_repairable_invalid_contract_failed_todo(self) -> None:
+        request_record = {
+            "request_id": "request-invalid-json",
+            "status": "delegated",
+            "updated_at": "2026-04-21T01:00:00+00:00",
+            "result": {
+                "status": "failed",
+                "contract_status": "invalid",
+                "contract_repair_attempted": True,
+                "contract_issues": ["missing_workflow_transition"],
+                "proposals": {},
+            },
+        }
+
+        class _Service:
+            def __init__(self):
+                self.events: list[dict[str, object]] = []
+
+            def _load_request(self, request_id):
+                return request_record if request_id == "request-invalid-json" else {}
+
+            def _select_restart_checkpoint_todo(self, sprint_state):
+                return select_restart_checkpoint_todo(self, sprint_state)
+
+            def _parse_datetime(self, value):
+                return datetime.fromisoformat(value)
+
+            def _mark_restart_checkpoint_backlog_selected(self, _sprint_state, *, backlog_id):
+                return None
+
+            def _append_sprint_event(self, sprint_id, *, event_type, summary, payload=None):
+                self.events.append(
+                    {
+                        "sprint_id": sprint_id,
+                        "event_type": event_type,
+                        "summary": summary,
+                        "payload": payload or {},
+                    }
+                )
+
+        service = _Service()
+        sprint_state = {
+            "sprint_id": "sprint-1",
+            "resume_from_checkpoint_requested_at": "2026-04-21T02:00:00+00:00",
+            "todos": [
+                {
+                    "todo_id": "todo-invalid-json",
+                    "request_id": "request-invalid-json",
+                    "backlog_id": "backlog-1",
+                    "status": "failed",
+                    "ended_at": "2026-04-21T01:00:00+00:00",
+                }
+            ],
+        }
+
+        candidate = select_restart_checkpoint_todo(service, sprint_state)
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate[1], "failed")
+        self.assertTrue(prepare_requested_restart_checkpoint(service, sprint_state))
+        self.assertEqual(sprint_state["todos"][0]["status"], "running")
+        self.assertEqual(sprint_state["todos"][0]["request_id"], "request-invalid-json")
+        self.assertEqual(sprint_state["last_resume_checkpoint_status"], "failed")
 
     def test_merge_recovered_sprint_todo_prefers_newer_recovery_and_merges_artifacts(self) -> None:
         existing = {

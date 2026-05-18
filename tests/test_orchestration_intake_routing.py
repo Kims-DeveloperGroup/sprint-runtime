@@ -3005,6 +3005,85 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertIn("invalid_role_payload", history_text)
                 self.assertIn("invalid_role_payload", journal_text)
 
+    def test_orchestrator_defers_restart_repairable_invalid_role_contract_to_role(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                invalid_result = {
+                    "request_id": "20260428-invalid-contract-retry",
+                    "role": "planner",
+                    "status": "failed",
+                    "summary": "역할 결과 JSON contract를 복구하지 못했습니다.",
+                    "insights": [],
+                    "proposals": {},
+                    "artifacts": [],
+                    "error": "invalid_role_payload",
+                    "contract_status": "invalid",
+                    "contract_issues": ["copied_placeholder_summary", "missing_workflow_transition"],
+                    "contract_repair_attempted": True,
+                }
+                request_record = {
+                    "request_id": "20260428-invalid-contract-retry",
+                    "status": "delegated",
+                    "intent": "plan",
+                    "urgency": "normal",
+                    "scope": "planner finalize invalid contract",
+                    "body": "planner finalize invalid contract",
+                    "artifacts": [],
+                    "params": {
+                        "workflow": {
+                            "phase": "planning",
+                            "step": "planner_finalize",
+                        }
+                    },
+                    "current_role": "planner",
+                    "next_role": "planner",
+                    "owner_role": "orchestrator",
+                    "sprint_id": "2026-Sprint-01",
+                    "created_at": "2026-04-28T00:00:00+00:00",
+                    "updated_at": "2026-04-28T00:00:00+00:00",
+                    "fingerprint": "f",
+                    "reply_route": {},
+                    "events": [],
+                    "result": dict(invalid_result),
+                }
+                service._save_request(request_record)
+
+                asyncio.run(
+                    service._handle_role_report(
+                        DiscordMessage(
+                            message_id="relay-invalid-contract-retry",
+                            channel_id="111111111111111111",
+                            guild_id="guild-1",
+                            author_id="111111111111111113",
+                            author_name="planner",
+                            content="relay",
+                            is_dm=False,
+                            mentions_bot=True,
+                            created_at=datetime.now(timezone.utc),
+                        ),
+                        MessageEnvelope(
+                            request_id="20260428-invalid-contract-retry",
+                            sender="planner",
+                            target="orchestrator",
+                            intent="report",
+                            urgency="normal",
+                            scope="planner finalize invalid contract",
+                            params={"_teams_kind": "report", "result": invalid_result},
+                        ),
+                    )
+                )
+
+                updated = service._load_request("20260428-invalid-contract-retry")
+                self.assertEqual(updated["status"], "delegated")
+                self.assertEqual(updated["current_role"], "planner")
+                self.assertEqual(updated["result"]["contract_status"], "invalid")
+                self.assertIn(
+                    "invalid_role_payload_repair_deferred",
+                    [event.get("type") for event in updated["events"]],
+                )
+
     def test_orchestrator_recovers_chunk_merged_qa_report_body_and_routes_to_planner(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
