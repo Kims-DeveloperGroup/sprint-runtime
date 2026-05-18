@@ -19,6 +19,7 @@ from teams_runtime.runtime.role_result_contract import (
     describe_contract_issues,
     is_prompt_placeholder_summary,
     is_invalid_contract_payload,
+    is_restart_repairable_invalid_contract_payload,
     render_role_result_contract,
     summarize_contract_issues,
     validate_role_result_contract,
@@ -106,6 +107,11 @@ def _merge_contract_issue_lists(*issue_groups: list[str]) -> list[str]:
             seen.add(normalized)
             merged.append(normalized)
     return merged
+
+
+def _contract_issues_include_scaffold_copy(issues: list[str]) -> bool:
+    normalized = {str(issue or "").strip() for issue in issues if str(issue or "").strip()}
+    return bool({"copied_placeholder_summary", "copied_workflow_transition_placeholder"} & normalized)
 
 
 def _request_workflow_state(request_record: RequestRecord) -> dict[str, Any]:
@@ -317,11 +323,31 @@ class RoleAgentRuntime:
                 request_record,
                 current_sprint_id=current_sprint_id,
             )
+            force_fresh_role_session = (
+                bool((envelope.params or {}).get("_repair_invalid_role_payload_on_resume"))
+                or is_restart_repairable_invalid_contract_payload(
+                    dict(request_record.get("result") or {})
+                    if isinstance(request_record.get("result"), dict)
+                    else {}
+                )
+            )
             active_session_id = state.session_id or None
+            if force_fresh_role_session:
+                active_session_id = None
             request_id = str(request_record.get("request_id") or envelope.request_id or "").strip() or "unknown"
             sprint_id = current_sprint_id or "N/A"
             todo_id = str(request_record.get("todo_id") or "").strip() or "N/A"
             backlog_id = str(request_record.get("backlog_id") or "").strip() or "N/A"
+            if force_fresh_role_session:
+                LOGGER.info(
+                    "[%s] invalid_payload_resume_fresh_session request_id=%s sprint_id=%s todo_id=%s backlog_id=%s previous_session_id=%s",
+                    self.role,
+                    request_id,
+                    sprint_id,
+                    todo_id,
+                    backlog_id,
+                    state.session_id or "none",
+                )
             LOGGER.info(
                 "[%s] task_start request_id=%s sprint_id=%s todo_id=%s backlog_id=%s intent=%s session_id=%s workspace=%s scope=%s",
                 self.role,
@@ -487,13 +513,23 @@ class RoleAgentRuntime:
                 observed_issues,
                 current_sprint_id=current_sprint_id,
             )
+            repair_session_id = None if _contract_issues_include_scaffold_copy(observed_issues) else latest_session_id
+            if repair_session_id is None and latest_session_id:
+                LOGGER.info(
+                    "[%s] invalid_role_payload_fresh_repair_session request_id=%s sprint_id=%s attempt=%s previous_session_id=%s",
+                    self.role,
+                    str(request_record.get("request_id") or "unknown"),
+                    current_sprint_id or "N/A",
+                    attempts,
+                    latest_session_id,
+                )
             output, resolved_session_id = self.codex_runner.run(
                 workspace_path,
                 repair_prompt,
-                latest_session_id,
+                repair_session_id,
                 bypass_sandbox=bypass_sandbox,
             )
-            latest_session_id = resolved_session_id or latest_session_id
+            latest_session_id = resolved_session_id if repair_session_id is None else (resolved_session_id or latest_session_id)
             latest_payload = self._parse_role_output(output, request_record)
             observed_issues = _merge_contract_issue_lists(
                 observed_issues,
@@ -585,6 +621,7 @@ Current sprint: {current_sprint_id or "N/A"}
 Treat `Current request` as the source of truth.
 When `Current request.params.workflow` exists, `proposals.workflow_transition` is required for workflow-managed roles.
 Never copy schema enums or placeholder example text literally.
+If validation errors mention copied placeholder or scaffold text, do not reuse any wording from the shape block. Write concrete Korean summary and workflow reason text from the actual request state, or return `failed` with a concrete Korean reason.
 {role_specific_rules}
 
 Current request:

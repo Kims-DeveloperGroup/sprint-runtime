@@ -2511,7 +2511,7 @@ context compacted
                     self.calls: list[dict[str, object]] = []
                     self.outputs = [
                         (invalid_output, "session-developer-1"),
-                        (repaired_output, "session-developer-1"),
+                        (repaired_output, "session-developer-2"),
                     ]
 
                 def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
@@ -2551,14 +2551,115 @@ context compacted
             payload = runtime.run_task(envelope, request_record)
 
             self.assertEqual(len(fake_runner.calls), 2)
-            self.assertEqual(fake_runner.calls[1]["session_id"], "session-developer-1")
+            self.assertIsNone(fake_runner.calls[1]["session_id"])
             self.assertIn("rejected by contract validation", str(fake_runner.calls[1]["prompt"]))
             self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["session_id"], "session-developer-2")
             self.assertEqual(payload["contract_status"], "repaired")
             self.assertTrue(payload["contract_repair_attempted"])
             self.assertIn("copied_prompt_status_enum_literal", payload["contract_issues"])
             self.assertIn("copied_placeholder_summary", payload["contract_issues"])
             self.assertEqual(payload["summary"], "구현과 검증 범위를 정리해 QA handoff 조건을 명시했습니다.")
+
+    def test_role_runtime_restarts_repairable_invalid_payload_in_fresh_session(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "teams_generated"
+            scaffold_workspace(workspace_root)
+            paths = RuntimePaths.from_root(workspace_root)
+            runtime = RoleAgentRuntime(
+                paths=paths,
+                role="planner",
+                sprint_id="sprint-a",
+                runtime_config=RoleRuntimeConfig(),
+            )
+            state = runtime.session_manager.ensure_session()
+            runtime.session_manager.finalize_session_id(state, "session-planner-old")
+
+            valid_output = json.dumps(
+                {
+                    "request_id": "request-1",
+                    "role": "planner",
+                    "status": "completed",
+                    "summary": "planner_finalize 재개 요청을 검토했고 QA 검증 단계로 넘길 조건을 정리했습니다.",
+                    "insights": ["이전 role-result JSON은 재전송하지 않고 현재 요청 상태 기준으로 다시 작성했습니다."],
+                    "proposals": {
+                        "workflow_transition": {
+                            "outcome": "advance",
+                            "target_phase": "validation",
+                            "target_step": "qa_validation",
+                            "reopen_category": "",
+                            "reason": "planner closeout 산출물 계약을 회복해 QA 검증으로 진행할 수 있습니다.",
+                            "unresolved_items": [],
+                            "finalize_phase": False,
+                        }
+                    },
+                    "artifacts": ["shared_workspace/current_sprint.md"],
+                    "error": "",
+                },
+                ensure_ascii=False,
+            )
+
+            class _FreshSessionRunner:
+                def __init__(self):
+                    self.calls: list[dict[str, object]] = []
+
+                def run(self, workspace, prompt, session_id, *, bypass_sandbox=False):
+                    self.calls.append(
+                        {
+                            "workspace": str(workspace),
+                            "prompt": str(prompt),
+                            "session_id": session_id,
+                            "bypass_sandbox": bypass_sandbox,
+                        }
+                    )
+                    return valid_output, "session-planner-fresh"
+
+            fake_runner = _FreshSessionRunner()
+            runtime.codex_runner = fake_runner
+            envelope = MessageEnvelope(
+                request_id="request-1",
+                sender="orchestrator",
+                target="planner",
+                intent="plan",
+                urgency="normal",
+                scope="planner finalize",
+                params={"_repair_invalid_role_payload_on_resume": True},
+            )
+            request_record = {
+                "request_id": "request-1",
+                "scope": "planner finalize",
+                "body": "",
+                "artifacts": [],
+                "params": {
+                    "workflow": {
+                        "phase": "planning",
+                        "step": "planner_finalize",
+                    }
+                },
+                "result": {
+                    "request_id": "request-1",
+                    "role": "planner",
+                    "status": "failed",
+                    "summary": "실제 실행 근거를 반영한 구체적 한국어 요약",
+                    "insights": [],
+                    "proposals": {},
+                    "artifacts": [],
+                    "error": "invalid_role_payload: missing workflow transition",
+                    "contract_status": "invalid",
+                    "contract_issues": ["missing_workflow_transition", "copied_placeholder_summary"],
+                    "contract_repair_attempted": True,
+                },
+            }
+
+            payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(len(fake_runner.calls), 1)
+            self.assertIsNone(fake_runner.calls[0]["session_id"])
+            self.assertIn('"workflow_transition"', str(fake_runner.calls[0]["prompt"]))
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["session_id"], "session-planner-fresh")
+            self.assertNotIn("contract_status", payload)
+            self.assertEqual(payload["summary"], "planner_finalize 재개 요청을 검토했고 QA 검증 단계로 넘길 조건을 정리했습니다.")
 
     def test_role_runtime_fails_when_repair_cannot_fix_invalid_contract_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2629,6 +2730,9 @@ context compacted
             payload = runtime.run_task(envelope, request_record)
 
             self.assertEqual(len(fake_runner.calls), 3)
+            self.assertEqual(fake_runner.calls[0]["session_id"], "session-planner-1")
+            self.assertIsNone(fake_runner.calls[1]["session_id"])
+            self.assertIsNone(fake_runner.calls[2]["session_id"])
             self.assertIn('"workflow_transition"', str(fake_runner.calls[0]["prompt"]))
             self.assertIn('"workflow_transition"', str(fake_runner.calls[1]["prompt"]))
             self.assertIn('"workflow_transition"', str(fake_runner.calls[2]["prompt"]))
