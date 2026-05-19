@@ -160,7 +160,7 @@ role_defaults:
   architect: {model: "gpt-5.5", reasoning: "xhigh"}
   developer: {model: "gpt-5.5", reasoning: "high"}
 
-research_defaults: {app: "", notebook: "", files: [], mode: "", profile_path: "", completion_timeout: 600, callback_timeout: 1200, cleanup: false}
+research_defaults: {app: "", notebook: "", files: [], mode: "", reasoning_level: "Extended", profile_path: "", completion_timeout: 600, callback_timeout: 1200, cleanup: false}
 
 actions: {}
 ```
@@ -172,7 +172,7 @@ You can update role defaults through the CLI:
 ```bash
 python -m teams_runtime config role set --agent developer --model gpt-5.5 --reasoning high
 python -m teams_runtime config role set --agent planner --model gemini-3.1-pro-preview
-python -m teams_runtime config research set --app "Gemini Research App" --file "market.md"
+python -m teams_runtime config research set --app "Gemini Research App" --file "market.md" --reasoning-level "Extended"
 ```
 
 Gemini role models ignore Codex reasoning levels at runtime, so status output reports their reasoning as `None`.

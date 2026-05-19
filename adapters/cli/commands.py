@@ -125,6 +125,7 @@ def build_parser(
         help="Optional Drive file keyword to include. Repeat to add more than one.",
     )
     research_set_parser.add_argument("--mode", help="Optional Gemini chat mode override.")
+    research_set_parser.add_argument("--reasoning-level", help="Optional deep research reasoning level.")
     research_set_parser.add_argument("--profile-path", help="Optional local browser profile path.")
     research_set_parser.add_argument("--completion-timeout", type=float, help="Deep research completion timeout in seconds.")
     research_set_parser.add_argument("--callback-timeout", type=float, help="Deep research callback timeout in seconds.")
@@ -250,6 +251,7 @@ def dispatch_main(
                 notebook=getattr(args, "notebook", None),
                 files=getattr(args, "file", None),
                 mode=getattr(args, "mode", None),
+                reasoning_level=getattr(args, "reasoning_level", None),
                 profile_path=getattr(args, "profile_path", None),
                 completion_timeout=getattr(args, "completion_timeout", None),
                 callback_timeout=getattr(args, "callback_timeout", None),
@@ -425,9 +427,10 @@ def _format_role_runtime_summary(runtime_config: Any, role: str) -> str:
         research_runtime = runtime_config.research_defaults
         app = str(research_runtime.app or "").strip() or "default"
         mode = str(research_runtime.mode or "").strip() or "default"
+        reasoning_level = str(research_runtime.reasoning_level or "").strip() or "default"
         return (
             "engine=deep_research "
-            f"app={app} mode={mode} "
+            f"app={app} mode={mode} reasoning_level={reasoning_level} "
             f"completion_timeout={int(research_runtime.completion_timeout)} "
             f"callback_timeout={int(research_runtime.callback_timeout)}"
         )
@@ -624,6 +627,7 @@ def cmd_config_research_set_impl(
     notebook: str | None = None,
     files: list[str] | None = None,
     mode: str | None = None,
+    reasoning_level: str | None = None,
     profile_path: str | None = None,
     completion_timeout: float | None = None,
     callback_timeout: float | None = None,
@@ -638,6 +642,7 @@ def cmd_config_research_set_impl(
         notebook=notebook,
         files=files,
         mode=mode,
+        reasoning_level=reasoning_level,
         profile_path=profile_path,
         completion_timeout=completion_timeout,
         callback_timeout=callback_timeout,
@@ -652,6 +657,7 @@ def cmd_config_research_set_impl(
         f"notebook={updated.notebook or 'default'} "
         f"files={files_summary} "
         f"mode={updated.mode or 'default'} "
+        f"reasoning_level={updated.reasoning_level or 'default'} "
         f"profile_path={updated.profile_path or 'default'} "
         f"completion_timeout={updated.completion_timeout:g} "
         f"callback_timeout={updated.callback_timeout:g} "

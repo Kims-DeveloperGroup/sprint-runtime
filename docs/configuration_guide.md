@@ -182,6 +182,27 @@ role_defaults:
 
 After changing a running role's config, restart that role to apply the new settings.
 
+### `research_defaults`
+
+Configure external Deep Research launch defaults. The default reasoning level is `Extended`.
+
+```bash
+python -m teams_runtime config research set --reasoning-level "Extended"
+```
+
+```yaml
+research_defaults:
+  app: ""
+  notebook: ""
+  files: []
+  mode: ""
+  reasoning_level: "Extended"
+  profile_path: ""
+  completion_timeout: 600
+  callback_timeout: 1200
+  cleanup: false
+```
+
 ### `actions`
 
 Defines which `execute` actions are allowed.

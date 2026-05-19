@@ -304,6 +304,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.role_defaults["developer"].model, "gpt-5.5")
             self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "high")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
+            self.assertEqual(runtime_config.research_defaults.reasoning_level, "Extended")
             self.assertIsNone(runtime_config.research_defaults.profile_path)
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 600.0)
             self.assertEqual(runtime_config.research_defaults.callback_timeout, 1200.0)
@@ -689,7 +690,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             config_path = Path(tmpdir) / "team_runtime.yaml"
             content = config_path.read_text(encoding="utf-8")
             content = content.replace(
-                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  profile_path: \"\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
+                "research_defaults:\n  app: \"\"\n  notebook: \"\"\n  files: []\n  mode: \"\"\n  reasoning_level: \"Extended\"\n  profile_path: \"\"\n  completion_timeout: 600\n  callback_timeout: 1200\n  cleanup: false\n",
                 "research_defaults: invalid\n",
                 1,
             )
@@ -752,17 +753,20 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
                 tmpdir,
                 app="Gemini Research App",
                 files=["market.md", "api.md"],
+                reasoning_level="Extended",
                 completion_timeout=900,
                 cleanup=True,
             )
 
             self.assertEqual(updated.app, "Gemini Research App")
             self.assertEqual(updated.files, ("market.md", "api.md"))
+            self.assertEqual(updated.reasoning_level, "Extended")
             self.assertEqual(updated.completion_timeout, 900.0)
             self.assertTrue(updated.cleanup)
             runtime_config = load_team_runtime_config(tmpdir)
             self.assertEqual(runtime_config.research_defaults.app, "Gemini Research App")
             self.assertEqual(runtime_config.research_defaults.files, ("market.md", "api.md"))
+            self.assertEqual(runtime_config.research_defaults.reasoning_level, "Extended")
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 900.0)
             self.assertTrue(runtime_config.research_defaults.cleanup)
 
@@ -1367,6 +1371,7 @@ agents:
                         Path(tmpdir),
                         app="Gemini Research App",
                         files=["source-a", "source-b"],
+                        reasoning_level="Extended",
                         completion_timeout=900,
                         cleanup=True,
                     )
@@ -1376,12 +1381,36 @@ agents:
             runtime_config = load_team_runtime_config(tmpdir)
             self.assertEqual(runtime_config.research_defaults.app, "Gemini Research App")
             self.assertEqual(runtime_config.research_defaults.files, ("source-a", "source-b"))
+            self.assertEqual(runtime_config.research_defaults.reasoning_level, "Extended")
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 900.0)
             self.assertTrue(runtime_config.research_defaults.cleanup)
             rendered = output.getvalue()
             self.assertIn("Updated", rendered)
             self.assertIn("research app=Gemini Research App", rendered)
+            self.assertIn("reasoning_level=Extended", rendered)
             self.assertIn("python -m teams_runtime restart --agent research", rendered)
+
+    def test_main_config_research_set_accepts_reasoning_level(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "config",
+                        "research",
+                        "set",
+                        "--workspace-root",
+                        tmpdir,
+                        "--reasoning-level",
+                        "Extended",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            runtime_config = load_team_runtime_config(tmpdir)
+            self.assertEqual(runtime_config.research_defaults.reasoning_level, "Extended")
+            self.assertIn("reasoning_level=Extended", output.getvalue())
 
     def test_cmd_start_supports_internal_parser_agent(self):
         with tempfile.TemporaryDirectory() as tmpdir:

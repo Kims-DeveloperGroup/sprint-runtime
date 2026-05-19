@@ -673,6 +673,7 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
             )
             self.assertIsNone(deep_research_mock.call_args.kwargs["profile_path"])
             self.assertIsNone(deep_research_mock.call_args.kwargs["mode"])
+            self.assertEqual(deep_research_mock.call_args.kwargs["reasoning_level"], "Extended")
             artifact = paths.sprint_research_file("260418-Sprint-10:30", "request-external")
             self.assertTrue(artifact.exists())
             self.assertEqual(payload["status"], "completed")

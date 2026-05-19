@@ -200,6 +200,7 @@ class ResearchRuntimeConfig:
     notebook: str | None = None
     files: tuple[str, ...] = ()
     mode: str | None = None
+    reasoning_level: str | None = "Extended"
     profile_path: str | None = None
     completion_timeout: float = 600.0
     callback_timeout: float = 1200.0

@@ -115,6 +115,7 @@ def _normalize_research_defaults(value: Any) -> ResearchRuntimeConfig:
         notebook=_normalize_optional_text(payload.get("notebook")),
         files=_normalize_string_sequence(payload.get("files"), field_name="team_runtime.yaml research_defaults.files"),
         mode=_normalize_optional_text(payload.get("mode")),
+        reasoning_level=_normalize_optional_text(payload.get("reasoning_level")) or "Extended",
         profile_path=_normalize_optional_text(payload.get("profile_path")),
         completion_timeout=_normalize_positive_timeout(
             payload.get("completion_timeout"),
@@ -490,6 +491,7 @@ def update_team_runtime_research_defaults(
     notebook: str | None = None,
     files: list[str] | None = None,
     mode: str | None = None,
+    reasoning_level: str | None = None,
     profile_path: str | None = None,
     completion_timeout: float | None = None,
     callback_timeout: float | None = None,
@@ -500,6 +502,7 @@ def update_team_runtime_research_defaults(
         "notebook": notebook,
         "files": files,
         "mode": mode,
+        "reasoning_level": reasoning_level,
         "profile_path": profile_path,
         "completion_timeout": completion_timeout,
         "callback_timeout": callback_timeout,
@@ -536,6 +539,11 @@ def update_team_runtime_research_defaults(
     if mode is not None:
         normalized = str(mode).strip()
         raw_research_defaults["mode"] = normalized
+    if reasoning_level is not None:
+        normalized = str(reasoning_level).strip()
+        if not normalized:
+            raise ValueError("reasoning_level must be a non-empty string when provided.")
+        raw_research_defaults["reasoning_level"] = normalized
     if profile_path is not None:
         normalized = str(profile_path).strip()
         raw_research_defaults["profile_path"] = normalized

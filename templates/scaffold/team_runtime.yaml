@@ -44,6 +44,7 @@ research_defaults:
   notebook: ""
   files: []
   mode: ""
+  reasoning_level: "Extended"
   profile_path: ""
   completion_timeout: 600
   callback_timeout: 1200
