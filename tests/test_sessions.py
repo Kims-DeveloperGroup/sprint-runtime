@@ -633,7 +633,28 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
                 },
                 ensure_ascii=False,
             )
-            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-2")) as decision_mock, patch(
+            coverage_output = json.dumps(
+                {
+                    "todo_coverage_requirements": [
+                        {
+                            "coverage_id": "rg-1",
+                            "guidance": "Split provider abstraction from cost verification acceptance criteria.",
+                            "rationale": "Official pricing sources affect provider assumptions.",
+                            "source_refs": ["OpenAI API Pricing | https://openai.com/api/pricing"],
+                            "report_refs": ["Todo Definition Hints"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(
+                runtime.codex_runner,
+                "run",
+                side_effect=[
+                    (decision_output, "research-session-2"),
+                    (coverage_output, "research-session-2"),
+                ],
+            ) as decision_mock, patch(
                 "teams_runtime.runtime.research_runtime.run_deep_research_sync",
                 return_value=SimpleNamespace(
                     completed=True,
@@ -643,7 +664,8 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
             ) as deep_research_mock:
                 payload = runtime.run_task(envelope, request_record)
 
-            decision_mock.assert_called_once()
+            self.assertEqual(decision_mock.call_count, 2)
+            self.assertIn("raw_report_markdown", decision_mock.call_args_list[1].args[1])
             deep_research_mock.assert_called_once()
             self.assertIn(
                 "Compare current OpenAI and Gemini API pricing with official sources",
@@ -665,6 +687,96 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
                 },
             )
             self.assertEqual(len(payload["proposals"]["research_report"]["backing_sources"]), 2)
+            self.assertEqual(
+                payload["proposals"]["research_report"]["todo_coverage_requirements"][0]["coverage_id"],
+                "RG-001",
+            )
+
+    def test_research_runtime_rejects_invalid_synthesized_todo_coverage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260418-Sprint-10:31",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-external-invalid-coverage",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="latest provider pricing comparison with sources",
+                body="Need current source-backed comparison before planner decides provider direction.",
+            )
+            request_record = {
+                "request_id": "request-external-invalid-coverage",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {"workflow": {"step": "research_initial", "phase_owner": "research"}},
+                "sprint_id": "260418-Sprint-10:31",
+            }
+            report_text = """# Executive Summary
+Current API pricing differs enough that planner should preserve provider-specific cost assumptions.
+
+# Planner Guidance
+Prefer a provider-neutral abstraction until pricing volatility stabilizes.
+
+# Todo Definition Hints
+- Split provider abstraction from cost verification acceptance criteria.
+
+# Backing Reasoning
+- Official pricing sources determine whether planner can lock provider assumptions.
+
+# Backing Sources
+- title: OpenAI API Pricing
+  url: https://openai.com/api/pricing
+  relevance: Confirms current OpenAI list pricing.
+  summary: Lists current flagship API pricing tiers.
+"""
+            decision_output = json.dumps(
+                {
+                    "needed": True,
+                    "subject": "Current provider pricing comparison",
+                    "research_query": "Compare current provider pricing with official sources.",
+                    "reason_code": "needed_external_grounding",
+                    "research_subject_definition": _external_subject_definition(),
+                    "planner_guidance": "planner는 외부 가격 근거가 정리되기 전까지 provider assumptions를 고정하지 마세요.",
+                },
+                ensure_ascii=False,
+            )
+            invalid_coverage_output = json.dumps(
+                {"todo_coverage_requirements": [{"guidance": "Missing trace refs"}]},
+                ensure_ascii=False,
+            )
+
+            with patch.object(
+                runtime.codex_runner,
+                "run",
+                side_effect=[
+                    (decision_output, "research-session-invalid-coverage"),
+                    (invalid_coverage_output, "research-session-invalid-coverage"),
+                ],
+            ), patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync",
+                return_value=SimpleNamespace(
+                    completed=True,
+                    response_text=report_text,
+                    url="https://gemini.google.com/test-url",
+                ),
+            ):
+                payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(payload["status"], "failed")
+            self.assertIn("source_refs or report_refs", payload["error"])
+            self.assertEqual(
+                payload["proposals"]["research_report"]["failure_details"]["failure_stage"],
+                "synthesize_todo_coverage",
+            )
 
     def test_research_runtime_fails_external_research_without_valid_sources(self):
         with tempfile.TemporaryDirectory() as tmpdir:

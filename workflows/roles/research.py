@@ -36,6 +36,7 @@ RESEARCH_REPORT_LIST_FIELDS = (
     "backing_reasoning",
     "open_questions",
 )
+RESEARCH_COVERAGE_ID_PATTERN = re.compile(r"^RG-(\d{1,6})$", re.IGNORECASE)
 RESEARCH_SUBJECT_DEFINITION_FIELDS = (
     "planning_decision",
     "knowledge_gap",
@@ -503,6 +504,125 @@ def normalize_research_report_list(value: Any) -> list[str]:
     return []
 
 
+def _normalize_trace_refs(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [_collapse_whitespace(item) for item in value if _collapse_whitespace(item)]
+    if isinstance(value, str):
+        return [_collapse_whitespace(value)] if _collapse_whitespace(value) else []
+    return []
+
+
+def _normalize_research_coverage_id(value: Any, *, fallback_index: int, used_ids: set[str]) -> str:
+    raw_value = _collapse_whitespace(value)
+    number: int | None = None
+    if raw_value:
+        match = RESEARCH_COVERAGE_ID_PATTERN.match(raw_value)
+        if match:
+            number = int(match.group(1))
+        else:
+            digit_match = re.search(r"\d{1,6}", raw_value)
+            if digit_match:
+                number = int(digit_match.group(0))
+    if number is None or number <= 0:
+        number = fallback_index
+    candidate = f"RG-{number:03d}"
+    while candidate in used_ids:
+        number += 1
+        candidate = f"RG-{number:03d}"
+    used_ids.add(candidate)
+    return candidate
+
+
+def normalize_research_todo_coverage_requirements(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("Research todo coverage requirements must be objects.")
+        coverage_id = _normalize_research_coverage_id(
+            item.get("coverage_id"),
+            fallback_index=index,
+            used_ids=used_ids,
+        )
+        guidance = _collapse_whitespace(item.get("guidance") or "")
+        rationale = _collapse_whitespace(item.get("rationale") or "")
+        source_refs = _normalize_trace_refs(item.get("source_refs"))
+        report_refs = _normalize_trace_refs(item.get("report_refs"))
+        if not guidance:
+            raise ValueError(f"{coverage_id} must include non-empty guidance.")
+        if not source_refs and not report_refs:
+            raise ValueError(f"{coverage_id} must include source_refs or report_refs.")
+        normalized.append(
+            {
+                "coverage_id": coverage_id,
+                "guidance": guidance,
+                "rationale": rationale,
+                "source_refs": source_refs,
+                "report_refs": report_refs,
+            }
+        )
+    return normalized
+
+
+def validate_research_todo_coverage_response(raw_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(raw_payload, dict):
+        raise ValueError("Research todo coverage response must be a JSON object.")
+    if "todo_coverage_requirements" not in raw_payload:
+        raise ValueError("Research todo coverage response must include todo_coverage_requirements.")
+    if not isinstance(raw_payload.get("todo_coverage_requirements"), list):
+        raise ValueError("Research todo coverage response todo_coverage_requirements must be a list.")
+    return normalize_research_todo_coverage_requirements(raw_payload.get("todo_coverage_requirements"))
+
+
+def build_research_coverage_prompt(
+    *,
+    raw_report_markdown: str,
+    parsed_report: dict[str, Any],
+    subject_definition: dict[str, Any],
+    original_requirements: list[dict[str, Any]] | None = None,
+    report_artifact: str = "",
+) -> str:
+    prompt_payload = {
+        "task": "Synthesize mandatory planner todo coverage requirements from the full raw deep research report.",
+        "output_contract": {
+            "format": "strict JSON object only",
+            "shape": {
+                "todo_coverage_requirements": [
+                    {
+                        "coverage_id": "RG-001",
+                        "guidance": "planner-facing backlog/todo guidance that must influence at least one backlog item or sprint TODO",
+                        "rationale": "why this guidance is mandatory for the sprint plan",
+                        "source_refs": ["source title | https://..."],
+                        "report_refs": ["raw report section or concise report passage reference"],
+                    }
+                ]
+            },
+        },
+        "rules": [
+            "Read the entire raw_report_markdown, not only parsed_report.",
+            "Do not require or invent a raw heading named Todo Coverage Requirements.",
+            "Select only key specs, constraints, dependencies, planner guidance, or acceptance-criteria implications that must shape backlog or sprint TODOs.",
+            "Use coverage_id values RG-001, RG-002, ... in priority order. The runtime will normalize them.",
+            "Each item must have non-empty guidance.",
+            "Each item must have source_refs or report_refs that let planner trace it back to sources or raw report sections.",
+            "Do not include general background that does not need backlog/TODO coverage.",
+            "If original_requirements contain REQ-* IDs and a coverage item constrains one, mention the REQ-* ID in guidance or rationale.",
+        ],
+        "report_artifact": _collapse_whitespace(report_artifact),
+        "research_subject_definition": _omit_empty_fields(dict(subject_definition or {})),
+        "original_requirements": [
+            _omit_empty_fields(dict(item))
+            for item in (original_requirements or [])
+            if isinstance(item, dict)
+        ],
+        "parsed_report_index": _omit_empty_fields(dict(parsed_report or {})),
+        "raw_report_markdown": str(raw_report_markdown or ""),
+    }
+    return json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+
+
 def parse_backing_sources(lines: list[str]) -> list[dict[str, str]]:
     sources: list[dict[str, str]] = []
     current: dict[str, str] | None = None
@@ -596,17 +716,20 @@ __all__ = [
     "RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING",
     "RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE",
     "RESEARCH_REASON_CODE_NOT_NEEDED_NO_SUBJECT",
+    "build_research_coverage_prompt",
     "build_research_decision_prompt",
     "build_research_prompt",
     "default_research_planner_guidance",
     "default_research_signal",
     "normalize_research_decision",
     "normalize_research_subject_definition",
+    "normalize_research_todo_coverage_requirements",
     "normalize_research_report_list",
     "parse_backing_sources",
     "parse_research_report",
     "research_reason_code_summary",
     "research_skip_summary",
     "valid_backing_sources",
+    "validate_research_todo_coverage_response",
     "validate_source_backed_research_report",
 ]

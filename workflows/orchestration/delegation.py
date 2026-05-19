@@ -906,6 +906,21 @@ def build_internal_sprint_delegation_payload(
     routing_context = dict(request_record.get("routing_context") or {})
     if routing_context:
         payload["routing_context"] = routing_context
+    params = dict(request_record.get("params") or {})
+    research_coverage_refs = [
+        str(item).strip()
+        for item in (params.get("research_coverage_refs") or [])
+        if str(item).strip()
+    ]
+    research_refs = [
+        str(item).strip()
+        for item in (params.get("research_refs") or [])
+        if str(item).strip()
+    ]
+    if research_coverage_refs:
+        payload["research_coverage_refs"] = research_coverage_refs
+    if research_refs:
+        payload["research_refs"] = research_refs
     return payload
 
 

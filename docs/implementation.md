@@ -414,6 +414,8 @@ For normal change work:
 - planner owns backlog-management decisions such as add/update/dedupe/reprioritize and persists those backlog changes directly into runtime backlog state
 - planner backlog persistence uses the canonical backlog helper boundary with `backlog_items` / `backlog_item` payloads, and planner returns `proposals.backlog_writes` receipts after those writes succeed
 - backlog/todo definition is research-informed and `spec-first`: sprint backlog must be derived from the current milestone, kickoff requirements, research report, and `spec.md`, not only from pre-existing queue state
+- if research writes a raw report artifact, planner initial-phase requests include that artifact, the persisted research prepass, and synthesized `RG-*` todo coverage requirements; the summary and coverage list are treated as indexes, not as substitutes for reading the full raw report
+- planner initial-phase reports must include raw-report-read receipts, and backlog/todo phases must include coverage matrices that account for all synthesized `RG-*` items
 - `backlog.md` is updated from planner-owned backlog persistence and shows active items with `created_at`
 - active backlog can include `blocked` items that are waiting for missing inputs, but only `pending` items are sprint-selectable
 - `completed_backlog.md` is refreshed alongside it and keeps only `done` items
@@ -456,16 +458,20 @@ At sprint start:
 - immutable kickoff source fields plus `kickoff.md` are persisted from the sprint-start request before research and planner derive execution framing
 - the first initial-phase request is delegated to `research` as `research_initial`, including manual `sprint start` flows
 - the research prepass defines the research subject, sources or local-evidence/no-subject rationale, and planning hints before planner refines the milestone
+- when external research runs, the raw Markdown report is written under `shared_workspace/sprints/<sprint_id>/research/<request_id>.md`; researcher-owned synthesis then derives normalized `RG-*` `todo_coverage_requirements` from the full report and trace refs
+- `sprint_state["research_prepass"]` stores the raw report artifact, existing research summary/source fields, and coverage requirements for every subsequent planner request
 - planner then runs this initial phase:
   - `milestone_refinement`
   - `artifact_sync`
   - `backlog_definition`
   - `backlog_prioritization`
   - `todo_finalization`
+- when `report_artifact` exists, each planner substep must include `proposals.sprint_plan_update.research_report_read` with the matching artifact, `raw_report_read=true`, the phase step, referenced full-report sections, and considered coverage IDs
 - `backlog_definition` must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec`
+- `backlog_definition` and `todo_finalization` must include `research_coverage_matrix` receipts and cover all `RG-*` items through backlog records and selected TODOs; coverage claims require matching `research_refs`
 - `backlog 0건` is invalid during sprint start; orchestrator blocks with `planning_incomplete` instead of continuing
 - selected backlog items are marked `selected` only during `todo_finalization`
-- todos are derived from the selected backlog items after `todo_finalization`
+- todos are derived from the selected backlog items after `todo_finalization`, preserving `research_refs` and `research_coverage_refs` into the internal execution request context when present
 - `current_sprint.md` is written
 - sprint kickoff and todo list are reported to Discord
 

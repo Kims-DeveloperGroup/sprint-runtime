@@ -488,6 +488,25 @@ def build_sprint_selected_backlog_item(
                 if str(value).strip()
             ],
         }
+    if merged_item and todo:
+        research_refs = [
+            str(value).strip()
+            for value in (todo.get("research_refs") or [])
+            if str(value).strip()
+        ]
+        research_coverage_refs = [
+            str(value).strip()
+            for value in (todo.get("research_coverage_refs") or [])
+            if str(value).strip()
+        ]
+        if research_refs:
+            origin = dict(merged_item.get("origin") or {})
+            origin.setdefault("research_refs", research_refs)
+            merged_item["origin"] = origin
+        if research_coverage_refs:
+            origin = dict(merged_item.get("origin") or {})
+            origin.setdefault("research_coverage_refs", research_coverage_refs)
+            merged_item["origin"] = origin
     desired_status = desired_backlog_status_for_todo(todo)
     if desired_status and merged_item:
         merged_item["status"] = desired_status

@@ -243,10 +243,16 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
 - sprint initial planning:
   - `research_initial` is always the first delegation, for both manual and scheduled sprint kickoff
   - the research report defines the external/local-evidence subject, sources or rationale, and planning hints before planner milestone refinement
+  - when external grounding writes `shared_workspace/sprints/<sprint_id>/research/<request_id>.md`, `sprint_state["research_prepass"]` stores that `report_artifact`, the structured research summary/source fields, and researcher-synthesized `todo_coverage_requirements`
+  - `todo_coverage_requirements` are researcher-selected `RG-*` planning requirements synthesized after the full raw report is written; the raw report does not need a `Todo Coverage Requirements` heading
+  - planner receives the raw report artifact plus the synthesized coverage list on every initial planning request, and the summary/coverage list is only an index
   - planner then runs `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
+  - when a raw report artifact exists, every initial planner step must read the full artifact and return `proposals.sprint_plan_update.research_report_read` with the matching `report_artifact`, `raw_report_read=true`, the current `phase_step`, referenced full-report sections, and considered `RG-*` IDs
   - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec`
+  - `backlog_definition` and `todo_finalization` must return `proposals.sprint_plan_update.research_coverage_matrix`, and the relevant backlog plus selected sprint TODOs must collectively cover every `RG-*` item
   - `backlog 0건` is invalid; orchestrator blocks sprint start with `planning_incomplete` instead of looping or silently continuing
-  - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/research/spec
+  - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/research/spec; items that claim `origin.research_coverage_refs` must also carry matching `origin.research_refs`
+  - selected sprint TODOs inherit `research_refs` and `research_coverage_refs` into the internal execution request context
 - planner-owned planning surfaces:
   - `shared_workspace/backlog.md`
   - `shared_workspace/completed_backlog.md`

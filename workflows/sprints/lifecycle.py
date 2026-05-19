@@ -200,7 +200,9 @@ def build_todo_item(backlog_item: dict[str, Any], *, owner_role: str = "planner"
         or origin.get("supports_requirement_refs")
         or []
     )
-    return {
+    research_refs = research_refs_for_item(backlog_item)
+    research_coverage_refs = research_coverage_refs_for_item(backlog_item)
+    todo = {
         "todo_id": new_todo_id(),
         "backlog_id": str(backlog_item.get("backlog_id") or "").strip(),
         "title": str(backlog_item.get("title") or "").strip(),
@@ -225,6 +227,11 @@ def build_todo_item(backlog_item: dict[str, Any], *, owner_role: str = "planner"
         "supports_requirement_refs": supporting_requirement_refs,
         "recovery_todo": bool(backlog_item.get("recovery_todo")),
     }
+    if research_refs:
+        todo["research_refs"] = research_refs
+    if research_coverage_refs:
+        todo["research_coverage_refs"] = research_coverage_refs
+    return todo
 
 
 def todo_status_rank(status: str) -> int:
@@ -456,6 +463,22 @@ def build_recovered_sprint_todo_from_request(
     )
     if supporting_refs:
         todo["supports_requirement_refs"] = supporting_refs
+    research_refs = normalize_trace_list(
+        source_backlog.get("research_refs")
+        or origin.get("research_refs")
+        or params.get("research_refs")
+        or []
+    )
+    if research_refs:
+        todo["research_refs"] = research_refs
+    research_coverage_refs = normalize_trace_list(
+        source_backlog.get("research_coverage_refs")
+        or origin.get("research_coverage_refs")
+        or params.get("research_coverage_refs")
+        or []
+    )
+    if research_coverage_refs:
+        todo["research_coverage_refs"] = research_coverage_refs
     if bool(source_backlog.get("supporting_todo")):
         todo["supporting_todo"] = True
     if bool(source_backlog.get("recovery_todo")):
@@ -587,6 +610,44 @@ def normalize_trace_list(values: Any) -> list[str]:
         normalized = str(values).strip()
         return [normalized] if normalized else []
     return []
+
+
+def research_refs_for_item(item: dict[str, Any]) -> list[str]:
+    origin = dict(item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}
+    return normalize_trace_list(item.get("research_refs") or origin.get("research_refs") or [])
+
+
+def research_coverage_refs_for_item(item: dict[str, Any]) -> list[str]:
+    origin = dict(item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}
+    return normalize_trace_list(
+        item.get("research_coverage_refs")
+        or origin.get("research_coverage_refs")
+        or []
+    )
+
+
+def sprint_research_report_artifact(sprint_state: dict[str, Any] | None) -> str:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    return str(prepass.get("report_artifact") or "").strip()
+
+
+def sprint_research_todo_coverage_requirements(sprint_state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    prepass = dict((sprint_state or {}).get("research_prepass") or {})
+    return [
+        dict(item)
+        for item in (prepass.get("todo_coverage_requirements") or [])
+        if isinstance(item, dict) and str(item.get("coverage_id") or "").strip()
+    ]
+
+
+def sprint_research_todo_coverage_ids(sprint_state: dict[str, Any] | None) -> list[str]:
+    return _dedupe_preserving_order(
+        [
+            str(item.get("coverage_id") or "").strip()
+            for item in sprint_research_todo_coverage_requirements(sprint_state)
+            if str(item.get("coverage_id") or "").strip()
+        ]
+    )
 
 
 ORIGINAL_REQUIREMENT_ID_PATTERN = re.compile(r"\bREQ-\d{3}\b", re.IGNORECASE)
@@ -881,6 +942,115 @@ def missing_requirement_todo_coverage(sprint_state: dict[str, Any]) -> list[str]
     ]
 
 
+def missing_research_coverage_backlog_coverage(
+    sprint_state: dict[str, Any],
+    relevant_items: list[dict[str, Any]],
+) -> list[str]:
+    coverage_ids = sprint_research_todo_coverage_ids(sprint_state)
+    if not coverage_ids:
+        return []
+    covered: set[str] = set()
+    for item in relevant_items:
+        covered.update(research_coverage_refs_for_item(item))
+    return [coverage_id for coverage_id in coverage_ids if coverage_id not in covered]
+
+
+def missing_research_coverage_todo_coverage(sprint_state: dict[str, Any]) -> list[str]:
+    coverage_ids = sprint_research_todo_coverage_ids(sprint_state)
+    if not coverage_ids:
+        return []
+    covered: set[str] = set()
+    for todo in (sprint_state.get("todos") or []):
+        if isinstance(todo, dict):
+            covered.update(research_coverage_refs_for_item(todo))
+    return [coverage_id for coverage_id in coverage_ids if coverage_id not in covered]
+
+
+def validate_research_coverage_trace_refs(
+    items: list[dict[str, Any]],
+    *,
+    known_coverage_ids: list[str],
+) -> list[str]:
+    errors: list[str] = []
+    known = {str(item).strip() for item in known_coverage_ids if str(item).strip()}
+    for item in items:
+        coverage_refs = research_coverage_refs_for_item(item)
+        if not coverage_refs:
+            continue
+        title = str(item.get("title") or item.get("todo_id") or item.get("backlog_id") or "item").strip()
+        research_refs = research_refs_for_item(item)
+        if not research_refs:
+            errors.append(f"{title}: research_coverage_refs가 있지만 research_refs 없음")
+        unknown_refs = [ref for ref in coverage_refs if known and ref not in known]
+        if unknown_refs:
+            errors.append(f"{title}: unknown research_coverage_refs {', '.join(unknown_refs)}")
+    return errors
+
+
+def validate_research_report_read_receipt(
+    sprint_state: dict[str, Any],
+    sprint_plan_update: dict[str, Any],
+    *,
+    step: str,
+) -> str:
+    report_artifact = sprint_research_report_artifact(sprint_state)
+    if not report_artifact:
+        return ""
+    receipt = sprint_plan_update.get("research_report_read")
+    if not isinstance(receipt, dict):
+        return "source-backed raw research report read receipt missing: proposals.sprint_plan_update.research_report_read"
+    if receipt.get("raw_report_read") is not True:
+        return "source-backed raw research report read receipt must set raw_report_read=true"
+    if str(receipt.get("report_artifact") or "").strip() != report_artifact:
+        return "source-backed raw research report read receipt has wrong report_artifact"
+    phase_step = str(receipt.get("phase_step") or "").strip().lower()
+    if phase_step != str(step or "").strip().lower():
+        return "source-backed raw research report read receipt has wrong phase_step"
+    referenced_sections = normalize_trace_list(receipt.get("referenced_sections") or [])
+    if not referenced_sections:
+        return "source-backed raw research report read receipt needs referenced_sections"
+    coverage_ids = sprint_research_todo_coverage_ids(sprint_state)
+    if coverage_ids:
+        considered = set(normalize_trace_list(receipt.get("coverage_ids_considered") or []))
+        missing = [coverage_id for coverage_id in coverage_ids if coverage_id not in considered]
+        if missing:
+            return "source-backed raw research report read receipt missing coverage_ids_considered: " + ", ".join(missing)
+    return ""
+
+
+def validate_research_coverage_matrix_receipt(
+    sprint_state: dict[str, Any],
+    sprint_plan_update: dict[str, Any],
+    *,
+    require_todo_id: bool,
+) -> str:
+    coverage_ids = sprint_research_todo_coverage_ids(sprint_state)
+    if not coverage_ids:
+        return ""
+    matrix = sprint_plan_update.get("research_coverage_matrix")
+    if not isinstance(matrix, list):
+        return "proposals.sprint_plan_update.research_coverage_matrix missing"
+    covered: set[str] = set()
+    for entry in matrix:
+        if not isinstance(entry, dict):
+            continue
+        coverage_id = str(entry.get("coverage_id") or "").strip()
+        backlog_id = str(entry.get("backlog_id") or "").strip()
+        todo_id = str(entry.get("todo_id") or "").strip()
+        if not coverage_id:
+            continue
+        if require_todo_id:
+            if todo_id:
+                covered.add(coverage_id)
+        elif backlog_id:
+            covered.add(coverage_id)
+    missing = [coverage_id for coverage_id in coverage_ids if coverage_id not in covered]
+    if missing:
+        target = "todo_id" if require_todo_id else "backlog_id"
+        return f"proposals.sprint_plan_update.research_coverage_matrix missing {target} coverage: " + ", ".join(missing)
+    return ""
+
+
 def validate_supporting_todo_requirement_refs(
     items: list[dict[str, Any]],
     requirements: list[dict[str, Any]],
@@ -1132,7 +1302,16 @@ def should_start_sprint_research_prepass(
 
 def sprint_research_prepass_artifacts(sprint_state: dict[str, Any] | None) -> list[str]:
     prepass = dict((sprint_state or {}).get("research_prepass") or {})
-    return _string_list(prepass.get("artifacts"))
+    return _dedupe_preserving_order(
+        [
+            item
+            for item in [
+                *_string_list(prepass.get("artifacts")),
+                str(prepass.get("report_artifact") or "").strip(),
+            ]
+            if str(item).strip()
+        ]
+    )
 
 
 def sprint_research_prepass_source_backed(sprint_state: dict[str, Any] | None) -> bool:
@@ -1186,6 +1365,15 @@ def sprint_research_prepass_body_lines(sprint_state: dict[str, Any] | None) -> l
         f"- planner_guidance: {prepass.get('planner_guidance') or ''}",
         f"- backing_sources: {len(sources)}",
     ]
+    report_artifact = str(prepass.get("report_artifact") or "").strip()
+    if report_artifact:
+        lines.extend(
+            [
+                f"- report_artifact: {report_artifact}",
+                "- raw_report_read_required: true",
+                "- handoff_note: researcher summary and todo_coverage_requirements are indexes; planner must read the full raw Markdown report artifact before completing each initial planning substep.",
+            ]
+        )
     if subject_definition:
         lines.append("- research_subject_definition:")
         for field in (
@@ -1226,6 +1414,22 @@ def sprint_research_prepass_body_lines(sprint_state: dict[str, Any] | None) -> l
             continue
         lines.append(f"- {label}:")
         lines.extend(f"  - {item}" for item in items[:5])
+    todo_coverage_requirements = sprint_research_todo_coverage_requirements(sprint_state)
+    if todo_coverage_requirements:
+        lines.append("- todo_coverage_requirements:")
+        for item in todo_coverage_requirements:
+            coverage_id = str(item.get("coverage_id") or "").strip()
+            guidance = str(item.get("guidance") or "").strip()
+            rationale = str(item.get("rationale") or "").strip()
+            source_refs = _string_list(item.get("source_refs"))
+            report_refs = _string_list(item.get("report_refs"))
+            lines.append(f"  - {coverage_id}: {guidance}".rstrip())
+            if rationale:
+                lines.append(f"    rationale: {rationale}")
+            if source_refs:
+                lines.append(f"    source_refs: {'; '.join(source_refs[:3])}")
+            if report_refs:
+                lines.append(f"    report_refs: {'; '.join(report_refs[:3])}")
     artifacts = sprint_research_prepass_artifacts(sprint_state)
     if artifacts:
         lines.append(f"- artifacts: {', '.join(artifacts[:3])}")
@@ -1370,6 +1574,13 @@ def build_sprint_planning_request_record(
     body_lines.extend(sprint_research_prepass_body_lines(sprint_state))
     body = "\n".join(line for line in body_lines if str(line).strip())
     sprint_id = str(sprint_state.get("sprint_id") or "")
+    research_prepass = (
+        dict(sprint_state.get("research_prepass") or {})
+        if isinstance(sprint_state.get("research_prepass"), dict)
+        else {}
+    )
+    research_report_artifact = sprint_research_report_artifact(sprint_state)
+    todo_coverage_requirements = sprint_research_todo_coverage_requirements(sprint_state)
     return {
         "request_id": str(request_id or "").strip(),
         "status": "queued",
@@ -1377,7 +1588,12 @@ def build_sprint_planning_request_record(
         "urgency": "normal",
         "scope": scope,
         "body": body,
-        "artifacts": _dedupe_preserving_order([str(item).strip() for item in artifacts if str(item).strip()]),
+        "artifacts": _dedupe_preserving_order(
+            [
+                *[str(item).strip() for item in artifacts if str(item).strip()],
+                *sprint_research_prepass_artifacts(sprint_state),
+            ]
+        ),
         "params": {
             "_teams_kind": "sprint_internal",
             "sprint_id": sprint_id,
@@ -1391,6 +1607,9 @@ def build_sprint_planning_request_record(
             "kickoff_request_text": sprint_state.get("kickoff_request_text") or "",
             "kickoff_source_request_id": kickoff_source_request_id,
             "kickoff_reference_artifacts": list(sprint_state.get("kickoff_reference_artifacts") or []),
+            "research_prepass": research_prepass,
+            "research_report_artifact": research_report_artifact,
+            "todo_coverage_requirements": todo_coverage_requirements,
             "sprint_name": sprint_state.get("sprint_name") or "",
             "sprint_folder": sprint_state.get("sprint_folder") or "",
             "reopen_of_request_id": (
@@ -1464,6 +1683,13 @@ def validate_initial_phase_step_result(
         if isinstance(proposals.get("sprint_plan_update"), dict)
         else {}
     )
+    report_read_error = validate_research_report_read_receipt(
+        sprint_state,
+        sprint_plan_update,
+        step=step,
+    )
+    if report_read_error:
+        return f"initial phase {initial_phase_step_title(step)} 단계에서 {report_read_error}"
     source_backed_research = sprint_research_prepass_source_backed(sprint_state)
     if step == INITIAL_PHASE_STEP_MILESTONE_REFINEMENT and source_backed_research:
         requested_title = str(sprint_state.get("requested_milestone_title") or "").strip()
@@ -1562,12 +1788,34 @@ def validate_initial_phase_step_result(
                 "initial phase 실행 todo 확정 단계에서 supporting_todo trace가 부족합니다. "
                 + "; ".join(supporting_errors[:4])
             )
+        research_trace_errors = validate_research_coverage_trace_refs(
+            todos,
+            known_coverage_ids=sprint_research_todo_coverage_ids(sprint_state),
+        )
+        if research_trace_errors:
+            return (
+                "initial phase 실행 todo 확정 단계에서 research coverage trace가 부족합니다. "
+                + "; ".join(research_trace_errors[:4])
+            )
         missing_requirement_ids = missing_requirement_todo_coverage(sprint_state)
         if missing_requirement_ids:
             return (
                 "initial phase 실행 todo 확정 단계에서 original requirement todo coverage가 부족합니다. "
                 + ", ".join(missing_requirement_ids)
             )
+        missing_research_coverage_ids = missing_research_coverage_todo_coverage(sprint_state)
+        if missing_research_coverage_ids:
+            return (
+                "initial phase 실행 todo 확정 단계에서 research coverage todo coverage가 부족합니다. "
+                + ", ".join(missing_research_coverage_ids)
+            )
+        matrix_error = validate_research_coverage_matrix_receipt(
+            sprint_state,
+            sprint_plan_update,
+            require_todo_id=True,
+        )
+        if matrix_error:
+            return "initial phase 실행 todo 확정 단계에서 " + matrix_error
         return ""
     if step != INITIAL_PHASE_STEP_BACKLOG_DEFINITION:
         return ""
@@ -1578,6 +1826,7 @@ def validate_initial_phase_step_result(
         )
     original_requirements = ensure_sprint_original_requirements(sprint_state)
     kickoff_requirements = normalize_trace_list(sprint_state.get("kickoff_requirements") or [])
+    research_coverage_ids = sprint_research_todo_coverage_ids(sprint_state)
     validation_errors: list[str] = []
     for item in relevant_items:
         title = str(item.get("title") or item.get("backlog_id") or "unnamed backlog").strip()
@@ -1587,6 +1836,7 @@ def validate_initial_phase_step_result(
         requirement_refs = normalize_trace_list(origin.get("requirement_refs") or [])
         spec_refs = normalize_trace_list(origin.get("spec_refs") or [])
         research_refs = normalize_trace_list(origin.get("research_refs") or [])
+        research_coverage_refs = normalize_trace_list(origin.get("research_coverage_refs") or [])
         origin_sprint_id = str(origin.get("sprint_id") or "").strip()
         item_milestone = str(item.get("milestone_title") or "").strip()
         if not acceptance:
@@ -1601,12 +1851,37 @@ def validate_initial_phase_step_result(
             validation_errors.append(f"{title}: origin.spec_refs 없음")
         if source_backed_research and not research_refs:
             validation_errors.append(f"{title}: origin.research_refs 없음")
+        if research_coverage_refs and not research_refs:
+            validation_errors.append(f"{title}: origin.research_coverage_refs가 있지만 origin.research_refs 없음")
+        unknown_research_coverage = [
+            ref for ref in research_coverage_refs if research_coverage_ids and ref not in research_coverage_ids
+        ]
+        if unknown_research_coverage:
+            validation_errors.append(f"{title}: unknown origin.research_coverage_refs {', '.join(unknown_research_coverage)}")
     validation_errors.extend(validate_supporting_todo_requirement_refs(relevant_items, original_requirements))
+    validation_errors.extend(
+        validate_research_coverage_trace_refs(
+            relevant_items,
+            known_coverage_ids=research_coverage_ids,
+        )
+    )
     missing_requirement_ids = missing_requirement_backlog_coverage(sprint_state, relevant_items)
     if missing_requirement_ids:
         validation_errors.append(
             "original requirement backlog coverage missing: " + ", ".join(missing_requirement_ids)
         )
+    missing_research_coverage_ids = missing_research_coverage_backlog_coverage(sprint_state, relevant_items)
+    if missing_research_coverage_ids:
+        validation_errors.append(
+            "research coverage backlog coverage missing: " + ", ".join(missing_research_coverage_ids)
+        )
+    matrix_error = validate_research_coverage_matrix_receipt(
+        sprint_state,
+        sprint_plan_update,
+        require_todo_id=False,
+    )
+    if matrix_error:
+        validation_errors.append(matrix_error)
     if validation_errors:
         return (
             "initial phase backlog 정의 단계의 backlog trace가 부족합니다. "
@@ -1978,6 +2253,22 @@ def sync_manual_sprint_queue(service: Any, sprint_state: dict[str, Any]) -> None
         )
         if supporting_refs:
             existing["supports_requirement_refs"] = supporting_refs
+        research_refs = normalize_trace_list(
+            item.get("research_refs")
+            or origin.get("research_refs")
+            or existing.get("research_refs")
+            or []
+        )
+        if research_refs:
+            existing["research_refs"] = research_refs
+        research_coverage_refs = normalize_trace_list(
+            item.get("research_coverage_refs")
+            or origin.get("research_coverage_refs")
+            or existing.get("research_coverage_refs")
+            or []
+        )
+        if research_coverage_refs:
+            existing["research_coverage_refs"] = research_coverage_refs
         if bool(item.get("supporting_todo")):
             existing["supporting_todo"] = True
         if bool(item.get("recovery_todo")):
@@ -2071,10 +2362,16 @@ def sync_internal_sprint_artifacts_from_role_report(
             "subject": str(research_signal.get("subject") or "").strip(),
             "research_query": str(research_signal.get("research_query") or "").strip(),
             "research_url": str(research_report.get("research_url") or "").strip(),
+            "report_artifact": report_artifact,
             "research_subject_definition": subject_definition,
             "headline": str(research_report.get("headline") or result.get("summary") or "").strip(),
             "planner_guidance": str(research_report.get("planner_guidance") or "").strip(),
             "backing_sources": backing_sources,
+            "todo_coverage_requirements": [
+                dict(item)
+                for item in (research_report.get("todo_coverage_requirements") or [])
+                if isinstance(item, dict)
+            ],
             "artifacts": artifacts,
             "completed_at": utc_now_iso(),
         }
@@ -2096,6 +2393,7 @@ def sync_internal_sprint_artifacts_from_role_report(
                 "request_id": prepass["request_id"],
                 "artifacts": artifacts,
                 "backing_source_count": len(backing_sources),
+                "todo_coverage_requirement_count": len(prepass["todo_coverage_requirements"]),
             },
         )
         return prepass
@@ -3209,39 +3507,57 @@ def create_internal_request_record(
         or backlog_origin.get("original_requirement_refs")
         or []
     )
+    todo_research_refs = normalize_trace_list(
+        todo.get("research_refs")
+        or backlog_item.get("research_refs")
+        or backlog_origin.get("research_refs")
+        or []
+    )
+    todo_research_coverage_refs = normalize_trace_list(
+        todo.get("research_coverage_refs")
+        or backlog_item.get("research_coverage_refs")
+        or backlog_origin.get("research_coverage_refs")
+        or []
+    )
     initial_role = str(
         workflow_state.get("phase_owner")
         or todo.get("owner_role")
         or "planner"
     ).strip() or "planner"
+    body_lines = [
+        str(backlog_item.get("summary") or backlog_item.get("scope") or "").strip(),
+        "original_requirements:",
+        *[f"- {format_original_requirement_ref(item)}" for item in original_requirements],
+        "original_requirement_refs:",
+        *[f"- {item}" for item in todo_requirement_refs],
+    ]
+    if todo_research_coverage_refs:
+        body_lines.extend(["research_coverage_refs:", *[f"- {item}" for item in todo_research_coverage_refs]])
+    if todo_research_refs:
+        body_lines.extend(["research_refs:", *[f"- {item}" for item in todo_research_refs]])
+    params = {
+        "_teams_kind": "sprint_internal",
+        "sprint_id": sprint_state.get("sprint_id") or "",
+        "backlog_id": todo.get("backlog_id") or "",
+        "todo_id": todo.get("todo_id") or "",
+        "original_requirements": [dict(item) for item in original_requirements],
+        "requirement_refs": todo_requirement_refs,
+        "supporting_todo": bool(todo.get("supporting_todo")),
+        "workflow": workflow_state,
+    }
+    if todo_research_coverage_refs:
+        params["research_coverage_refs"] = todo_research_coverage_refs
+    if todo_research_refs:
+        params["research_refs"] = todo_research_refs
     record = {
         "request_id": request_id,
         "status": "queued",
         "intent": "route",
         "urgency": "normal",
         "scope": str(backlog_item.get("scope") or backlog_item.get("title") or "").strip(),
-        "body": "\n".join(
-            line
-            for line in [
-                str(backlog_item.get("summary") or backlog_item.get("scope") or "").strip(),
-                "original_requirements:",
-                *[f"- {format_original_requirement_ref(item)}" for item in original_requirements],
-                "original_requirement_refs:",
-                *[f"- {item}" for item in todo_requirement_refs],
-            ]
-            if str(line).strip()
-        ),
+        "body": "\n".join(line for line in body_lines if str(line).strip()),
         "artifacts": [],
-        "params": {
-            "_teams_kind": "sprint_internal",
-            "sprint_id": sprint_state.get("sprint_id") or "",
-            "backlog_id": todo.get("backlog_id") or "",
-            "todo_id": todo.get("todo_id") or "",
-            "original_requirements": [dict(item) for item in original_requirements],
-            "requirement_refs": todo_requirement_refs,
-            "supporting_todo": bool(todo.get("supporting_todo")),
-            "workflow": workflow_state,
-        },
+        "params": params,
         "current_role": "orchestrator",
         "next_role": initial_role,
         "owner_role": "orchestrator",

@@ -166,7 +166,13 @@ Normal change and enhancement requests are backlog-first.
 - an internal non-public sourcer agent can independently propose new backlog candidates from workspace/runtime findings, but planner review is required before backlog persistence
 - when a sprint starts, the first initial-phase delegation must be `research` at workflow step `research_initial`, before planner milestone refinement
 - the research prepass must define the research subject, provide source-backed findings or local-evidence/no-subject rationale, and give planner hints/backing reasons for refining the raw milestone
+- when external deep research runs, the raw Markdown report is saved under `shared_workspace/sprints/<sprint_id>/research/<request_id>.md`; after the write, the researcher synthesizes `proposals.research_report.todo_coverage_requirements` from the full raw report, parsed report fields, subject definition, and original requirements
+- `todo_coverage_requirements` items use `{coverage_id, guidance, rationale, source_refs, report_refs}` with normalized `RG-*` IDs, non-empty `guidance`, and at least one traceable source or report reference; the raw report is not required to contain a matching heading
+- `sprint_state["research_prepass"]` persists the raw `report_artifact`, existing summary/source fields, and synthesized coverage requirements
 - planner must then derive sprint-relevant backlog from the refined milestone, kickoff requirements, research report, and `spec.md`
+- if a raw research artifact exists, every initial planner step must prove it read the full report by returning `proposals.sprint_plan_update.research_report_read` with the matching artifact path, `raw_report_read=true`, the current phase step, referenced full-report sections, and considered coverage IDs
+- `backlog_definition` must collectively cover every `RG-*` coverage item through sprint-relevant backlog records, and `todo_finalization` must cover every `RG-*` item through selected sprint TODOs
+- backlog records or TODOs that claim `research_coverage_refs` must also carry matching `research_refs`; unrelated milestone-relevant TODOs may remain valid without research coverage refs
 - sprint start cannot proceed with `backlog 0건`; if sprint-relevant backlog is empty, the runtime blocks with `planning_incomplete`
 - the scheduler later selects pending backlog items only after that initial-phase backlog-definition gate passes
 - selected items become sprint todos and are executed through internal `request_id` records with a standard workflow contract
@@ -187,6 +193,7 @@ Workflow rules:
 - planning advisory is capped at 2 shared passes total
 - sprint initial planning follows `research_initial -> planner_draft`, where planner covers `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
 - `backlog_definition` is mandatory and must persist sprint-relevant backlog before prioritization
+- planner lifecycle validation blocks initial phases that omit the required raw-report-read receipt when a research `report_artifact` exists, and blocks backlog/todo phases that leave synthesized `RG-*` coverage uncovered
 - planning-only clarification on planner-owned surfaces such as `current_sprint.md`, `todo_backlog.md`, and `iteration_log.md` closes in planning instead of opening implementation
 - planner가 planner-owned artifact만 보고하더라도 `workflow_transition.target_phase=implementation`을 명시하면 orchestrator는 planning close 대신 다음 implementation step을 열어야 함
 - implementation follows the standard sequence:
@@ -211,7 +218,7 @@ Workflow rules:
   - `workflows/roles/developer.py` owns developer-specific implementation-step and revision-step prompt rules
   - `workflows/roles/orchestrator.py` owns orchestrator-specific intake/control-action prompt rules
   - `workflows/roles/planner.py` owns planner-specific prompt rules and planner proposal normalization
-  - `workflows/roles/research.py` owns research prepass decision prompts, research decision normalization, and external-research report parsing
+  - `workflows/roles/research.py` owns research prepass decision prompts, research decision normalization, external-research report parsing, and researcher-owned todo coverage synthesis/validation
   - `runtime/research_runtime.py` owns session-scoped research execution and external deep-research orchestration
   - `workflows/roles/qa.py` owns QA-specific validation-step prompt rules and reopen guidance
   - `workflows/roles/__init__.py` owns runtime-side registration of role prompt modules and extra response fields

@@ -21,7 +21,7 @@ Do not use this skill for implementation, testing, or architecture changes.
 
 - `Current request`
 - local planning or spec Markdown files mentioned in the request
-- source-backed research prepass or raw research report artifacts referenced by `Current request`
+- source-backed research prepass or raw research report artifacts referenced by `Current request`. If `report_artifact` exists, read the full raw Markdown report; the summary and `todo_coverage_requirements` are only an index
 - `shared_workspace/backlog.md`
 - `shared_workspace/current_sprint.md`
 - `shared_workspace/sprints/`
@@ -35,7 +35,7 @@ Do not use this skill for implementation, testing, or architecture changes.
 3. Structure every item.
    Each item should have a title, scope, summary, and acceptance criteria. Add `priority_rank`, `planned_in_sprint_id`, and the current sprint `milestone_title` when available.
 4. Apply research traceability.
-   If source-backed research exists, use `todo_definition_hints`, `problem_framing_hints`, `spec_implications`, and `backing_reasoning` to shape backlog boundaries, then include `origin.research_refs` on every sprint-relevant backlog item.
+   If source-backed research exists, use the full raw report, `todo_definition_hints`, `problem_framing_hints`, `spec_implications`, `backing_reasoning`, and `todo_coverage_requirements` to shape backlog boundaries, then include `origin.research_refs` on every sprint-relevant backlog item. If an item covers an `RG-*` coverage requirement, include `origin.research_coverage_refs` plus matching `origin.research_refs`.
 5. Name the behavior change, not the implementation activity.
    Use titles that describe the functional delta or workflow-contract change. Avoid activity-first labels such as `정리`, `반영`, `문서`, `라우팅`, or `회귀 테스트` unless they are the actual product behavior change.
 6. Split cross-cutting items first.
@@ -53,6 +53,8 @@ Do not use this skill for implementation, testing, or architecture changes.
 - Do not emit placeholder backlog items with empty acceptance criteria unless the source is genuinely incomplete.
 - Do not ignore research-backed todo hints when decomposing a vague milestone into concrete backlog.
 - Do not omit `origin.research_refs` when source-backed research shaped the item.
+- Do not leave an `RG-*` todo coverage requirement without a backlog item or selected sprint TODO.
+- Do not claim `origin.research_coverage_refs` without matching `origin.research_refs`.
 - Do not mix multiple unrelated implementation tracks into one backlog item.
 - Do not keep umbrella backlog items just because recent local examples happened to use three entries.
 - Do not emit meta activity titles when the source already reveals the concrete functional change.

@@ -42,6 +42,8 @@
 - `proposals.research_report`에는 `report_artifact`, `headline`, `planner_guidance`, `backing_sources`, `open_questions`, `effective_config`를 남긴다
 - `proposals.research_report.research_subject_definition`에도 같은 subject definition을 포함한다
 - `proposals.research_report`에는 `milestone_refinement_hints`, `problem_framing_hints`, `spec_implications`, `todo_definition_hints`, `backing_reasoning`도 남긴다
+- deep research raw report를 저장한 뒤 researcher-owned synthesis로 `proposals.research_report.todo_coverage_requirements`를 생성한다. raw report에 `Todo Coverage Requirements` heading이 없어도 된다
+- `todo_coverage_requirements` item은 `{coverage_id, guidance, rationale, source_refs, report_refs}` 형태이고, ID는 `RG-001`, `RG-002` 순서로 normalize된다. 각 item은 non-empty `guidance`와 `source_refs` 또는 `report_refs`를 가져야 한다
 - deep research를 실행했으면 `Backing Sources`를 planner가 바로 읽을 수 있는 수준으로 정리하고, `backing_reasoning`에서 source가 milestone/spec/todo 판단을 뒷받침하는 이유를 연결한다
 - `milestone_refinement_hints`는 user가 준 abstract milestone을 더 구체적인 sprint framing으로 발전시키는 단서를 제공한다
 - `todo_definition_hints`는 planner가 backlog/todo를 정의할 때 참고할 reviewable slice와 acceptance criteria 관점을 제공한다

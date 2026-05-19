@@ -26,7 +26,7 @@ Do not use this skill for non-sprint documentation tasks that do not affect spri
 - `shared_workspace/backlog.md`
 - sprint kickoff docs in `shared_workspace/sprints/<sprint_folder_name>/kickoff.md`
 - source-backed research prepass in `Current request.result.proposals.research_report` or `research_prepass`
-- raw research reports under `shared_workspace/sprints/<sprint_folder_name>/research/` when referenced
+- raw research reports under `shared_workspace/sprints/<sprint_folder_name>/research/` when referenced. If `report_artifact` exists, read the full raw Markdown report in every initial substep; the summary and `todo_coverage_requirements` are only an index
 - sprint folder docs in `shared_workspace/sprints/<sprint_folder_name>/`
 - `shared_workspace/sprint_history/index.md` when the request is sprint-relevant
 - the smallest relevant prior sprint history file(s) under `shared_workspace/sprint_history/` when carry-over work, repeated blockers, milestone continuity, or already-closed decisions matter
@@ -38,7 +38,7 @@ Do not use this skill for non-sprint documentation tasks that do not affect spri
 2. Read current sprint state before changing priorities.
    Use the existing milestone, preserved kickoff brief, kickoff requirements, and queue context as the baseline.
 3. Use research as planning leverage when present.
-   Treat the user milestone as an abstract entry point. Use research hints, backing reasoning, and sources to refine the milestone, identify further problems, set spec boundaries, and define todos. In `milestone_refinement`, return `proposals.sprint_plan_update.revised_milestone_title`, `refinement_rationale`, `problem_framing`, and `research_refs` when source-backed research exists.
+   Treat the user milestone as an abstract entry point. Use research hints, backing reasoning, sources, the full raw report artifact, and `todo_coverage_requirements` to refine the milestone, identify further problems, set spec boundaries, and define todos. In each initial substep with a `report_artifact`, return `proposals.sprint_plan_update.research_report_read = {report_artifact, raw_report_read: true, phase_step, referenced_sections, coverage_ids_considered}`. In `milestone_refinement`, return `proposals.sprint_plan_update.revised_milestone_title`, `refinement_rationale`, `problem_framing`, and `research_refs` when source-backed research exists.
 4. Use prior sprint history as comparative context.
    For sprint-relevant planning, inspect `shared_workspace/sprint_history/index.md` first and then open only the smallest relevant prior sprint history file(s). Use them to recover carry-over work, repeated blockers, milestone continuity, and already-closed decisions, but keep the current request, active sprint docs, and kickoff context authoritative.
 5. Recommend only actionable updates.
@@ -56,7 +56,7 @@ Do not use this skill for non-sprint documentation tasks that do not affect spri
 11. Size the sprint to the milestone.
    Do not default to three promoted items. Choose the exact number justified by the sprint milestone, preserved kickoff context, and current backlog state. More than three promoted items is normal when the milestone spans multiple independent slices.
 12. Add research traceability when required.
-   When source-backed research exists, every created or reopened sprint-relevant backlog item must include `origin.research_refs` pointing to the report artifact, source title/url, or research hint label that shaped it.
+   When source-backed research exists, every created or reopened sprint-relevant backlog item must include `origin.research_refs` pointing to the report artifact, source title/url, or research hint label that shaped it. Every `RG-*` coverage item must be covered by at least one backlog item or selected sprint TODO; covering backlog items use `origin.research_coverage_refs` plus matching `origin.research_refs`, and selected TODOs use `research_coverage_refs` plus matching `research_refs`. Return `proposals.sprint_plan_update.research_coverage_matrix = [{coverage_id, backlog_id, todo_id?, coverage_type}]` during backlog definition and todo finalization.
 13. Ignore local count anchoring.
    Do not copy prior planner history or shared planning logs that happened to show three promoted items.
 14. Reopen blocked backlog explicitly.
@@ -67,6 +67,8 @@ Do not use this skill for non-sprint documentation tasks that do not affect spri
 - Do not promote work into the sprint without making the sprint's single milestone and priority rationale explicit.
 - Do not treat the user milestone as the final milestone when source-backed research gives planner new framing, constraints, or todo angles.
 - Do not omit `research_refs` from source-backed sprint backlog items.
+- Do not claim `research_coverage_refs` without matching `research_refs`.
+- Do not force research coverage refs onto unrelated but milestone-relevant TODOs; only `RG-*` coverage TODOs need them.
 - Do not promote side quests just because they are convenient; sprint inclusion must be milestone-relevant.
 - Do not default to three sprint items when the work naturally collapses to one or expands beyond three.
 - Do not bundle multiple independent implementation slices into one sprint item just to keep the sprint short.

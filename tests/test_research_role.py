@@ -7,15 +7,18 @@ from teams_runtime.workflows.roles.research import (
     RESEARCH_REASON_CODE_BLOCKED_DECISION_FAILED,
     RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING,
     RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE,
+    build_research_coverage_prompt,
     build_research_decision_prompt,
     build_research_prompt,
     default_research_planner_guidance,
     default_research_signal,
     normalize_research_decision,
     normalize_research_subject_definition,
+    normalize_research_todo_coverage_requirements,
     parse_research_report,
     research_reason_code_summary,
     research_skip_summary,
+    validate_research_todo_coverage_response,
 )
 from teams_runtime.shared.models import MessageEnvelope
 
@@ -349,6 +352,83 @@ Keep pricing assumptions soft until provider choice is finalized.
             parsed["open_questions"],
             ["Should planner optimize for latency or pure token cost first?"],
         )
+
+    def test_research_report_does_not_require_todo_coverage_heading(self):
+        report = """# Executive Summary
+Provider pricing differs enough that planner should preserve neutral abstractions.
+
+# Planner Guidance
+Keep pricing assumptions soft until provider choice is finalized.
+
+# Todo Definition Hints
+- Split provider abstraction and pricing verification into separate backlog slices.
+
+# Backing Reasoning
+- Official pricing pages directly affect planner's cost assumptions.
+
+# Backing Sources
+- title: OpenAI API Pricing
+  url: https://openai.com/api/pricing
+  relevance: Confirms current OpenAI list pricing.
+  summary: Lists current flagship API pricing tiers.
+"""
+
+        parsed = parse_research_report(report)
+
+        self.assertEqual(
+            parsed["todo_definition_hints"],
+            ["Split provider abstraction and pricing verification into separate backlog slices."],
+        )
+        self.assertEqual(len(parsed["backing_sources"]), 1)
+
+    def test_build_research_coverage_prompt_includes_full_raw_report(self):
+        raw_report = "# Executive Summary\nFull report line.\n\n# Backing Sources\n- title: Source\n  url: https://example.com/source\n"
+
+        prompt = build_research_coverage_prompt(
+            raw_report_markdown=raw_report,
+            parsed_report={"headline": "Full report line."},
+            subject_definition={"planning_decision": "todo slicing"},
+            original_requirements=[{"id": "REQ-001", "text": "Keep source trace"}],
+            report_artifact="shared_workspace/sprints/sprint-a/research/request.md",
+        )
+        prompt_payload = json.loads(prompt)
+
+        self.assertIn(raw_report, prompt_payload["raw_report_markdown"])
+        self.assertIn("todo_coverage_requirements", prompt_payload["output_contract"]["shape"])
+        self.assertEqual(prompt_payload["original_requirements"][0]["id"], "REQ-001")
+        self.assertIn("entire raw_report_markdown", " ".join(prompt_payload["rules"]).lower())
+
+    def test_normalize_research_todo_coverage_requirements_assigns_rg_ids(self):
+        normalized = normalize_research_todo_coverage_requirements(
+            [
+                {
+                    "guidance": "Planner must split pricing verification from abstraction work.",
+                    "rationale": "Pricing source changes acceptance criteria.",
+                    "source_refs": ["OpenAI API Pricing | https://openai.com/api/pricing"],
+                    "report_refs": [],
+                },
+                {
+                    "coverage_id": "rg-7",
+                    "guidance": "Planner must keep provider cost assumptions configurable.",
+                    "rationale": "",
+                    "source_refs": [],
+                    "report_refs": ["Spec Implications"],
+                },
+            ]
+        )
+
+        self.assertEqual([item["coverage_id"] for item in normalized], ["RG-001", "RG-007"])
+        self.assertEqual(normalized[0]["source_refs"], ["OpenAI API Pricing | https://openai.com/api/pricing"])
+
+    def test_invalid_research_todo_coverage_requirements_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "guidance"):
+            validate_research_todo_coverage_response(
+                {"todo_coverage_requirements": [{"source_refs": ["Source | https://example.com"]}]}
+            )
+        with self.assertRaisesRegex(ValueError, "source_refs or report_refs"):
+            validate_research_todo_coverage_response(
+                {"todo_coverage_requirements": [{"guidance": "Missing refs"}]}
+            )
 
     def test_planner_guidance_and_skip_summary_use_reason_code(self):
         signal = {

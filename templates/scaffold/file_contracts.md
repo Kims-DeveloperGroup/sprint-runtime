@@ -7,7 +7,7 @@
 - shared_workspace/sprints/<sprint_folder_name>/: sprint-id-keyed planning/spec/report folders
 - shared_workspace/sprints/<sprint_folder_name>/kickoff.md: immutable kickoff brief, requirements, source request link, and kickoff reference docs
 - shared_workspace/sprints/<sprint_folder_name>/attachments/<attachment_id>_<filename>: inbound Discord attachments and sprint-start reference docs
-- shared_workspace/sprints/<sprint_id>/research/<request_id>.md: research raw report artifact written before planner when external grounding is needed
+- shared_workspace/sprints/<sprint_id>/research/<request_id>.md: research raw report artifact written before planner when external grounding is needed; planner initial phases must read the full file when referenced by `research_prepass.report_artifact`
 - shared_workspace/sprint_history/: archived sprint reports and todo history
 - .teams_runtime/requests/<request_id>.json: canonical request record including the latest role result
 - <role>/todo.md: runtime-maintained current task list for open requests

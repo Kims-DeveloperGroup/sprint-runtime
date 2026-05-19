@@ -115,7 +115,7 @@ Current ownership:
   - developer-specific implementation-step and revision-step prompt rules stay in `developer_role.py`
   - internal parser runtime plus status-intent normalization stay in `internal/intent_parser.py`
   - internal backlog sourcing runtime plus backlog candidate normalization stay in `internal/backlog_sourcing.py`
-  - research runtime orchestration and external deep-research execution stay in `research_runtime.py`
+  - research runtime orchestration, external deep-research execution, and post-report coverage synthesis calls stay in `research_runtime.py`
   - `*_role.py` and `role_registry.py` remain compatibility facades for `workflows/roles/*`
   - runtime session lifecycle and workspace seeding stay in `session_manager.py`
   - version-controller task/closeout commit prompt rules stay in `version_controller_role.py`
@@ -193,11 +193,12 @@ Layer ownership rules:
   - canonical backlog/request/sprint persistence, event APIs, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, backlog/review fingerprinting, sourcer and blocked-backlog review candidate normalization/rendering, fallback sourcer candidates, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, and backlog status-report context helpers
 - `workflows/roles/`
   - role-specific prompt assembly, payload normalization, validation, role registry, and role capability metadata
+  - research role helpers own todo coverage prompt assembly plus `RG-*` coverage item normalization/validation
   - capability metadata describes role strengths and signals, but routing decisions remain outside role modules
 - `workflows/orchestration/`
   - routing, workflow engine, orchestration side effects, and `TeamService`
 - `workflows/sprints/`
-  - sprint lifecycle/report helpers, including todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, sprint folder/attachment filename policy, and sprint planning request record assembly
+  - sprint lifecycle/report helpers, including todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, sprint folder/attachment filename policy, sprint planning request record assembly, research prepass handoff, and planner research receipt/coverage validation
   - sprint report rendering, closeout shaping, closeout request-id/path utility policy, artifact preview/status-label/line-limit helpers, planner initial-phase activity report key/section/body assembly, report-body parsing/refresh, history/archive helpers and write/refresh side effects, sprint report delivery body/artifact/progress-report/context assembly, terminal report section composition, sprint artifact path/spec/iteration/kickoff markdown rendering, and Spec/TODO report section formatting
 - `templates/`
   - scaffold and prompt assets only

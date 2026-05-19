@@ -21,6 +21,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     build_manual_sprint_state,
     build_recovered_sprint_todo_from_request,
     build_sprint_planning_request_record,
+    build_todo_item,
     collect_sprint_relevant_backlog_items,
     extract_sprint_folder_name,
     initial_phase_step,
@@ -172,6 +173,49 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(record["git_baseline"], {"sha": "abc123"})
         self.assertTrue(record["fingerprint"])
 
+    def test_build_sprint_planning_request_record_includes_research_report_contract(self) -> None:
+        coverage = [
+            {
+                "coverage_id": "RG-001",
+                "guidance": "Planner must preserve research traceability in TODOs.",
+                "rationale": "The raw report makes traceability a planning constraint.",
+                "source_refs": ["Workflow Source | https://example.com/workflow"],
+                "report_refs": ["Todo Definition Hints"],
+            }
+        ]
+        record = build_sprint_planning_request_record(
+            {
+                "sprint_id": "260421-Sprint-19:40",
+                "requested_milestone_title": "original milestone",
+                "milestone_title": "refined milestone",
+                "sprint_name": "Refined Sprint",
+                "sprint_folder": "shared_workspace/sprints/refined",
+                "research_prepass": {
+                    "status": "completed",
+                    "report_artifact": "shared_workspace/sprints/refined/research/request-1.md",
+                    "todo_coverage_requirements": coverage,
+                    "backing_sources": [
+                        {"title": "Workflow Source", "url": "https://example.com/workflow"}
+                    ],
+                },
+            },
+            phase="initial",
+            iteration=1,
+            step=INITIAL_PHASE_STEP_ARTIFACT_SYNC,
+            request_id="request-2",
+            artifacts=[],
+            created_at="2026-04-21T19:40:00+09:00",
+            updated_at="2026-04-21T19:40:01+09:00",
+            git_baseline={},
+        )
+
+        self.assertIn("report_artifact: shared_workspace/sprints/refined/research/request-1.md", record["body"])
+        self.assertIn("raw_report_read_required: true", record["body"])
+        self.assertIn("RG-001", record["body"])
+        self.assertEqual(record["params"]["research_report_artifact"], "shared_workspace/sprints/refined/research/request-1.md")
+        self.assertEqual(record["params"]["todo_coverage_requirements"], coverage)
+        self.assertIn("shared_workspace/sprints/refined/research/request-1.md", record["artifacts"])
+
     def test_sprint_research_prepass_body_lines_include_planning_hints(self) -> None:
         lines = sprint_research_prepass_body_lines(
             {
@@ -181,6 +225,7 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                     "reason_code": "needed_external_grounding",
                     "subject": "workflow planning evidence",
                     "research_query": "Find workflow planning evidence.",
+                    "report_artifact": "shared_workspace/sprints/sprint-a/research/request-research.md",
                     "research_subject_definition": {
                         "planning_decision": "milestone refinement",
                         "knowledge_gap": "source-backed workflow ordering",
@@ -203,6 +248,15 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                             "url": "https://example.com/workflow",
                         }
                     ],
+                    "todo_coverage_requirements": [
+                        {
+                            "coverage_id": "RG-001",
+                            "guidance": "Planner must preserve research traceability in backlog and TODOs.",
+                            "rationale": "The source changes todo trace requirements.",
+                            "source_refs": ["Workflow Source | https://example.com/workflow"],
+                            "report_refs": ["Todo Definition Hints"],
+                        }
+                    ],
                 }
             }
         )
@@ -214,6 +268,9 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertIn("todo_definition_hints", body)
         self.assertIn("backing_reasoning", body)
         self.assertIn("Workflow Source | https://example.com/workflow", body)
+        self.assertIn("raw_report_read_required: true", body)
+        self.assertIn("todo_coverage_requirements", body)
+        self.assertIn("RG-001", body)
 
     def test_initial_phase_step_metadata_is_stable(self) -> None:
         self.assertEqual(
@@ -921,6 +978,287 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             "",
         )
 
+    def test_validate_initial_phase_step_result_requires_raw_report_read_receipt(self) -> None:
+        sprint_state = {
+            "research_prepass": {
+                "status": "completed",
+                "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                "todo_coverage_requirements": [
+                    {
+                        "coverage_id": "RG-001",
+                        "guidance": "Planner must preserve research traceability.",
+                        "source_refs": ["Workflow Source | https://example.com/workflow"],
+                        "report_refs": ["Todo Definition Hints"],
+                    }
+                ],
+            },
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_ARTIFACT_SYNC,
+            },
+            "result": {"proposals": {"sprint_plan_update": {}}},
+        }
+
+        self.assertIn(
+            "research_report_read",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={},
+                relevant_items=[],
+            ),
+        )
+
+        request_record["result"]["proposals"]["sprint_plan_update"]["research_report_read"] = {
+            "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+            "raw_report_read": True,
+            "phase_step": INITIAL_PHASE_STEP_ARTIFACT_SYNC,
+            "referenced_sections": ["Todo Definition Hints"],
+            "coverage_ids_considered": ["RG-001"],
+        }
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={},
+                relevant_items=[],
+            ),
+            "",
+        )
+
+    def test_validate_initial_phase_step_result_enforces_research_coverage_backlog(self) -> None:
+        sprint_state = {
+            "kickoff_requirements": ["requirement-a"],
+            "research_prepass": {
+                "status": "completed",
+                "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                "backing_sources": [{"title": "Workflow Source", "url": "https://example.com/workflow"}],
+                "todo_coverage_requirements": [
+                    {
+                        "coverage_id": "RG-001",
+                        "guidance": "Planner must preserve research traceability.",
+                        "source_refs": ["Workflow Source | https://example.com/workflow"],
+                        "report_refs": ["Todo Definition Hints"],
+                    }
+                ],
+            },
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+            },
+            "result": {
+                "proposals": {
+                    "sprint_plan_update": {
+                        "research_report_read": {
+                            "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                            "raw_report_read": True,
+                            "phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+                            "referenced_sections": ["Todo Definition Hints"],
+                            "coverage_ids_considered": ["RG-001"],
+                        },
+                        "research_coverage_matrix": [],
+                    }
+                }
+            },
+        }
+        item = {
+            "backlog_id": "backlog-1",
+            "title": "Research-traced workflow contract",
+            "milestone_title": "workflow initial",
+            "acceptance_criteria": ["workflow가 research trace를 보존한다."],
+            "origin": {
+                "milestone_ref": "workflow initial",
+                "requirement_refs": ["requirement-a"],
+                "spec_refs": ["./shared_workspace/sprints/current/spec.md#workflow"],
+                "research_refs": ["Workflow Source | https://example.com/workflow"],
+            },
+        }
+
+        self.assertIn(
+            "research coverage backlog coverage missing: RG-001",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[item],
+            ),
+        )
+
+        covered_item = {
+            **item,
+            "origin": {**item["origin"], "research_coverage_refs": ["RG-001"]},
+        }
+        request_record["result"]["proposals"]["sprint_plan_update"]["research_coverage_matrix"] = [
+            {
+                "coverage_id": "RG-001",
+                "backlog_id": "backlog-1",
+                "coverage_type": "backlog",
+            }
+        ]
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[covered_item],
+            ),
+            "",
+        )
+
+    def test_validate_initial_phase_step_result_rejects_claimed_research_coverage_without_refs(self) -> None:
+        sprint_state = {
+            "kickoff_requirements": ["requirement-a"],
+            "research_prepass": {
+                "status": "completed",
+                "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                "todo_coverage_requirements": [
+                    {
+                        "coverage_id": "RG-001",
+                        "guidance": "Planner must preserve research traceability.",
+                        "report_refs": ["Todo Definition Hints"],
+                        "source_refs": [],
+                    }
+                ],
+            },
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+            },
+            "result": {
+                "proposals": {
+                    "sprint_plan_update": {
+                        "research_report_read": {
+                            "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                            "raw_report_read": True,
+                            "phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+                            "referenced_sections": ["Todo Definition Hints"],
+                            "coverage_ids_considered": ["RG-001"],
+                        },
+                        "research_coverage_matrix": [
+                            {"coverage_id": "RG-001", "backlog_id": "backlog-1", "coverage_type": "backlog"}
+                        ],
+                    }
+                }
+            },
+        }
+        item = {
+            "backlog_id": "backlog-1",
+            "title": "Coverage without refs",
+            "milestone_title": "workflow initial",
+            "acceptance_criteria": ["workflow가 research trace를 보존한다."],
+            "origin": {
+                "milestone_ref": "workflow initial",
+                "requirement_refs": ["requirement-a"],
+                "spec_refs": ["./shared_workspace/sprints/current/spec.md#workflow"],
+                "research_coverage_refs": ["RG-001"],
+            },
+        }
+
+        self.assertIn(
+            "research_coverage_refs",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[item],
+            ),
+        )
+
+    def test_validate_initial_phase_step_result_allows_unrelated_todo_without_research_refs(self) -> None:
+        sprint_state = {
+            "sprint_id": "sprint-a",
+            "selected_backlog_ids": ["backlog-covered", "backlog-unrelated"],
+            "selected_items": [
+                {
+                    "backlog_id": "backlog-covered",
+                    "title": "Covered research todo",
+                    "planned_in_sprint_id": "sprint-a",
+                },
+                {
+                    "backlog_id": "backlog-unrelated",
+                    "title": "Unrelated milestone todo",
+                    "planned_in_sprint_id": "sprint-a",
+                },
+            ],
+            "todos": [
+                {
+                    "todo_id": "todo-covered",
+                    "backlog_id": "backlog-covered",
+                    "title": "Covered research todo",
+                    "research_coverage_refs": ["RG-001"],
+                    "research_refs": ["Workflow Source | https://example.com/workflow"],
+                },
+                {
+                    "todo_id": "todo-unrelated",
+                    "backlog_id": "backlog-unrelated",
+                    "title": "Unrelated milestone todo",
+                },
+            ],
+            "research_prepass": {
+                "status": "completed",
+                "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                "todo_coverage_requirements": [
+                    {
+                        "coverage_id": "RG-001",
+                        "guidance": "Planner must preserve research traceability.",
+                        "source_refs": ["Workflow Source | https://example.com/workflow"],
+                        "report_refs": ["Todo Definition Hints"],
+                    }
+                ],
+            },
+        }
+        request_record = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_TODO_FINALIZATION,
+            },
+            "result": {
+                "proposals": {
+                    "sprint_plan_update": {
+                        "research_report_read": {
+                            "report_artifact": "shared_workspace/sprints/sprint-a/research/request-1.md",
+                            "raw_report_read": True,
+                            "phase_step": INITIAL_PHASE_STEP_TODO_FINALIZATION,
+                            "referenced_sections": ["Todo Definition Hints"],
+                            "coverage_ids_considered": ["RG-001"],
+                        },
+                        "research_coverage_matrix": [
+                            {
+                                "coverage_id": "RG-001",
+                                "backlog_id": "backlog-covered",
+                                "todo_id": "todo-covered",
+                                "coverage_type": "todo",
+                            }
+                        ],
+                    }
+                }
+            },
+        }
+
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=request_record,
+                sync_summary={},
+                relevant_items=[{"title": "ready", "milestone_title": "workflow initial", "priority_rank": 1}],
+            ),
+            "",
+        )
+
     def test_validate_initial_phase_step_result_blocks_copy_through_researched_milestone(self) -> None:
         sprint_state = {
             "requested_milestone_title": "Improve runtime planning",
@@ -1187,6 +1525,21 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertTrue(matrix[0]["implemented"])
         self.assertTrue(matrix[0]["evidence_present"])
         self.assertEqual(inspect_original_requirement_closeout(sprint_state)["status"], "verified")
+
+    def test_build_todo_item_copies_research_trace_from_backlog_origin(self) -> None:
+        todo = build_todo_item(
+            {
+                "backlog_id": "backlog-1",
+                "title": "Research traced work",
+                "origin": {
+                    "research_coverage_refs": ["RG-001"],
+                    "research_refs": ["Workflow Source | https://example.com/workflow"],
+                },
+            }
+        )
+
+        self.assertEqual(todo["research_coverage_refs"], ["RG-001"])
+        self.assertEqual(todo["research_refs"], ["Workflow Source | https://example.com/workflow"])
 
 
 if __name__ == "__main__":

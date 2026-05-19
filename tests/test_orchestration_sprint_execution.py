@@ -100,6 +100,15 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                                     "backing_reasoning": [
                                         "Runtime workflow source가 planner handoff 순서를 제약합니다."
                                     ],
+                                    "todo_coverage_requirements": [
+                                        {
+                                            "coverage_id": "RG-001",
+                                            "guidance": "Planner must preserve source-backed workflow traceability in backlog and TODOs.",
+                                            "rationale": "Runtime workflow source constrains planner handoff order.",
+                                            "source_refs": ["Runtime Workflow Source | https://example.com/runtime-workflow"],
+                                            "report_refs": ["Todo Definition Hints"],
+                                        }
+                                    ],
                                     "backing_sources": [
                                         {
                                             "title": "Runtime Workflow Source",
@@ -132,6 +141,13 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                                     "refinement_rationale": "research source가 planner보다 먼저 확정돼야 하는 evidence traceability를 보여줍니다.",
                                     "problem_framing": "추상 kickoff를 research-first workflow contract와 planner traceability 문제로 발전시킵니다.",
                                     "research_refs": ["Runtime Workflow Source | https://example.com/runtime-workflow"],
+                                    "research_report_read": {
+                                        "report_artifact": research_artifact,
+                                        "raw_report_read": True,
+                                        "phase_step": "milestone_refinement",
+                                        "referenced_sections": ["Executive Summary", "Todo Definition Hints"],
+                                        "coverage_ids_considered": ["RG-001"],
+                                    },
                                     "summary": "source-backed planning assumptions를 반영했습니다.",
                                 }
                             },
@@ -165,6 +181,10 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertEqual(updated_sprint["research_prepass"]["backing_sources"][0]["url"], "https://example.com/runtime-workflow")
                 self.assertIn("milestone_refinement_hints", updated_sprint["research_prepass"])
                 self.assertEqual(
+                    updated_sprint["research_prepass"]["todo_coverage_requirements"][0]["coverage_id"],
+                    "RG-001",
+                )
+                self.assertEqual(
                     updated_sprint["research_prepass"]["research_subject_definition"]["planning_decision"],
                     "sprint milestone refinement and todo traceability",
                 )
@@ -180,6 +200,7 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertNotIn("workflow", next_planning_request["params"])
                 self.assertIn("research_prepass:", next_planning_request["body"])
                 self.assertIn("research_subject_definition:", next_planning_request["body"])
+                self.assertIn("todo_coverage_requirements:", next_planning_request["body"])
                 self.assertIn(research_artifact, next_planning_request["artifacts"])
 
     def test_sprint_internal_todo_starts_at_planner_without_research_prepass(self):
@@ -211,6 +232,45 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertEqual(request_record["next_role"], "planner")
                 self.assertEqual(workflow.get("phase_owner"), "planner")
                 self.assertEqual(workflow.get("step"), "planner_draft")
+
+    def test_internal_todo_request_preserves_research_trace_context(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                backlog_item = build_backlog_item(
+                    title="research traced todo",
+                    summary="regular sprint todo should keep research coverage context.",
+                    kind="enhancement",
+                    source="planner",
+                    scope="research traced todo",
+                    origin={
+                        "research_coverage_refs": ["RG-001"],
+                        "research_refs": ["Workflow Source | https://example.com/workflow"],
+                    },
+                )
+                todo = build_todo_item(backlog_item, owner_role="developer")
+                sprint_state = {
+                    "sprint_id": "2026-Sprint-Research-Trace",
+                    "status": "running",
+                    "trigger": "test",
+                    "selected_backlog_ids": [backlog_item["backlog_id"]],
+                    "selected_items": [dict(backlog_item)],
+                    "todos": [todo],
+                }
+
+                request_record = service._create_internal_request_record(sprint_state, todo, backlog_item)
+                payload = service._build_internal_sprint_delegation_payload(request_record, "developer")
+
+                self.assertEqual(request_record["params"]["research_coverage_refs"], ["RG-001"])
+                self.assertEqual(
+                    request_record["params"]["research_refs"],
+                    ["Workflow Source | https://example.com/workflow"],
+                )
+                self.assertIn("research_coverage_refs:", request_record["body"])
+                self.assertIn("RG-001", request_record["body"])
+                self.assertEqual(payload["research_coverage_refs"], ["RG-001"])
+                self.assertEqual(payload["research_refs"], ["Workflow Source | https://example.com/workflow"])
 
     def test_execute_sprint_todo_waits_for_lower_rank_dependencies(self):
         with tempfile.TemporaryDirectory() as tmpdir:

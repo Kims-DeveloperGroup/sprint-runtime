@@ -18,7 +18,9 @@
 - planner는 `next_role`을 선택하지 않는다. planner가 산출물을 작성해 작업을 끝내면 orchestrator가 결과를 읽고 후속 역할 필요 여부를 판단한다
 - `Current request.result.proposals.research_signal`과 `Current request.result.proposals.research_report`가 있으면 research prepass 결과로 취급하고, 제공된 source/guidance를 planning 근거에 반영한다
 - `shared_workspace/sprints/<sprint_id>/research/<request_id>.md` raw report artifact가 있으면 planner guidance의 source-of-truth로 함께 확인한다
-- source-backed research prepass가 있으면 milestone refinement, problem framing, spec 작성, backlog/todo 정의에서 `milestone_refinement_hints`, `problem_framing_hints`, `spec_implications`, `todo_definition_hints`, `backing_reasoning`, `backing_sources`를 명시적으로 참고한다
+- source-backed research prepass가 있으면 milestone refinement, problem framing, spec 작성, backlog/todo 정의에서 `milestone_refinement_hints`, `problem_framing_hints`, `spec_implications`, `todo_definition_hints`, `backing_reasoning`, `backing_sources`, `todo_coverage_requirements`를 명시적으로 참고한다
+- `report_artifact`가 있으면 summary와 `todo_coverage_requirements`는 index일 뿐이다. `milestone_refinement`, `artifact_sync`, `backlog_definition`, `backlog_prioritization`, `todo_finalization` 각각에서 raw Markdown report artifact 전체를 읽고 `proposals.sprint_plan_update.research_report_read = {report_artifact, raw_report_read: true, phase_step, referenced_sections, coverage_ids_considered}` receipt를 남긴다
+- `backlog_definition`과 `todo_finalization`에서는 `proposals.sprint_plan_update.research_coverage_matrix = [{coverage_id, backlog_id, todo_id?, coverage_type}]`를 남기고 모든 `RG-*` coverage item이 최소 하나의 sprint-relevant backlog item 또는 selected sprint TODO로 덮이게 한다
 - `research_subject_definition`이 있으면 `planning_decision`, `knowledge_gap`, `external_boundary`, `planner_impact`, `source_requirements`, `rejected_subjects`를 먼저 읽고 planner가 무엇을 해결해야 하는지 framing한다
 - user가 준 milestone은 구체 요구사항이 아니라 문제 해결의 entry point로 취급한다. planner는 이를 그대로 채택하지 말고 research와 kickoff context를 이용해 더 구체적인 refined milestone, problem framing, spec boundary를 작성한다
 - `Current request.params._teams_kind == "sourcer_review"`이면 backlog management 결정만 수행하고 planner 결과로 종료한다
@@ -65,9 +67,10 @@
 - `Current request.params.initial_phase_step == "artifact_sync"`이면 `plan.md`, `spec.md`, `iteration_log.md` 위주로만 동기화하고 backlog/todo는 건드리지 않는다
 - `Current request.params.initial_phase_step == "backlog_definition"`이면 현재 `milestone`, kickoff requirements, `spec.md`, research prepass를 기준으로 sprint-relevant backlog를 반드시 생성하거나 reopen한다. backlog 0건은 invalid이며, 각 backlog item에는 concrete `acceptance_criteria`와 `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs` trace를 남긴다
 - original requirements가 있으면 `origin.requirement_refs`는 `REQ-*` ID를 cite해야 하며, backlog coverage가 모든 `REQ-*`를 포함해야 한다
-- source-backed research prepass가 있는 backlog item에는 `origin.research_refs`를 남긴다. 값은 research report artifact, source title/url, 또는 research hint label처럼 추적 가능한 문자열이어야 한다
+- source-backed research prepass가 있는 backlog item에는 `origin.research_refs`를 남긴다. 값은 research report artifact, source title/url, 또는 research hint label처럼 추적 가능한 문자열이어야 한다. `RG-*` coverage를 담당하는 item은 `origin.research_coverage_refs`와 matching `origin.research_refs`를 함께 가진다
 - `Current request.params.initial_phase_step == "backlog_prioritization"`이면 이미 정의된 sprint-relevant backlog의 `priority_rank`와 `milestone_title`를 정리하되 `planned_in_sprint_id`는 아직 설정하지 않는다
 - `Current request.params.initial_phase_step == "todo_finalization"`이면 실행할 backlog를 확정하고 그때 `planned_in_sprint_id`를 persist해 prioritized todo set을 완성한다
+- todo finalization에서 모든 `RG-*` coverage item은 selected TODO의 `research_coverage_refs`와 matching `research_refs`로 덮여야 한다. milestone-relevant이지만 research coverage와 무관한 TODO는 research coverage refs 없이 유지할 수 있다
 - todo finalization 전 모든 `REQ-*`가 requirement-slice todo로 덮였는지 확인하고, supporting todo는 반드시 `supporting_todo: true`와 관련 `REQ-*` refs를 가진다
 - `Current request.artifacts`는 planning reference input으로 취급한다. `shared_workspace/sprints/.../attachments/...` 아래 sprint 첨부 문서가 있으면 먼저 직접 확인하고 요구사항/제약/의존성/수용기준을 planning 결과에 반영한다
 - `Current request.artifacts` 또는 request body/scope가 기존 local planning/spec 문서를 가리키면 먼저 그 파일을 직접 확인한 뒤 차단 여부를 판단한다

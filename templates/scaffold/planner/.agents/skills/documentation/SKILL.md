@@ -29,6 +29,7 @@ Before deciding anything, inspect the smallest relevant set from:
 - `Current request.artifacts`
 - local sprint attachment docs under `shared_workspace/sprints/<sprint_folder_name>/attachments/` when they are referenced by the request
 - source-backed research prepass fields in `Current request.result.proposals.research_report` or `research_prepass`
+- full raw research report artifacts when `report_artifact` exists; summaries and `todo_coverage_requirements` are only an index
 - raw research report artifacts under `shared_workspace/sprints/<sprint_folder_name>/research/` when referenced
 - `sources/<request_id>.request.md`
 - `shared_workspace/planning.md`
@@ -69,7 +70,7 @@ If the request points to an existing document, read that document before claimin
 11. Keep backlog units granular.
    One backlog item should represent a single independently reviewable implementation slice. Split items that span multiple subsystems, contracts, phases, deliverables, or separate review tracks before persisting them.
 12. Add research traceability.
-   When source-backed research informs milestone/spec/backlog text, reference the research report artifact or source title/url in the planning output, and include `origin.research_refs` for sprint-relevant backlog.
+   When source-backed research informs milestone/spec/backlog text, reference the research report artifact or source title/url in the planning output, and include `origin.research_refs` for sprint-relevant backlog. If the work covers an `RG-*` todo coverage requirement, include `origin.research_coverage_refs` plus matching `origin.research_refs`.
 13. Ignore local count anchoring.
    Do not copy the number of backlog items from prior planner history or shared planning logs. The current document and request determine how many items are needed.
 14. Keep titles behavior-first.
@@ -90,6 +91,7 @@ If the request points to an existing document, read that document before claimin
 - Do not overwrite the original sprint kickoff brief or kickoff requirements when they are preserved separately from derived planning docs.
 - Do not preserve a vague user milestone as the final planning frame when source-backed research provides stronger problem framing.
 - Do not omit source-backed research references from planning docs or backlog origins when research shaped the plan.
+- Do not report initial planning complete with a `report_artifact` unless `proposals.sprint_plan_update.research_report_read` states that the full raw report was read and names referenced sections.
 - Do not treat prior sprint history as the source of truth over the current request, active sprint docs, or kickoff context.
 - Do not bulk-read `shared_workspace/sprint_history/` when `index.md` and a small relevant subset are enough.
 - Do not invent missing documents if a local artifact or request path can be checked directly.

@@ -24,6 +24,7 @@ from teams_runtime.runtime.codex_runner import extract_json_object
 from teams_runtime.workflows.roles.research import (
     RESEARCH_REPORT_LIST_FIELDS,
     RESEARCH_REASON_CODE_BLOCKED_DECISION_FAILED,
+    build_research_coverage_prompt,
     build_research_decision_prompt,
     build_research_prompt,
     default_research_planner_guidance,
@@ -31,6 +32,7 @@ from teams_runtime.workflows.roles.research import (
     normalize_research_decision,
     parse_research_report,
     research_skip_summary,
+    validate_research_todo_coverage_response,
     validate_source_backed_research_report,
 )
 
@@ -120,6 +122,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                                 "backing_sources": [],
                                 **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                                 "open_questions": [],
+                                "todo_coverage_requirements": [],
                                 "effective_config": asdict(effective_config),
                             },
                         },
@@ -167,6 +170,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 deep_research_result: Any | None = None
                 response_text = ""
                 parsed_report: dict[str, Any] | None = None
+                todo_coverage_requirements: list[dict[str, Any]] = []
                 failure_stage = "run_deep_research"
                 try:
                     deep_research_result = run_deep_research_sync(
@@ -204,6 +208,17 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         signal,
                         parsed_report,
                     )
+                    failure_stage = "synthesize_todo_coverage"
+                    todo_coverage_requirements, resolved_session_id = self._run_research_coverage_synthesis(
+                        raw_report_markdown=response_text,
+                        parsed_report=parsed_report,
+                        subject_definition=subject_definition,
+                        report_artifact=artifact_hint,
+                        request_record=request_record,
+                        state=state,
+                        active_session_id=active_session_id,
+                    )
+                    active_session_id = resolved_session_id or active_session_id
                     payload["summary"] = (
                         parsed_report["headline"]
                         or "외부 research를 수행하고 planner용 source-backed guidance를 정리했습니다."
@@ -221,6 +236,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         "backing_reasoning": parsed_report["backing_reasoning"],
                         "backing_sources": parsed_report["backing_sources"],
                         "open_questions": parsed_report["open_questions"],
+                        "todo_coverage_requirements": todo_coverage_requirements,
                         "effective_config": asdict(effective_config),
                     }
                     payload["artifacts"] = [artifact_hint]
@@ -263,6 +279,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         "backing_sources": [],
                         **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                         "open_questions": [],
+                        "todo_coverage_requirements": [],
                         "failure_details": failure_details,
                         "effective_config": asdict(effective_config),
                     }
@@ -277,6 +294,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     "backing_sources": [],
                     **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                     "open_questions": [],
+                    "todo_coverage_requirements": [],
                     "effective_config": asdict(effective_config),
                 }
             payload = normalize_role_payload(payload)
@@ -409,6 +427,52 @@ class ResearchAgentRuntime(RoleAgentRuntime):
         )
         raw_payload = extract_json_object(output)
         return normalize_research_decision(raw_payload, request_record=request_record), resolved_session_id
+
+    def _run_research_coverage_synthesis(
+        self,
+        *,
+        raw_report_markdown: str,
+        parsed_report: dict[str, Any],
+        subject_definition: dict[str, Any],
+        report_artifact: str,
+        request_record: RequestRecord,
+        state: RoleSessionState,
+        active_session_id: str | None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
+        original_requirements = [
+            dict(item)
+            for item in (params.get("original_requirements") or [])
+            if isinstance(item, dict)
+        ]
+        prompt = build_research_coverage_prompt(
+            raw_report_markdown=raw_report_markdown,
+            parsed_report=parsed_report,
+            subject_definition=subject_definition,
+            original_requirements=original_requirements,
+            report_artifact=report_artifact,
+        )
+        output, resolved_session_id = self.codex_runner.run(
+            Path(state.workspace_path),
+            prompt,
+            active_session_id,
+            bypass_sandbox=self._request_requires_default_bypass(
+                MessageEnvelope(
+                    request_id=str(request_record.get("request_id") or ""),
+                    sender="orchestrator",
+                    target=self.role,
+                    intent=str(request_record.get("intent") or "route"),
+                    urgency=str(request_record.get("urgency") or "normal"),
+                    scope=str(request_record.get("scope") or ""),
+                    body=str(request_record.get("body") or ""),
+                    artifacts=list(request_record.get("artifacts") or []),
+                    params=dict(params),
+                ),
+                request_record,
+            ),
+        )
+        raw_payload = extract_json_object(output)
+        return validate_research_todo_coverage_response(raw_payload), resolved_session_id
 
 
 __all__ = ["ResearchAgentRuntime"]
