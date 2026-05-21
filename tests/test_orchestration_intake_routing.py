@@ -719,6 +719,164 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertEqual(service.discord_client.sent_dms, [("user-1", "수신양호")])
                 self.assertEqual(service.discord_client.sent_channels, [])
 
+    def test_orchestrator_confirms_initial_implementation_plan_without_creating_request(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="initial confirmation",
+                    trigger="manual_start",
+                    kickoff_requester_route={
+                        "author_id": "user-1",
+                        "channel_id": "dm-1",
+                        "is_dm": True,
+                    },
+                )
+                sprint_state["initial_plan_confirmation"] = {
+                    "status": "pending",
+                    "revision": 1,
+                    "draft_request_id": "req-plan-draft",
+                    "requester_route": {
+                        "author_id": "user-1",
+                        "channel_id": "dm-1",
+                        "is_dm": True,
+                    },
+                    "change_requests": [],
+                }
+                service._save_sprint_state(sprint_state)
+                scheduler_state = service._load_scheduler_state()
+                scheduler_state["active_sprint_id"] = sprint_state["sprint_id"]
+                service._save_scheduler_state(scheduler_state)
+
+                class _ConfirmParser:
+                    def classify(self, **kwargs):
+                        return {
+                            "intent": "plan_confirm",
+                            "scope": "sprint",
+                            "request_id": "",
+                            "body": "좋아요 진행하세요.",
+                            "params": {},
+                            "reason": "initial plan confirmed",
+                            "confidence": "high",
+                        }
+
+                def swallow_task(coro):
+                    coro.close()
+                    return None
+
+                service.intent_parser = _ConfirmParser()
+                message = DiscordMessage(
+                    message_id="msg-plan-confirm",
+                    channel_id="dm-1",
+                    guild_id=None,
+                    author_id="user-1",
+                    author_name="tester",
+                    content="좋아요 진행하세요.",
+                    is_dm=True,
+                    mentions_bot=False,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                with (
+                    patch("teams_runtime.workflows.orchestration.team_service.asyncio.create_task", side_effect=swallow_task),
+                    patch.object(
+                        service.role_runtime,
+                        "run_task",
+                        side_effect=AssertionError("plan confirmation should not create a workflow request"),
+                    ),
+                ):
+                    asyncio.run(service.handle_message(message))
+
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated["initial_plan_confirmation"]["status"], "confirmed")
+                self.assertTrue(updated["initial_plan_confirmation"]["confirmed_at"])
+                self.assertEqual(list(service.paths.requests_dir.glob("*.json")), [])
+                self.assertEqual(service.discord_client.sent_dms[0], ("user-1", "수신양호"))
+                self.assertIn("backlog/TODO 정의를 시작합니다", service.discord_client.sent_dms[1][1])
+
+    def test_orchestrator_routes_initial_plan_change_request_back_to_planner_loop(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="initial confirmation",
+                    trigger="manual_start",
+                    kickoff_requester_route={
+                        "author_id": "user-1",
+                        "channel_id": "dm-1",
+                        "is_dm": True,
+                    },
+                )
+                sprint_state["initial_phase_completed_steps"] = ["milestone_refinement", "artifact_sync"]
+                sprint_state["initial_plan_confirmation"] = {
+                    "status": "pending",
+                    "revision": 1,
+                    "draft_request_id": "req-plan-draft",
+                    "requester_route": {
+                        "author_id": "user-1",
+                        "channel_id": "dm-1",
+                        "is_dm": True,
+                    },
+                    "change_requests": [],
+                }
+                service._save_sprint_state(sprint_state)
+                scheduler_state = service._load_scheduler_state()
+                scheduler_state["active_sprint_id"] = sprint_state["sprint_id"]
+                service._save_scheduler_state(scheduler_state)
+
+                class _ChangeParser:
+                    def classify(self, **kwargs):
+                        return {
+                            "intent": "plan_change_request",
+                            "scope": "sprint",
+                            "request_id": "",
+                            "body": "Discord relay confirmation을 첫 TODO 전에 넣어 주세요.",
+                            "change_request_text": "Discord relay confirmation을 첫 TODO 전에 넣어 주세요.",
+                            "params": {},
+                            "reason": "initial plan change requested",
+                            "confidence": "high",
+                        }
+
+                def swallow_task(coro):
+                    coro.close()
+                    return None
+
+                service.intent_parser = _ChangeParser()
+                message = DiscordMessage(
+                    message_id="msg-plan-change",
+                    channel_id="dm-1",
+                    guild_id=None,
+                    author_id="user-1",
+                    author_name="tester",
+                    content="Discord relay confirmation을 첫 TODO 전에 넣어 주세요.",
+                    is_dm=True,
+                    mentions_bot=False,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                with (
+                    patch("teams_runtime.workflows.orchestration.team_service.asyncio.create_task", side_effect=swallow_task),
+                    patch.object(
+                        service.role_runtime,
+                        "run_task",
+                        side_effect=AssertionError("plan change feedback should not create a workflow request"),
+                    ),
+                ):
+                    asyncio.run(service.handle_message(message))
+
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                confirmation = updated["initial_plan_confirmation"]
+                self.assertEqual(confirmation["status"], "revision_requested")
+                self.assertEqual(len(confirmation["change_requests"]), 1)
+                self.assertEqual(confirmation["change_requests"][0]["change_request_id"], "PLAN-CHANGE-001")
+                self.assertIn("Discord relay confirmation", confirmation["change_requests"][0]["change_request_text"])
+                self.assertEqual(updated["initial_phase_completed_steps"], ["milestone_refinement"])
+                self.assertEqual(list(service.paths.requests_dir.glob("*.json")), [])
+                self.assertEqual(service.discord_client.sent_dms[0], ("user-1", "수신양호"))
+                self.assertIn("PLAN-CHANGE-001", service.discord_client.sent_dms[1][1])
+
     def test_orchestrator_preserves_structured_status_text_for_local_agent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

@@ -198,6 +198,7 @@ from teams_runtime.workflows.orchestration.ingress import (
     build_duplicate_request_fingerprint,
     build_requester_route,
     extract_original_requester,
+    merge_requester_route,
     handle_message as handle_message_helper,
     handle_non_orchestrator_message as handle_non_orchestrator_message_helper,
     handle_orchestrator_message as handle_orchestrator_message_helper,
@@ -1149,6 +1150,7 @@ class TeamService:
         kickoff_request_text: str = "",
         kickoff_source_request_id: str = "",
         kickoff_reference_artifacts: list[str] | None = None,
+        kickoff_requester_route: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return build_manual_sprint_state_helper(
             milestone_title=milestone_title,
@@ -1163,6 +1165,7 @@ class TeamService:
             kickoff_request_text=kickoff_request_text,
             kickoff_source_request_id=kickoff_source_request_id,
             kickoff_reference_artifacts=kickoff_reference_artifacts,
+            kickoff_requester_route=kickoff_requester_route,
         )
 
     @staticmethod
@@ -3462,6 +3465,413 @@ class TeamService:
             swallow_exceptions=swallow_exceptions,
         )
 
+    @staticmethod
+    def _initial_plan_confirmation_state(sprint_state: dict[str, Any]) -> dict[str, Any]:
+        value = sprint_state.get("initial_plan_confirmation")
+        return dict(value or {}) if isinstance(value, dict) else {}
+
+    def _initial_plan_confirmation_status(self, sprint_state: dict[str, Any]) -> str:
+        return str(self._initial_plan_confirmation_state(sprint_state).get("status") or "").strip().lower()
+
+    def _initial_plan_confirmed(self, sprint_state: dict[str, Any]) -> bool:
+        return self._initial_plan_confirmation_status(sprint_state) == "confirmed"
+
+    def _initial_plan_waiting_for_feedback(self, sprint_state: dict[str, Any]) -> bool:
+        return (
+            str(sprint_state.get("phase") or "").strip().lower() == "initial"
+            and self._initial_plan_confirmation_status(sprint_state) == "pending"
+        )
+
+    @staticmethod
+    def _initial_phase_completed_steps(sprint_state: dict[str, Any]) -> set[str]:
+        return {
+            str(item).strip().lower()
+            for item in (sprint_state.get("initial_phase_completed_steps") or [])
+            if str(item).strip()
+        }
+
+    def _mark_initial_phase_step_completed(self, sprint_state: dict[str, Any], step: str) -> None:
+        normalized_step = str(step or "").strip().lower()
+        if not normalized_step:
+            return
+        ordered = [
+            str(item).strip().lower()
+            for item in (sprint_state.get("initial_phase_completed_steps") or [])
+            if str(item).strip()
+        ]
+        if normalized_step not in ordered:
+            ordered.append(normalized_step)
+        sprint_state["initial_phase_completed_steps"] = ordered
+
+    def _clear_initial_phase_completed_step(self, sprint_state: dict[str, Any], step: str) -> None:
+        normalized_step = str(step or "").strip().lower()
+        sprint_state["initial_phase_completed_steps"] = [
+            str(item).strip().lower()
+            for item in (sprint_state.get("initial_phase_completed_steps") or [])
+            if str(item).strip().lower() != normalized_step
+        ]
+
+    @staticmethod
+    def _initial_plan_list_lines(label: str, values: Any) -> list[str]:
+        lines = _normalize_string_list(values)
+        if not lines:
+            return []
+        return [f"{label}:"] + [f"- {line}" for line in lines]
+
+    def _initial_plan_payload_from_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+        payload = proposals.get("initial_implementation_plan")
+        if not isinstance(payload, dict):
+            payload = proposals.get("implementation_plan")
+        return dict(payload or {}) if isinstance(payload, dict) else {}
+
+    def _render_initial_plan_confirmation_message(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        request_record: dict[str, Any],
+        result: dict[str, Any],
+        revision: int,
+        artifacts: list[str],
+    ) -> str:
+        plan_payload = self._initial_plan_payload_from_result(result)
+        title = str(
+            plan_payload.get("title")
+            or sprint_state.get("milestone_title")
+            or sprint_state.get("requested_milestone_title")
+            or "Implementation plan"
+        ).strip()
+        summary = str(plan_payload.get("summary") or result.get("summary") or "").strip()
+        confirmation_prompt = str(plan_payload.get("confirmation_prompt") or "").strip() or (
+            "이 구현 계획을 기준으로 backlog/TODO 정의를 시작해도 되는지 확인해 주세요. "
+            "수정이 필요하면 변경 요청을 보내 주세요."
+        )
+        lines = [
+            "## Sprint Implementation Plan",
+            f"sprint_id: {sprint_state.get('sprint_id') or ''}",
+            f"revision: {revision}",
+            f"title: {title}",
+        ]
+        if summary:
+            lines.extend(["", "summary:", summary])
+        lines.extend(["", *self._initial_plan_list_lines("requirements", plan_payload.get("requirements"))])
+        lines.extend(["", *self._initial_plan_list_lines("approach", plan_payload.get("approach"))])
+        lines.extend(["", *self._initial_plan_list_lines("risks", plan_payload.get("risks"))])
+        if artifacts:
+            lines.extend(["", "artifacts:", *[f"- {item}" for item in artifacts[:8]]])
+        lines.extend(["", "confirmation:", confirmation_prompt])
+        return "\n".join(line for line in lines if str(line).strip())
+
+    async def _mirror_initial_plan_confirmation_report(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        request_record: dict[str, Any],
+        result: dict[str, Any],
+        message: str,
+        revision: int,
+        artifacts: list[str],
+    ) -> None:
+        channel_id = str(self.discord_config.report_channel_id or "").strip()
+        if not channel_id:
+            return
+        report = build_progress_report(
+            request="planner initial implementation plan confirmation",
+            scope=self._format_sprint_scope(sprint_id=str(sprint_state.get("sprint_id") or "")),
+            status="대기",
+            list_summary="",
+            detail_summary=str(result.get("summary") or "planner가 implementation plan을 제안했습니다."),
+            process_summary="backlog/TODO 정의 전 사용자 확인 대기",
+            log_summary=message,
+            end_reason="없음",
+            judgment=f"revision {revision} 구현 계획 확인을 기다립니다.",
+            next_action="user confirmation 또는 change request",
+            artifacts=artifacts,
+            sections=[
+                report_section_helper(
+                    "Implementation Plan",
+                    [line for line in message.splitlines() if line.strip()][:20],
+                )
+            ],
+        )
+        await self._send_discord_content(
+            content=report,
+            send=lambda chunk: self.discord_client.send_channel_message(channel_id, chunk),
+            target_description=f"initial-plan-confirmation:{channel_id}:{request_record.get('request_id') or ''}",
+            swallow_exceptions=True,
+            log_traceback=False,
+        )
+
+    async def _send_initial_plan_confirmation_request(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        request_record: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        existing = self._initial_plan_confirmation_state(sprint_state)
+        if (
+            str(existing.get("status") or "").strip().lower() == "pending"
+            and str(existing.get("draft_request_id") or "").strip() == str(request_record.get("request_id") or "").strip()
+        ):
+            return
+        plan_payload = self._initial_plan_payload_from_result(result)
+        current_revision = int(existing.get("revision") or 0)
+        revision = int(plan_payload.get("revision") or 0) or current_revision + 1 or 1
+        artifacts = _dedupe_preserving_order(
+            [
+                *[str(item).strip() for item in (result.get("artifacts") or []) if str(item).strip()],
+                *[str(item).strip() for item in (plan_payload.get("artifacts") or []) if str(item).strip()],
+                *[str(item).strip() for item in (request_record.get("artifacts") or []) if str(item).strip()],
+            ]
+        )
+        requester_route = merge_requester_route(
+            dict(existing.get("requester_route") or {}),
+            dict(sprint_state.get("kickoff_requester_route") or {}),
+        )
+        now = utc_now_iso()
+        change_requests = [
+            dict(item)
+            for item in (existing.get("change_requests") or [])
+            if isinstance(item, dict)
+        ]
+        for item in change_requests:
+            if str(item.get("status") or "pending").strip().lower() in {"pending", "revision_requested"}:
+                item["status"] = "addressed"
+                item["addressed_by_request_id"] = str(request_record.get("request_id") or "")
+                item["addressed_at"] = now
+        message = self._render_initial_plan_confirmation_message(
+            sprint_state,
+            request_record=request_record,
+            result=result,
+            revision=revision,
+            artifacts=artifacts,
+        )
+        sprint_state["initial_plan_confirmation"] = {
+            **existing,
+            "status": "pending",
+            "revision": revision,
+            "draft_request_id": str(request_record.get("request_id") or ""),
+            "draft_summary": str(result.get("summary") or "").strip(),
+            "draft_artifacts": artifacts,
+            "draft_proposal": plan_payload,
+            "requester_route": requester_route,
+            "requested_at": now,
+            "confirmed_at": "",
+            "updated_at": now,
+            "change_requests": change_requests,
+        }
+        self._save_sprint_state(sprint_state)
+        self._append_sprint_event(
+            str(sprint_state.get("sprint_id") or ""),
+            event_type="initial_plan_confirmation_requested",
+            summary="planner 구현 계획을 사용자 확인 대기 상태로 보냈습니다.",
+            payload={
+                "request_id": request_record.get("request_id") or "",
+                "revision": revision,
+                "artifact_count": len(artifacts),
+            },
+        )
+        if requester_route:
+            await self._reply_to_requester(
+                {
+                    "request_id": str(request_record.get("request_id") or ""),
+                    "reply_route": requester_route,
+                    "params": {},
+                },
+                message,
+            )
+        await self._mirror_initial_plan_confirmation_report(
+            sprint_state,
+            request_record=request_record,
+            result=result,
+            message=message,
+            revision=revision,
+            artifacts=artifacts,
+        )
+
+    def _build_initial_plan_feedback_reply_record(
+        self,
+        message: DiscordMessage,
+        envelope: MessageEnvelope,
+        *,
+        forwarded: bool,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "request_id": str(request_id or "").strip(),
+            "reply_route": build_requester_route(message, envelope, forwarded=forwarded),
+            "params": dict(envelope.params or {}),
+            "current_role": "orchestrator",
+        }
+
+    @staticmethod
+    def _next_initial_plan_change_request_id(confirmation: dict[str, Any]) -> str:
+        used_ids = {
+            str(item.get("change_request_id") or "").strip()
+            for item in (confirmation.get("change_requests") or [])
+            if isinstance(item, dict)
+        }
+        index = 1
+        while True:
+            change_request_id = f"PLAN-CHANGE-{index:03d}"
+            if change_request_id not in used_ids:
+                return change_request_id
+            index += 1
+
+    async def _maybe_handle_initial_plan_feedback(
+        self,
+        message: DiscordMessage,
+        envelope: MessageEnvelope,
+        *,
+        forwarded: bool,
+    ) -> bool:
+        active_sprint = self._load_active_sprint_state()
+        if not active_sprint or not self._initial_plan_waiting_for_feedback(active_sprint):
+            return False
+        if self._is_manual_sprint_start_request(envelope) or self._is_manual_sprint_finalize_request(envelope):
+            return False
+        normalized_intent = str(envelope.intent or "").strip().lower()
+        if normalized_intent in {"status", "cancel", "execute"}:
+            return False
+        interpreted = await self._reinterpret_user_envelope(message, envelope, forwarded=forwarded)
+        interpreted_intent = str(interpreted.intent or "").strip().lower()
+        interpreted_confidence = str(interpreted.params.get("parser_confidence") or "").strip().lower()
+        if interpreted_intent not in {"plan_confirm", "plan_change_request"}:
+            if interpreted_intent in {"status", "cancel", "execute"}:
+                return False
+            await self._reply_to_requester(
+                self._build_initial_plan_feedback_reply_record(message, envelope, forwarded=forwarded),
+                (
+                    "현재 sprint는 implementation plan 확인 대기 중입니다.\n"
+                    "계획을 확정하거나, 수정할 내용을 change request로 보내 주세요."
+                ),
+            )
+            return True
+        if interpreted_confidence != "high":
+            await self._reply_to_requester(
+                self._build_initial_plan_feedback_reply_record(message, envelope, forwarded=forwarded),
+                (
+                    "implementation plan에 대한 확인인지 변경 요청인지 명확하지 않습니다.\n"
+                    "확정하려면 승인 의사를, 수정하려면 바꿀 내용을 분명히 보내 주세요."
+                ),
+            )
+            return True
+
+        sprint_state = self._load_active_sprint_state() or active_sprint
+        confirmation = self._initial_plan_confirmation_state(sprint_state)
+        if str(confirmation.get("status") or "").strip().lower() != "pending":
+            return False
+        now = utc_now_iso()
+        sprint_id = str(sprint_state.get("sprint_id") or "")
+        if interpreted_intent == "plan_confirm":
+            confirmation.update(
+                {
+                    "status": "confirmed",
+                    "confirmed_at": now,
+                    "updated_at": now,
+                    "confirmed_by": build_requester_route(message, envelope, forwarded=forwarded),
+                    "confirmed_message_id": str(message.message_id or "").strip(),
+                    "parser_reason": str(interpreted.params.get("parser_reason") or "").strip(),
+                    "parser_confidence": interpreted_confidence,
+                }
+            )
+            sprint_state["initial_plan_confirmation"] = confirmation
+            self._save_sprint_state(sprint_state)
+            self._append_sprint_event(
+                sprint_id,
+                event_type="initial_plan_confirmed",
+                summary="사용자가 planner implementation plan을 확인했습니다.",
+                payload={
+                    "revision": int(confirmation.get("revision") or 0),
+                    "message_id": str(message.message_id or ""),
+                },
+            )
+            await self._reply_to_requester(
+                self._build_initial_plan_feedback_reply_record(
+                    message,
+                    envelope,
+                    forwarded=forwarded,
+                    request_id=str(confirmation.get("draft_request_id") or ""),
+                ),
+                (
+                    "implementation plan 확인을 기록했습니다.\n"
+                    "planner가 이제 backlog/TODO 정의를 시작합니다."
+                ),
+            )
+            asyncio.create_task(self._resume_active_sprint(sprint_id))
+            return True
+
+        raw_body = self._combine_envelope_scope_and_body(envelope) or str(message.content or "").strip()
+        change_request_text = str(
+            interpreted.params.get("change_request_text")
+            or interpreted.body
+            or interpreted.scope
+            or raw_body
+            or ""
+        ).strip()
+        if not change_request_text and not interpreted.artifacts:
+            await self._reply_to_requester(
+                self._build_initial_plan_feedback_reply_record(message, envelope, forwarded=forwarded),
+                "변경 요청 내용이 비어 있습니다. 수정할 내용을 다시 보내 주세요.",
+            )
+            return True
+        change_requests = [
+            dict(item)
+            for item in (confirmation.get("change_requests") or [])
+            if isinstance(item, dict)
+        ]
+        change_request = {
+            "change_request_id": self._next_initial_plan_change_request_id(confirmation),
+            "status": "pending",
+            "revision": int(confirmation.get("revision") or 0),
+            "raw_body": raw_body,
+            "change_request_text": change_request_text,
+            "artifacts": [str(item).strip() for item in interpreted.artifacts if str(item).strip()],
+            "parser_reason": str(interpreted.params.get("parser_reason") or "").strip(),
+            "parser_confidence": interpreted_confidence,
+            "requester": build_requester_route(message, envelope, forwarded=forwarded),
+            "message_id": str(message.message_id or "").strip(),
+            "channel_id": str(message.channel_id or "").strip(),
+            "created_at": now,
+        }
+        change_requests.append(change_request)
+        confirmation.update(
+            {
+                "status": "revision_requested",
+                "updated_at": now,
+                "last_change_request_at": now,
+                "change_requests": change_requests,
+            }
+        )
+        sprint_state["initial_plan_confirmation"] = confirmation
+        self._clear_initial_phase_completed_step(sprint_state, INITIAL_PHASE_STEP_ARTIFACT_SYNC)
+        self._save_sprint_state(sprint_state)
+        self._append_sprint_event(
+            sprint_id,
+            event_type="initial_plan_change_requested",
+            summary="사용자가 implementation plan 변경 요청을 보냈습니다.",
+            payload={
+                "change_request_id": change_request["change_request_id"],
+                "revision": change_request["revision"],
+                "message_id": change_request["message_id"],
+            },
+        )
+        await self._reply_to_requester(
+            self._build_initial_plan_feedback_reply_record(
+                message,
+                envelope,
+                forwarded=forwarded,
+                request_id=str(confirmation.get("draft_request_id") or ""),
+            ),
+            (
+                "implementation plan 변경 요청을 planner에게 반영하도록 등록했습니다.\n"
+                f"change_request_id={change_request['change_request_id']}"
+            ),
+        )
+        asyncio.create_task(self._resume_active_sprint(sprint_id))
+        return True
+
     def _append_sprint_event(self, sprint_id: str, *, event_type: str, summary: str, payload: dict[str, Any] | None = None) -> None:
         append_sprint_event(self.paths, sprint_id, event_type=event_type, summary=summary, payload=payload)
 
@@ -4539,12 +4949,24 @@ class TeamService:
             sprint_state["phase"] = "wrap_up"
             self._save_sprint_state(sprint_state)
             return False
+        if self._initial_plan_confirmation_status(sprint_state) == "revision_requested":
+            self._clear_initial_phase_completed_step(sprint_state, INITIAL_PHASE_STEP_ARTIFACT_SYNC)
         iteration = 1
         step_index = 0
         phase_ready = False
         while True:
             while step_index < len(INITIAL_PHASE_STEPS):
                 step = INITIAL_PHASE_STEPS[step_index]
+                if step == INITIAL_PHASE_STEP_BACKLOG_DEFINITION and not self._initial_plan_confirmed(sprint_state):
+                    if self._initial_plan_waiting_for_feedback(sprint_state):
+                        self._save_sprint_state(sprint_state)
+                        return False
+                    self._clear_initial_phase_completed_step(sprint_state, INITIAL_PHASE_STEP_ARTIFACT_SYNC)
+                    step_index = INITIAL_PHASE_STEPS.index(INITIAL_PHASE_STEP_ARTIFACT_SYNC)
+                    continue
+                if step in self._initial_phase_completed_steps(sprint_state):
+                    step_index += 1
+                    continue
                 if self._is_wrap_up_requested(sprint_state):
                     sprint_state["phase"] = "wrap_up"
                     self._save_sprint_state(sprint_state)
@@ -4610,7 +5032,15 @@ class TeamService:
                         clear_active=True,
                     )
                     return False
+                self._mark_initial_phase_step_completed(sprint_state, step)
                 self._save_sprint_state(sprint_state)
+                if step == INITIAL_PHASE_STEP_ARTIFACT_SYNC and not self._initial_plan_confirmed(sprint_state):
+                    await self._send_initial_plan_confirmation_request(
+                        sprint_state,
+                        request_record=request_record,
+                        result=result,
+                    )
+                    return False
                 if step == INITIAL_PHASE_STEP_TODO_FINALIZATION and not phase_ready:
                     reopen_reason = (
                         "initial phase 실행 todo 확정 단계에서 selected backlog 또는 sprint todo가 준비되지 않았습니다."
@@ -6130,6 +6560,7 @@ class TeamService:
         kickoff_request_text: str = "",
         kickoff_source_request_id: str = "",
         kickoff_reference_artifacts: list[str] | None = None,
+        kickoff_requester_route: dict[str, Any] | None = None,
     ) -> str:
         active_sprint = self._load_active_sprint_state()
         if active_sprint:
@@ -6151,6 +6582,7 @@ class TeamService:
             kickoff_request_text=kickoff_request_text,
             kickoff_source_request_id=kickoff_source_request_id,
             kickoff_reference_artifacts=kickoff_reference_artifacts,
+            kickoff_requester_route=kickoff_requester_route,
         )
         scheduler_state = self._load_scheduler_state()
         scheduler_state["active_sprint_id"] = str(sprint_state.get("sprint_id") or "")
@@ -6269,6 +6701,7 @@ class TeamService:
             kickoff_request_text=str(kickoff_payload.get("kickoff_request_text") or "").strip(),
             kickoff_source_request_id=str(kickoff_payload.get("kickoff_source_request_id") or "").strip(),
             kickoff_reference_artifacts=list(kickoff_payload.get("kickoff_reference_artifacts") or []),
+            kickoff_requester_route=build_requester_route(message, envelope, forwarded=forwarded),
         )
         sprint_state = self._load_active_sprint_state()
         if sprint_state and envelope.artifacts:
@@ -6396,6 +6829,8 @@ class TeamService:
         active_sprint = self._load_active_sprint_state()
         if not active_sprint:
             return False
+        if self._initial_plan_waiting_for_feedback(active_sprint):
+            return False
         if self._is_manual_sprint_start_request(envelope) or self._is_manual_sprint_finalize_request(envelope):
             return False
         normalized_intent = str(envelope.intent or "").strip().lower()
@@ -6470,6 +6905,7 @@ class TeamService:
                 "parser_reason": str(classification.get("reason") or "").strip(),
                 "parser_non_requirement_reason": str(classification.get("non_requirement_reason") or "").strip(),
                 "candidate_text": str(classification.get("candidate_text") or "").strip(),
+                "change_request_text": str(classification.get("change_request_text") or "").strip(),
             },
             body=str(classification.get("body") or envelope.body or "").strip(),
         )
@@ -6581,6 +7017,10 @@ class TeamService:
             command = str(action.get("command") or "").strip().lower()
             milestone_title = str(action.get("milestone_title") or "").strip()
             if command == "start":
+                kickoff_requester_route = merge_requester_route(
+                    dict(request_record.get("reply_route") or {}),
+                    extract_original_requester(dict(request_record.get("params") or {})),
+                )
                 summary = await self.start_sprint_lifecycle(
                     milestone_title,
                     trigger="manual_start",
@@ -6591,6 +7031,7 @@ class TeamService:
                     kickoff_request_text=str(action.get("kickoff_request_text") or "").strip(),
                     kickoff_source_request_id=str(action.get("kickoff_source_request_id") or "").strip(),
                     kickoff_reference_artifacts=_normalize_string_list(action.get("kickoff_reference_artifacts")),
+                    kickoff_requester_route=kickoff_requester_route,
                 )
             elif command == "stop":
                 summary = await self.stop_sprint_lifecycle(resume_mode="background")

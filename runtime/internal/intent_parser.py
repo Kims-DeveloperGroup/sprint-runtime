@@ -15,7 +15,15 @@ from teams_runtime.shared.models import MessageEnvelope, RoleRuntimeConfig
 
 
 REQUEST_ID_TEXT_PATTERN = re.compile(r"\brequest[_\s-]*id\s*[:=]?\s*([A-Za-z0-9._-]+)", re.IGNORECASE)
-ALLOWED_PARSER_INTENTS = {"route", "status", "cancel", "execute", "requirement_candidate"}
+ALLOWED_PARSER_INTENTS = {
+    "route",
+    "status",
+    "cancel",
+    "execute",
+    "requirement_candidate",
+    "plan_confirm",
+    "plan_change_request",
+}
 ALLOWED_PARSER_CONFIDENCE = {"low", "medium", "high"}
 STATUS_INQUIRY_TERMS = (
     "what",
@@ -148,6 +156,22 @@ def normalize_intent_payload(payload: dict[str, Any]) -> dict[str, Any]:
         params["candidate_text"] = candidate_text
         if str(normalized.get("body") or "").strip() == "":
             normalized["body"] = candidate_text
+    elif intent == "plan_confirm":
+        normalized["scope"] = "sprint"
+    elif intent == "plan_change_request":
+        params = normalized["params"]
+        change_request_text = str(
+            normalized.get("change_request_text")
+            or params.get("change_request_text")
+            or normalized.get("body")
+            or scope
+            or ""
+        ).strip()
+        normalized["scope"] = "sprint"
+        normalized["change_request_text"] = change_request_text
+        params["change_request_text"] = change_request_text
+        if str(normalized.get("body") or "").strip() == "":
+            normalized["body"] = change_request_text
     else:
         normalized["scope"] = scope or str(normalized.get("body") or "").strip()
 
@@ -155,6 +179,7 @@ def normalize_intent_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["request_id"] = request_id
     normalized["reason"] = str(normalized.get("reason") or "").strip()
     normalized["non_requirement_reason"] = str(normalized.get("non_requirement_reason") or "").strip()
+    normalized["change_request_text"] = str(normalized.get("change_request_text") or "").strip()
 
     confidence = str(normalized.get("confidence") or "").strip().lower()
     if confidence not in ALLOWED_PARSER_CONFIDENCE:
@@ -240,11 +265,12 @@ You are not a public Discord bot. You help the orchestrator classify natural-lan
 
 Return strict JSON only with this shape:
 {{
-  "intent": "route|status|cancel|execute|requirement_candidate",
+  "intent": "route|status|cancel|execute|requirement_candidate|plan_confirm|plan_change_request",
   "scope": "sprint|backlog|request|short normalized scope",
   "request_id": "",
   "body": "normalized body or empty",
   "candidate_text": "only for requirement_candidate; otherwise empty",
+  "change_request_text": "only for plan_change_request; otherwise empty",
   "params": {{}},
   "reason": "short Korean reason",
   "non_requirement_reason": "short Korean reason when not requirement_candidate",
@@ -258,9 +284,14 @@ Rules:
 - For backlog status, set scope to "backlog".
 - Return "cancel" only when the user is clearly asking to cancel a request. Preserve request_id when available.
 - Return "execute" only when the user is clearly invoking a registered action.
+- Return "plan_confirm" only when an active sprint exists, the active sprint is in initial phase, `initial_plan_confirmation.status` is "pending", and the user clearly confirms/approves the presented implementation plan so backlog/TODO definition may continue.
+- Return "plan_change_request" only when an active sprint exists, the active sprint is in initial phase, `initial_plan_confirmation.status` is "pending", and the user clearly asks to revise/change/add/remove something in the presented implementation plan before TODO definition.
+- For plan_change_request, set scope to "sprint" and put the user's requested change in change_request_text without rewriting, prioritizing, or accepting it.
 - Return "requirement_candidate" only when an active sprint exists and the user is clearly adding or changing a requirement, constraint, must-have behavior, or acceptance criterion for that active sprint.
 - For requirement_candidate, set scope to "sprint" and put the user's requirement text in candidate_text without rewriting, prioritizing, deduping, or accepting it.
+- Do not return requirement_candidate for initial plan confirmation/change feedback. Use plan_confirm or plan_change_request only while the initial implementation plan is waiting for user confirmation.
 - Do not classify ordinary discussion, vague preferences, status questions, approvals, implementation progress feedback, or "consider this later" language as requirement_candidate.
+- Approval-like phrases are supported only as plan_confirm while `initial_plan_confirmation.status` is "pending"; otherwise treat them as normal route text.
 - If requirement intent is plausible but not clear, return "route" with confidence "low" or "medium" and explain non_requirement_reason.
 - If the current parsed envelope already contains `params.action_name`, preserve execute intent and that param.
 - For manual sprint control phrases like `start sprint` and `finalize sprint`, return intent `route` and set `params.sprint_control` to `start` or `finalize`.
@@ -288,6 +319,7 @@ Active sprint summary:
     "trigger": active_sprint.get("trigger") or "",
     "phase": active_sprint.get("phase") or "",
     "milestone_title": active_sprint.get("milestone_title") or "",
+    "initial_plan_confirmation": active_sprint.get("initial_plan_confirmation") or {},
 }, ensure_ascii=False, indent=2)}
 
 Backlog counts:

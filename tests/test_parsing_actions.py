@@ -200,6 +200,50 @@ class TeamsRuntimeParsingAndActionsTests(unittest.TestCase):
         self.assertEqual(normalized["params"]["candidate_text"], "모바일에서도 같은 흐름이어야 합니다")
         self.assertEqual(normalized["body"], "모바일에서도 같은 흐름이어야 합니다")
 
+    def test_normalize_intent_payload_preserves_initial_plan_change_request_text(self):
+        normalized = normalize_intent_payload(
+            {
+                "intent": "plan_change_request",
+                "scope": "sprint",
+                "body": "",
+                "change_request_text": "첫 번째 TODO 전에 Discord 확인 루프를 넣어 주세요.",
+                "params": {},
+                "reason": "initial plan confirmation feedback",
+                "confidence": "high",
+            }
+        )
+
+        self.assertEqual(normalized["intent"], "plan_change_request")
+        self.assertEqual(normalized["scope"], "sprint")
+        self.assertEqual(
+            normalized["change_request_text"],
+            "첫 번째 TODO 전에 Discord 확인 루프를 넣어 주세요.",
+        )
+        self.assertEqual(
+            normalized["params"]["change_request_text"],
+            "첫 번째 TODO 전에 Discord 확인 루프를 넣어 주세요.",
+        )
+        self.assertEqual(
+            normalized["body"],
+            "첫 번째 TODO 전에 Discord 확인 루프를 넣어 주세요.",
+        )
+
+    def test_normalize_intent_payload_accepts_initial_plan_confirm(self):
+        normalized = normalize_intent_payload(
+            {
+                "intent": "plan_confirm",
+                "scope": "좋아요 진행하세요",
+                "body": "좋아요 진행하세요",
+                "params": {},
+                "reason": "implementation plan confirmed",
+                "confidence": "high",
+            }
+        )
+
+        self.assertEqual(normalized["intent"], "plan_confirm")
+        self.assertEqual(normalized["scope"], "sprint")
+        self.assertEqual(normalized["body"], "좋아요 진행하세요")
+
     def test_intent_parser_runtime_uses_codex_runner_for_status_inquiry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = IntentParserRuntime(

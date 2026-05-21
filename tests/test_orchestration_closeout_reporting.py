@@ -1447,6 +1447,7 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                     milestone_title="workflow initial",
                     trigger="manual_start",
                 )
+                sprint_state["initial_plan_confirmation"] = {"status": "confirmed", "revision": 1}
                 seen_steps: list[str] = []
 
                 async def fake_run_internal_request_chain(*, sprint_id, request_record, initial_role):
@@ -1490,6 +1491,87 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertEqual(sprint_state["phase"], "ongoing")
                 self.assertEqual(sprint_state["status"], "running")
 
+    def test_run_initial_sprint_phase_pauses_for_initial_plan_confirmation_before_backlog(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            config_text = config_text.replace('  start_mode: "auto"\n', '  start_mode: "manual_daily"\n', 1)
+            config_path.write_text(config_text, encoding="utf-8")
+
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="workflow initial",
+                    trigger="manual_start",
+                    kickoff_requester_route={
+                        "author_id": "user-1",
+                        "channel_id": "dm-1",
+                        "is_dm": True,
+                    },
+                )
+                seen_steps: list[str] = []
+
+                async def fake_run_internal_request_chain(*, sprint_id, request_record, initial_role):
+                    self.assertEqual(sprint_id, sprint_state["sprint_id"])
+                    self.assertEqual(initial_role, "planner")
+                    step = str(request_record["params"].get("initial_phase_step") or "")
+                    seen_steps.append(step)
+                    persisted = service._load_request(request_record["request_id"])
+                    persisted["status"] = "completed"
+                    persisted["result"] = {
+                        "request_id": request_record["request_id"],
+                        "role": "planner",
+                        "status": "completed",
+                        "summary": f"{step} 완료",
+                        "insights": [],
+                        "proposals": {
+                            "initial_implementation_plan": {
+                                "title": "workflow initial implementation",
+                                "summary": "backlog 전 사용자 확인을 받습니다.",
+                                "requirements": ["사용자 확인 전 TODO를 만들지 않음"],
+                                "approach": ["확인 후 backlog_definition 시작"],
+                                "risks": ["확인 지연 시 sprint는 initial phase에 머묾"],
+                                "confirmation_prompt": "이 계획으로 진행할까요?",
+                            }
+                        },
+                        "artifacts": ["shared_workspace/sprints/demo/plan.md"],
+                        "error": "",
+                    }
+                    service._save_request(persisted)
+                    return dict(persisted["result"])
+
+                def fake_apply_sprint_planning_result(sprint_state_arg, *, phase, request_record, result):
+                    self.assertEqual(phase, "initial")
+                    return False
+
+                with (
+                    patch.object(service, "_run_internal_request_chain", side_effect=fake_run_internal_request_chain),
+                    patch.object(service, "_apply_sprint_planning_result", side_effect=fake_apply_sprint_planning_result),
+                    patch.object(service, "_validate_initial_phase_step_result", return_value=""),
+                ):
+                    ready = asyncio.run(service._run_initial_sprint_phase(sprint_state))
+
+                self.assertFalse(ready)
+                self.assertEqual(
+                    seen_steps,
+                    [
+                        orchestration_module.INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+                        orchestration_module.INITIAL_PHASE_STEP_ARTIFACT_SYNC,
+                    ],
+                )
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated["phase"], "initial")
+                self.assertEqual(updated["status"], "planning")
+                self.assertEqual(updated["initial_plan_confirmation"]["status"], "pending")
+                self.assertEqual(updated["initial_phase_completed_steps"], ["milestone_refinement", "artifact_sync"])
+                self.assertEqual(updated["selected_items"], [])
+                self.assertEqual(updated["todos"], [])
+                self.assertIn("workflow initial implementation", service.discord_client.sent_dms[0][1])
+                self.assertIn("이 계획으로 진행할까요?", service.discord_client.sent_dms[0][1])
+                self.assertEqual(len(service.discord_client.sent_channels), 1)
+                self.assertIn("planner initial implementation plan confirmation", service.discord_client.sent_channels[0][1])
+
     def test_run_initial_sprint_phase_reopens_incomplete_step_before_advancing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -1504,6 +1586,7 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                     milestone_title="workflow initial",
                     trigger="manual_start",
                 )
+                sprint_state["initial_plan_confirmation"] = {"status": "confirmed", "revision": 1}
                 seen_steps: list[str] = []
                 seen_bodies: list[str] = []
                 apply_counts: dict[str, int] = {}
@@ -1580,6 +1663,7 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                     milestone_title="spec preflight",
                     trigger="manual_start",
                 )
+                sprint_state["initial_plan_confirmation"] = {"status": "confirmed", "revision": 1}
                 seen_titles: list[str] = []
 
                 async def fake_run_internal_request_chain(*, sprint_id, request_record, initial_role):
@@ -1673,6 +1757,7 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                     milestone_title="workflow initial",
                     trigger="manual_start",
                 )
+                sprint_state["initial_plan_confirmation"] = {"status": "confirmed", "revision": 1}
                 service._save_sprint_state(sprint_state)
                 service._save_scheduler_state(
                     {

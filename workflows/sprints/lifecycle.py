@@ -1766,6 +1766,53 @@ def build_sprint_planning_request_record(
     if original_requirements:
         body_lines.append("original_requirements:")
         body_lines.extend(f"- {format_original_requirement_ref(item)}" for item in original_requirements)
+    initial_plan_confirmation = (
+        dict(sprint_state.get("initial_plan_confirmation") or {})
+        if isinstance(sprint_state.get("initial_plan_confirmation"), dict)
+        else {}
+    )
+    initial_plan_change_requests = [
+        dict(item)
+        for item in (initial_plan_confirmation.get("change_requests") or [])
+        if isinstance(item, dict) and str(item.get("status") or "pending").strip().lower() in {"pending", "revision_requested"}
+    ]
+    if normalized_phase == "initial":
+        confirmation_status = str(initial_plan_confirmation.get("status") or "").strip().lower()
+        if confirmation_status:
+            body_lines.extend(
+                [
+                    "initial_plan_confirmation:",
+                    f"- status: {confirmation_status}",
+                    f"- revision: {int(initial_plan_confirmation.get('revision') or 0)}",
+                    f"- draft_request_id: {initial_plan_confirmation.get('draft_request_id') or ''}",
+                ]
+            )
+        if normalized_step in {
+            INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+            INITIAL_PHASE_STEP_ARTIFACT_SYNC,
+        }:
+            body_lines.extend(
+                [
+                    "- policy: Before user confirmation, produce or revise the implementation plan only.",
+                    "- policy: Do not create sprint backlog items, set planned_in_sprint_id, select backlog, or define execution TODOs before confirmation.",
+                    "- output_contract: proposals.initial_implementation_plan with title, summary, requirements, approach, risks, artifacts, and confirmation_prompt.",
+                ]
+            )
+        if initial_plan_change_requests:
+            body_lines.append("initial_plan_change_requests:")
+            for item in initial_plan_change_requests:
+                body_lines.append(
+                    "- "
+                    + " | ".join(
+                        part
+                        for part in (
+                            f"change_request_id={item.get('change_request_id') or ''}",
+                            f"revision={item.get('revision') or ''}",
+                            f"text={item.get('change_request_text') or item.get('raw_body') or ''}",
+                        )
+                        if str(part).strip()
+                    )
+                )
     pending_requirement_candidates = (
         pending_requirement_candidates_for_planner(sprint_state)
         if normalized_phase == "ongoing_review" and requirement_checkpoint
@@ -1822,6 +1869,9 @@ def build_sprint_planning_request_record(
             "kickoff_brief": sprint_state.get("kickoff_brief") or "",
             "kickoff_requirements": list(sprint_state.get("kickoff_requirements") or []),
             "original_requirements": [dict(item) for item in original_requirements],
+            "initial_plan_confirmation_status": str(initial_plan_confirmation.get("status") or "").strip(),
+            "initial_plan_revision": int(initial_plan_confirmation.get("revision") or 0),
+            "initial_plan_change_requests": [dict(item) for item in initial_plan_change_requests],
             "pending_requirement_candidates": [dict(item) for item in pending_requirement_candidates],
             "requirement_reconciliation_checkpoint": bool(pending_requirement_candidates),
             "kickoff_request_text": sprint_state.get("kickoff_request_text") or "",
@@ -1900,6 +1950,18 @@ def validate_initial_phase_step_result(
         if isinstance(proposals.get("sprint_plan_update"), dict)
         else {}
     )
+    initial_plan_confirmation = (
+        dict(sprint_state.get("initial_plan_confirmation") or {})
+        if isinstance(sprint_state.get("initial_plan_confirmation"), dict)
+        else {}
+    )
+    initial_plan_confirmed = str(initial_plan_confirmation.get("status") or "").strip().lower() == "confirmed"
+    if step in {INITIAL_PHASE_STEP_MILESTONE_REFINEMENT, INITIAL_PHASE_STEP_ARTIFACT_SYNC} and not initial_plan_confirmed:
+        if bool(sync_summary.get("planner_persisted_backlog")) or sprint_state.get("selected_items") or sprint_state.get("todos"):
+            return (
+                "initial implementation plan confirmation 전에는 backlog/TODO 정의를 시작할 수 없습니다. "
+                "planner는 사용자 확인 전 plan/spec draft와 proposals.initial_implementation_plan만 남겨야 합니다."
+            )
     source_backed_research = sprint_research_prepass_source_backed(sprint_state)
     if step == INITIAL_PHASE_STEP_MILESTONE_REFINEMENT and source_backed_research:
         requested_title = str(sprint_state.get("requested_milestone_title") or "").strip()
@@ -2911,6 +2973,7 @@ def build_manual_sprint_state(
     kickoff_request_text: str = "",
     kickoff_source_request_id: str = "",
     kickoff_reference_artifacts: list[str] | None = None,
+    kickoff_requester_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at_dt = normalize_runtime_datetime(started_at)
     started_at_text = started_at_dt.isoformat()
@@ -2944,6 +3007,7 @@ def build_manual_sprint_state(
         "kickoff_request_text": normalized_request_text,
         "kickoff_source_request_id": str(kickoff_source_request_id or "").strip(),
         "kickoff_reference_artifacts": normalized_reference_artifacts,
+        "kickoff_requester_route": dict(kickoff_requester_route or {}),
         "phase": "initial",
         "status": "planning",
         "trigger": trigger,
@@ -2962,6 +3026,7 @@ def build_manual_sprint_state(
         "todos": [],
         "reference_artifacts": list(normalized_reference_artifacts),
         "planning_iterations": [],
+        "initial_phase_completed_steps": [],
         "commit_sha": "",
         "commit_shas": [],
         "commit_count": 0,
