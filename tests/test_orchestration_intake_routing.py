@@ -659,6 +659,66 @@ class TeamsRuntimeOrchestrationIntakeRoutingTests(OrchestrationTestCase):
                 self.assertEqual(request_payload["current_role"], "orchestrator")
                 self.assertEqual(list(service.paths.backlog_dir.glob("*.json")), [])
 
+    def test_orchestrator_stages_high_confidence_requirement_candidate_during_active_sprint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="candidate handling",
+                    trigger="manual_start",
+                )
+                sprint_state["phase"] = "ongoing"
+                sprint_state["status"] = "running"
+                service._save_sprint_state(sprint_state)
+                scheduler_state = service._load_scheduler_state()
+                scheduler_state["active_sprint_id"] = sprint_state["sprint_id"]
+                service._save_scheduler_state(scheduler_state)
+
+                class _RequirementParser:
+                    def classify(self, **kwargs):
+                        return {
+                            "intent": "requirement_candidate",
+                            "scope": "sprint",
+                            "request_id": "",
+                            "body": "모바일에서도 같은 승인 흐름을 유지해야 합니다.",
+                            "candidate_text": "모바일에서도 같은 승인 흐름을 유지해야 합니다.",
+                            "params": {},
+                            "reason": "active sprint requirement candidate",
+                            "confidence": "high",
+                        }
+
+                service.intent_parser = _RequirementParser()
+                message = DiscordMessage(
+                    message_id="msg-req-candidate",
+                    channel_id="dm-1",
+                    guild_id=None,
+                    author_id="user-1",
+                    author_name="tester",
+                    content="모바일에서도 같은 승인 흐름을 유지해야 합니다.",
+                    is_dm=True,
+                    mentions_bot=False,
+                    created_at=datetime.now(timezone.utc),
+                )
+
+                with patch.object(
+                    service.role_runtime,
+                    "run_task",
+                    side_effect=AssertionError("requirement candidates should not create a workflow request"),
+                ):
+                    asyncio.run(service.handle_message(message))
+
+                updated_sprint = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(len(updated_sprint["pending_requirement_candidates"]), 1)
+                candidate = updated_sprint["pending_requirement_candidates"][0]
+                self.assertEqual(candidate["candidate_id"], "REQ-CAND-001")
+                self.assertEqual(candidate["status"], "pending")
+                self.assertEqual(candidate["candidate_text"], "모바일에서도 같은 승인 흐름을 유지해야 합니다.")
+                self.assertEqual(candidate["message_id"], "msg-req-candidate")
+                self.assertEqual(list(service.paths.requests_dir.glob("*.json")), [])
+                self.assertEqual(service.discord_client.sent_dms, [("user-1", "수신양호")])
+                self.assertEqual(service.discord_client.sent_channels, [])
+
     def test_orchestrator_preserves_structured_status_text_for_local_agent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

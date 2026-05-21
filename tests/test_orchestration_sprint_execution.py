@@ -1814,7 +1814,33 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                             "status": "completed",
                             "summary": "QA 검증을 통과했습니다.",
                             "insights": [],
-                            "proposals": {},
+                            "proposals": {
+                                "qa_validation": {
+                                    "methodology": "evidence_matrix",
+                                    "decision": "pass",
+                                    "evidence_matrix": [
+                                        {
+                                            "criterion": "intraday trading 개선이 planning/implementation/qa 흐름을 통과했습니다.",
+                                            "source": "role reports",
+                                            "evidence": "planner, architect, developer, QA reports completed.",
+                                            "result": "pass",
+                                        }
+                                    ],
+                                    "passed_checks": ["workflow completed"],
+                                    "findings": [],
+                                    "residual_risks": [],
+                                    "not_checked": [],
+                                },
+                                "workflow_transition": {
+                                    "outcome": "complete",
+                                    "target_phase": "validation",
+                                    "target_step": "qa_validation",
+                                    "reopen_category": "",
+                                    "reason": "QA 검증을 통과했습니다.",
+                                    "unresolved_items": [],
+                                    "finalize_phase": True,
+                                },
+                            },
                             "artifacts": [],
                             "next_role": "",
                             "approval_needed": False,

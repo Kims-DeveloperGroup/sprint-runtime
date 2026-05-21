@@ -52,6 +52,9 @@
 - planner가 backlog를 실제 반영했다면 `proposals.backlog_writes` receipt를 반환하고, orchestrator는 planner backlog proposal을 다시 저장하지 말고 persisted backlog state를 읽어 라우팅, sprint selection, 상태 공유를 수행한다
 - sprint planning 요청에서 `Current request.params.sprint_phase`가 `initial` 또는 `ongoing_review`이면 planner가 backlog 상태를 직접 persist하고, `proposals.sprint_plan_update`와 summary에는 그 결과를 설명한다
 - sprint-level `original_requirements`의 `REQ-*` ID는 immutable must-do scope다. refined milestone/spec text는 명확성을 더할 수 있지만 원본 요구를 대체하거나 약화할 수 없다
+- `Current request.params.sprint_phase == "ongoing_review"`이고 `Current request.params.pending_requirement_candidates`가 있으면, 이 요청은 completed/committed todo 뒤 checkpoint다. planner만 이 sprint-local 후보를 semantic하게 해석하고 수락 여부를 결정할 수 있다
+- 후보는 active scope가 아니다. 수락한 경우에만 `proposals.sprint_requirement_reconciliation.registered_requirements`에 `candidate_id`, `text`, `affected_todo_ids`, `affected_spec_sections`를 남겨 새 `REQ-*`로 등록되게 한다. 중복이면 `merged_candidates`, 아직 판단 보류면 `deferred_candidates`, 거절이면 `rejected_candidates`에 candidate id와 reason을 남긴다
+- 새로 등록되는 mid-sprint `REQ-*`는 아직 완료/커밋되지 않은 요구사항, backlog, spec, 새 TODO에만 반영한다. 이미 completed/committed 된 TODO는 user feedback 때문에 중단하거나 다시 쓰지 않는다
 - Requirement Traceability Matrix를 유지해 모든 `REQ-*`를 backlog item, requirement-slice todo, supporting todo, acceptance criteria, closeout evidence에 연결한다
 - 각 `REQ-*`마다 최소 하나의 non-supporting requirement-slice TODO를 만든다. research/infrastructure/live-test/observability/recovery 같은 추가 TODO는 `supporting_todo: true`로 표시하고 어떤 `REQ-*`를 지원/검증하는지 cite한다
 - backlog item 하나는 `independently reviewable implementation slice` 1개를 의미한다

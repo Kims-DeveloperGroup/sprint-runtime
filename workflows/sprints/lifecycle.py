@@ -590,6 +590,15 @@ def normalize_trace_list(values: Any) -> list[str]:
 
 
 ORIGINAL_REQUIREMENT_ID_PATTERN = re.compile(r"\bREQ-\d{3}\b", re.IGNORECASE)
+REQUIREMENT_CANDIDATE_ID_PATTERN = re.compile(r"\bREQ-CAND-\d{3}\b", re.IGNORECASE)
+ORIGINAL_REQUIREMENT_METADATA_FIELDS = (
+    "source_candidate_ids",
+    "artifacts",
+    "affected_todo_ids",
+    "affected_spec_sections",
+    "registered_at",
+    "reconciled_by_request_id",
+)
 
 
 def _normalize_requirement_text(value: Any) -> str:
@@ -598,6 +607,50 @@ def _normalize_requirement_text(value: Any) -> str:
 
 def _requirement_id_for_index(index: int) -> str:
     return f"REQ-{index:03d}"
+
+
+def _next_original_requirement_id(requirements: list[dict[str, Any]]) -> str:
+    used_ids = {
+        str(item.get("id") or "").strip().upper()
+        for item in requirements
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    max_index = 0
+    for requirement_id in used_ids:
+        match = ORIGINAL_REQUIREMENT_ID_PATTERN.fullmatch(requirement_id)
+        if not match:
+            continue
+        try:
+            max_index = max(max_index, int(requirement_id.removeprefix("REQ-")))
+        except ValueError:
+            continue
+    next_index = max_index + 1
+    while _requirement_id_for_index(next_index) in used_ids:
+        next_index += 1
+    return _requirement_id_for_index(next_index)
+
+
+def _requirement_record_metadata(raw_record: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    list_fields = {
+        "source_candidate_ids",
+        "artifacts",
+        "affected_todo_ids",
+        "affected_spec_sections",
+    }
+    for field in ORIGINAL_REQUIREMENT_METADATA_FIELDS:
+        if field not in list_fields:
+            continue
+        values = normalize_trace_list(raw_record.get(field))
+        if values:
+            metadata[field] = values
+    for field in ORIGINAL_REQUIREMENT_METADATA_FIELDS:
+        if field in list_fields:
+            continue
+        value = str(raw_record.get(field) or "").strip()
+        if value:
+            metadata[field] = value
+    return metadata
 
 
 def normalize_original_requirements(
@@ -634,6 +687,7 @@ def normalize_original_requirements(
             source = str(raw_record.get("source") or default_source).strip() or default_source
             must = bool(raw_record.get("must", True))
             closeout_required = bool(raw_record.get("closeout_required", True))
+            metadata = _requirement_record_metadata(raw_record)
         else:
             text = _normalize_requirement_text(raw_record)
             if not text:
@@ -642,20 +696,21 @@ def normalize_original_requirements(
             source = default_source
             must = True
             closeout_required = True
+            metadata = {}
         text_key = text.lower()
         if text_key in seen_text:
             continue
         seen_text.add(text_key)
         seen_ids.add(requirement_id)
-        records.append(
-            {
-                "id": requirement_id,
-                "text": text,
-                "source": source,
-                "must": must,
-                "closeout_required": closeout_required,
-            }
-        )
+        record = {
+            "id": requirement_id,
+            "text": text,
+            "source": source,
+            "must": must,
+            "closeout_required": closeout_required,
+        }
+        record.update(metadata)
+        records.append(record)
 
     if records:
         return records
@@ -690,6 +745,369 @@ def format_original_requirement_ref(requirement: dict[str, Any]) -> str:
     requirement_id = str(requirement.get("id") or "").strip()
     text = str(requirement.get("text") or "").strip()
     return f"{requirement_id}: {text}" if requirement_id and text else requirement_id or text
+
+
+def pending_requirement_candidates_for_planner(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for raw_candidate in sprint_state.get("pending_requirement_candidates") or []:
+        if not isinstance(raw_candidate, dict):
+            continue
+        if str(raw_candidate.get("status") or "pending").strip().lower() != "pending":
+            continue
+        candidate_id = str(raw_candidate.get("candidate_id") or "").strip().upper()
+        candidate_text = _normalize_requirement_text(
+            raw_candidate.get("candidate_text")
+            or raw_candidate.get("raw_body")
+            or ""
+        )
+        if not candidate_id or not candidate_text:
+            continue
+        candidate = {
+            "candidate_id": candidate_id,
+            "candidate_text": candidate_text,
+            "raw_body": str(raw_candidate.get("raw_body") or "").strip(),
+            "artifacts": normalize_trace_list(raw_candidate.get("artifacts")),
+            "created_at": str(raw_candidate.get("created_at") or "").strip(),
+        }
+        if int(raw_candidate.get("defer_count") or 0) > 0:
+            candidate["defer_count"] = int(raw_candidate.get("defer_count") or 0)
+        defer_reason = str(raw_candidate.get("defer_reason") or "").strip()
+        if defer_reason:
+            candidate["defer_reason"] = defer_reason
+        candidates.append(candidate)
+    return candidates
+
+
+def format_requirement_candidate_ref(candidate: dict[str, Any]) -> str:
+    candidate_id = str(candidate.get("candidate_id") or "").strip().upper()
+    text = _normalize_requirement_text(candidate.get("candidate_text") or candidate.get("raw_body") or "")
+    artifacts = normalize_trace_list(candidate.get("artifacts"))
+    suffix = f" | artifacts={', '.join(artifacts)}" if artifacts else ""
+    return f"{candidate_id}: {text}{suffix}" if candidate_id and text else candidate_id or text
+
+
+def _candidate_ids_from_value(value: Any) -> list[str]:
+    candidate_ids: list[str] = []
+
+    def add(raw_value: Any) -> None:
+        if raw_value is None:
+            return
+        if isinstance(raw_value, dict):
+            for key in ("candidate_id", "source_candidate_id"):
+                add(raw_value.get(key))
+            for key in ("candidate_ids", "source_candidate_ids"):
+                add(raw_value.get(key))
+            return
+        if isinstance(raw_value, (list, tuple, set)):
+            for item in raw_value:
+                add(item)
+            return
+        for match in REQUIREMENT_CANDIDATE_ID_PATTERN.findall(str(raw_value or "")):
+            normalized = match.upper()
+            if normalized not in candidate_ids:
+                candidate_ids.append(normalized)
+
+    add(value)
+    return candidate_ids
+
+
+def _entry_text_without_candidate_ids(value: Any) -> str:
+    text = REQUIREMENT_CANDIDATE_ID_PATTERN.sub("", str(value or ""))
+    return _normalize_requirement_text(text.strip(" :-"))
+
+
+def _requirement_reconciliation_entries(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (dict, str)):
+        return [value]
+    return []
+
+
+def _update_requirement_candidate_status(
+    candidates: list[dict[str, Any]],
+    candidate_ids: list[str],
+    *,
+    status: str,
+    reconciled_at: str,
+    request_id: str,
+    requirement_id: str = "",
+    reason: str = "",
+) -> int:
+    updated = 0
+    wanted_ids = {str(item or "").strip().upper() for item in candidate_ids if str(item or "").strip()}
+    if not wanted_ids:
+        return 0
+    for candidate in candidates:
+        candidate_id = str(candidate.get("candidate_id") or "").strip().upper()
+        if candidate_id not in wanted_ids:
+            continue
+        candidate["status"] = status
+        candidate["reconciled_at"] = reconciled_at
+        candidate["reconciled_by_request_id"] = request_id
+        if requirement_id:
+            candidate["requirement_id"] = requirement_id
+        if reason:
+            candidate["reconciliation_reason"] = reason
+        updated += 1
+    return updated
+
+
+def apply_requirement_candidate_reconciliation(
+    service: Any,
+    sprint_state: dict[str, Any],
+    request_record: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    pending_candidates = pending_requirement_candidates_for_planner(sprint_state)
+    if not pending_candidates:
+        return {
+            "registered_count": 0,
+            "merged_count": 0,
+            "rejected_count": 0,
+            "deferred_count": 0,
+            "pending_count": 0,
+            "registered_requirement_ids": [],
+        }
+    proposals = dict(result.get("proposals") or {}) if isinstance(result.get("proposals"), dict) else {}
+    reconciliation = proposals.get("sprint_requirement_reconciliation")
+    if not isinstance(reconciliation, dict):
+        reconciliation = proposals.get("requirement_reconciliation")
+    if not isinstance(reconciliation, dict):
+        return {
+            "registered_count": 0,
+            "merged_count": 0,
+            "rejected_count": 0,
+            "deferred_count": 0,
+            "pending_count": len(pending_candidates),
+            "registered_requirement_ids": [],
+        }
+
+    request_id = str(request_record.get("request_id") or "").strip()
+    reconciled_at = utc_now_iso()
+    candidates = [
+        dict(item)
+        for item in (sprint_state.get("pending_requirement_candidates") or [])
+        if isinstance(item, dict)
+    ]
+    pending_by_id = {
+        str(candidate.get("candidate_id") or "").strip().upper(): candidate
+        for candidate in pending_candidates
+    }
+    existing_requirements = ensure_sprint_original_requirements(sprint_state)
+    existing_text_to_id = {
+        _normalize_requirement_text(item.get("text") or "").lower(): str(item.get("id") or "").strip()
+        for item in existing_requirements
+        if _normalize_requirement_text(item.get("text") or "")
+    }
+    used_requirement_ids = {
+        str(item.get("id") or "").strip().upper()
+        for item in existing_requirements
+        if str(item.get("id") or "").strip()
+    }
+    registered_requirement_ids: list[str] = []
+    registered_count = 0
+    merged_count = 0
+    rejected_count = 0
+    deferred_count = 0
+
+    accepted_entries: list[Any] = []
+    for key in ("registered_requirements", "accepted_requirements", "new_requirements"):
+        accepted_entries.extend(_requirement_reconciliation_entries(reconciliation.get(key)))
+    for entry in accepted_entries:
+        candidate_ids = [item for item in _candidate_ids_from_value(entry) if item in pending_by_id]
+        if not candidate_ids:
+            continue
+        entry_dict = dict(entry) if isinstance(entry, dict) else {}
+        text = _normalize_requirement_text(
+            entry_dict.get("text")
+            or entry_dict.get("requirement_text")
+            or entry_dict.get("requirement")
+            or entry_dict.get("candidate_text")
+            or ""
+        )
+        if not text and not isinstance(entry, dict):
+            text = _entry_text_without_candidate_ids(entry)
+        if not text:
+            for candidate_id in candidate_ids:
+                text = _normalize_requirement_text(pending_by_id.get(candidate_id, {}).get("candidate_text") or "")
+                if text:
+                    break
+        if not text:
+            continue
+        text_key = text.lower()
+        existing_requirement_id = existing_text_to_id.get(text_key, "")
+        if existing_requirement_id:
+            merged_count += _update_requirement_candidate_status(
+                candidates,
+                candidate_ids,
+                status="merged",
+                reconciled_at=reconciled_at,
+                request_id=request_id,
+                requirement_id=existing_requirement_id,
+                reason=str(entry_dict.get("reason") or "duplicate original requirement").strip(),
+            )
+            continue
+        requested_requirement_id = str(
+            entry_dict.get("requirement_id")
+            or entry_dict.get("id")
+            or ""
+        ).strip().upper()
+        if (
+            not ORIGINAL_REQUIREMENT_ID_PATTERN.fullmatch(requested_requirement_id)
+            or requested_requirement_id in used_requirement_ids
+        ):
+            requested_requirement_id = _next_original_requirement_id(existing_requirements)
+        requirement_id = requested_requirement_id
+        used_requirement_ids.add(requirement_id)
+        matched_candidate_artifacts = _dedupe_preserving_order(
+            [
+                artifact
+                for candidate_id in candidate_ids
+                for artifact in normalize_trace_list(pending_by_id.get(candidate_id, {}).get("artifacts"))
+            ]
+        )
+        explicit_artifacts = normalize_trace_list(entry_dict.get("artifacts"))
+        requirement_record = {
+            "id": requirement_id,
+            "text": text,
+            "source": "mid_sprint_candidate",
+            "must": bool(entry_dict.get("must", True)),
+            "closeout_required": bool(entry_dict.get("closeout_required", True)),
+            "source_candidate_ids": candidate_ids,
+            "artifacts": _dedupe_preserving_order([*matched_candidate_artifacts, *explicit_artifacts]),
+            "affected_todo_ids": normalize_trace_list(
+                entry_dict.get("affected_todo_ids") or entry_dict.get("todo_ids")
+            ),
+            "affected_spec_sections": normalize_trace_list(
+                entry_dict.get("affected_spec_sections") or entry_dict.get("spec_sections")
+            ),
+            "registered_at": reconciled_at,
+            "reconciled_by_request_id": request_id,
+        }
+        existing_requirements.append(requirement_record)
+        existing_text_to_id[text_key] = requirement_id
+        registered_requirement_ids.append(requirement_id)
+        registered_count += 1
+        _update_requirement_candidate_status(
+            candidates,
+            candidate_ids,
+            status="registered",
+            reconciled_at=reconciled_at,
+            request_id=request_id,
+            requirement_id=requirement_id,
+            reason=str(entry_dict.get("reason") or "").strip(),
+        )
+
+    for entry in _requirement_reconciliation_entries(reconciliation.get("merged_candidates")):
+        entry_dict = dict(entry) if isinstance(entry, dict) else {}
+        candidate_ids = [item for item in _candidate_ids_from_value(entry) if item in pending_by_id]
+        requirement_id = str(
+            entry_dict.get("requirement_id")
+            or entry_dict.get("id")
+            or ""
+        ).strip().upper()
+        if not requirement_id and not isinstance(entry, dict):
+            for match in ORIGINAL_REQUIREMENT_ID_PATTERN.findall(str(entry or "")):
+                requirement_id = match.upper()
+                break
+        if not candidate_ids or not requirement_id:
+            continue
+        merged_count += _update_requirement_candidate_status(
+            candidates,
+            candidate_ids,
+            status="merged",
+            reconciled_at=reconciled_at,
+            request_id=request_id,
+            requirement_id=requirement_id,
+            reason=str(entry_dict.get("reason") or "").strip(),
+        )
+
+    for entry in _requirement_reconciliation_entries(reconciliation.get("rejected_candidates")):
+        entry_dict = dict(entry) if isinstance(entry, dict) else {}
+        candidate_ids = [item for item in _candidate_ids_from_value(entry) if item in pending_by_id]
+        if not candidate_ids:
+            continue
+        rejected_count += _update_requirement_candidate_status(
+            candidates,
+            candidate_ids,
+            status="rejected",
+            reconciled_at=reconciled_at,
+            request_id=request_id,
+            reason=str(entry_dict.get("reason") or entry_dict.get("rejection_reason") or "").strip(),
+        )
+
+    for entry in _requirement_reconciliation_entries(reconciliation.get("deferred_candidates")):
+        entry_dict = dict(entry) if isinstance(entry, dict) else {}
+        candidate_ids = [item for item in _candidate_ids_from_value(entry) if item in pending_by_id]
+        wanted_ids = set(candidate_ids)
+        if not wanted_ids:
+            continue
+        for candidate in candidates:
+            candidate_id = str(candidate.get("candidate_id") or "").strip().upper()
+            if candidate_id not in wanted_ids:
+                continue
+            if str(candidate.get("status") or "pending").strip().lower() != "pending":
+                continue
+            candidate["deferred_at"] = reconciled_at
+            candidate["deferred_by_request_id"] = request_id
+            candidate["defer_count"] = int(candidate.get("defer_count") or 0) + 1
+            reason = str(entry_dict.get("reason") or entry_dict.get("defer_reason") or "").strip()
+            if reason:
+                candidate["defer_reason"] = reason
+            deferred_count += 1
+
+    sprint_state["original_requirements"] = normalize_original_requirements(existing_requirements)
+    sprint_state["pending_requirement_candidates"] = candidates
+    pending_count = len(pending_requirement_candidates_for_planner(sprint_state))
+    summary = {
+        "registered_count": registered_count,
+        "merged_count": merged_count,
+        "rejected_count": rejected_count,
+        "deferred_count": deferred_count,
+        "pending_count": pending_count,
+        "registered_requirement_ids": registered_requirement_ids,
+    }
+    if registered_count or merged_count or rejected_count or deferred_count:
+        service._append_sprint_event(
+            str(sprint_state.get("sprint_id") or ""),
+            event_type="requirement_candidates_reconciled",
+            summary="planner가 sprint-local requirement candidate를 checkpoint에서 조정했습니다.",
+            payload={
+                "request_id": request_id,
+                **summary,
+            },
+        )
+    return summary
+
+
+def archive_pending_requirement_candidates(
+    sprint_state: dict[str, Any],
+    *,
+    reason: str = "sprint_closeout",
+) -> int:
+    candidates = [
+        dict(item)
+        for item in (sprint_state.get("pending_requirement_candidates") or [])
+        if isinstance(item, dict)
+    ]
+    if not candidates:
+        return 0
+    archived_at = utc_now_iso()
+    archive = [
+        dict(item)
+        for item in (sprint_state.get("requirement_candidate_archive") or [])
+        if isinstance(item, dict)
+    ]
+    for candidate in candidates:
+        candidate["archived_at"] = archived_at
+        candidate["archive_reason"] = reason
+        candidate["non_authoritative"] = True
+        archive.append(candidate)
+    sprint_state["requirement_candidate_archive"] = archive
+    sprint_state["pending_requirement_candidates"] = []
+    sprint_state["last_requirement_candidate_archive_at"] = archived_at
+    return len(candidates)
 
 
 def original_requirement_ids(requirements: list[dict[str, Any]]) -> list[str]:
@@ -1302,6 +1720,7 @@ def build_sprint_planning_request_record(
     created_at: str,
     updated_at: str,
     git_baseline: dict[str, Any],
+    requirement_checkpoint: bool = False,
 ) -> dict[str, Any]:
     normalized_phase = str(phase or "").strip()
     normalized_step = str(step or "").strip().lower()
@@ -1347,6 +1766,21 @@ def build_sprint_planning_request_record(
     if original_requirements:
         body_lines.append("original_requirements:")
         body_lines.extend(f"- {format_original_requirement_ref(item)}" for item in original_requirements)
+    pending_requirement_candidates = (
+        pending_requirement_candidates_for_planner(sprint_state)
+        if normalized_phase == "ongoing_review" and requirement_checkpoint
+        else []
+    )
+    if pending_requirement_candidates:
+        body_lines.extend(
+            [
+                "pending_requirement_candidates:",
+                "- policy: These are sprint-local candidate inputs only. Planner is the only role that may reconcile them at this completed/committed todo checkpoint.",
+                "- policy: Register only accepted candidate scope into original_requirements REQ-*; registered scope may affect undone or new work only. Completed/committed todos remain fixed evidence.",
+                "- output_contract: proposals.sprint_requirement_reconciliation with registered_requirements, merged_candidates, deferred_candidates, and rejected_candidates.",
+            ]
+        )
+        body_lines.extend(f"- {format_requirement_candidate_ref(item)}" for item in pending_requirement_candidates)
     if normalized_phase == "initial" and normalized_step:
         body_lines.extend(
             [
@@ -1388,6 +1822,8 @@ def build_sprint_planning_request_record(
             "kickoff_brief": sprint_state.get("kickoff_brief") or "",
             "kickoff_requirements": list(sprint_state.get("kickoff_requirements") or []),
             "original_requirements": [dict(item) for item in original_requirements],
+            "pending_requirement_candidates": [dict(item) for item in pending_requirement_candidates],
+            "requirement_reconciliation_checkpoint": bool(pending_requirement_candidates),
             "kickoff_request_text": sprint_state.get("kickoff_request_text") or "",
             "kickoff_source_request_id": kickoff_source_request_id,
             "kickoff_reference_artifacts": list(sprint_state.get("kickoff_reference_artifacts") or []),
@@ -2325,6 +2761,24 @@ def apply_sprint_planning_result(
         if isinstance(request_record.get("planning_sync_summary"), dict)
         else service._sync_planner_backlog_from_report(request_record, result, persist=False)
     )
+    params = dict(request_record.get("params") or {})
+    requirement_reconciliation_summary = (
+        apply_requirement_candidate_reconciliation(
+            service,
+            sprint_state,
+            request_record,
+            result,
+        )
+        if phase == "ongoing_review" and bool(params.get("requirement_reconciliation_checkpoint"))
+        else {
+            "registered_count": 0,
+            "merged_count": 0,
+            "rejected_count": 0,
+            "deferred_count": 0,
+            "pending_count": len(pending_requirement_candidates_for_planner(sprint_state)),
+            "registered_requirement_ids": [],
+        }
+    )
     service._append_sprint_event(
         str(sprint_state.get("sprint_id") or ""),
         event_type="planning_sync",
@@ -2346,6 +2800,24 @@ def apply_sprint_planning_result(
             "missing_backlog_artifacts": sync_summary.get("missing_backlog_artifacts") or [],
             "missing_backlog_receipts": sync_summary.get("missing_backlog_receipts") or [],
             "initial_phase_step": step,
+            "registered_requirement_count": int(
+                requirement_reconciliation_summary.get("registered_count") or 0
+            ),
+            "merged_requirement_candidate_count": int(
+                requirement_reconciliation_summary.get("merged_count") or 0
+            ),
+            "rejected_requirement_candidate_count": int(
+                requirement_reconciliation_summary.get("rejected_count") or 0
+            ),
+            "deferred_requirement_candidate_count": int(
+                requirement_reconciliation_summary.get("deferred_count") or 0
+            ),
+            "pending_requirement_candidate_count": int(
+                requirement_reconciliation_summary.get("pending_count") or 0
+            ),
+            "registered_requirement_ids": list(
+                requirement_reconciliation_summary.get("registered_requirement_ids") or []
+            ),
         },
     )
     if sync_summary.get("missing_backlog_artifacts") or sync_summary.get("missing_backlog_receipts"):
@@ -2899,14 +3371,20 @@ async def continue_manual_daily_sprint(
         await service._send_sprint_kickoff(sprint_state)
         await service._send_sprint_todo_list(sprint_state)
     force_review = not bool(sprint_state.get("last_planner_review_at"))
+    requirement_checkpoint_review = False
     while True:
         if service._is_wrap_up_requested(sprint_state) or service._is_manual_sprint_cutoff_reached(sprint_state):
             sprint_state["phase"] = "wrap_up"
             service._save_sprint_state(sprint_state)
             await service._finalize_sprint(sprint_state)
             return
-        await service._run_ongoing_sprint_review(sprint_state, force=force_review)
+        await service._run_ongoing_sprint_review(
+            sprint_state,
+            force=force_review,
+            requirement_checkpoint=requirement_checkpoint_review,
+        )
         force_review = False
+        requirement_checkpoint_review = False
         service._sync_manual_sprint_queue(sprint_state)
         sprint_state["todos"] = service._sort_sprint_todos(list(sprint_state.get("todos") or []))
         service._save_sprint_state(sprint_state)
@@ -2926,7 +3404,8 @@ async def continue_manual_daily_sprint(
             return
         await service._execute_sprint_todo(sprint_state, next_todo)
         service._save_sprint_state(sprint_state)
-        force_review = True
+        requirement_checkpoint_review = str(next_todo.get("status") or "").strip().lower() in {"completed", "committed"}
+        force_review = requirement_checkpoint_review
 
 
 async def continue_sprint(
@@ -2987,8 +3466,16 @@ async def continue_sprint(
             continue
         await service._execute_sprint_todo(sprint_state, todo)
         service._save_sprint_state(sprint_state)
-        if str(todo.get("status") or "").strip().lower() == "uncommitted":
+        todo_status = str(todo.get("status") or "").strip().lower()
+        if todo_status == "uncommitted":
             return
+        if todo_status in {"completed", "committed"} and pending_requirement_candidates_for_planner(sprint_state):
+            await service._run_ongoing_sprint_review(
+                sprint_state,
+                force=True,
+                requirement_checkpoint=True,
+            )
+            service._save_sprint_state(sprint_state)
         if service._is_wrap_up_requested(sprint_state):
             sprint_state["phase"] = "wrap_up"
             service._save_sprint_state(sprint_state)

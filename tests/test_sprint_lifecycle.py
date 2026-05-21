@@ -15,7 +15,9 @@ from teams_runtime.workflows.sprints.lifecycle import (
     INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
     INITIAL_PHASE_STEP_TODO_FINALIZATION,
     INITIAL_PHASE_STEPS,
+    apply_requirement_candidate_reconciliation,
     attachment_storage_relative_path,
+    archive_pending_requirement_candidates,
     build_idle_current_sprint_markdown,
     build_manual_sprint_names,
     build_manual_sprint_state,
@@ -47,6 +49,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     sprint_planning_phase_ready,
     sprint_attachment_filename,
     sprint_uses_manual_flow,
+    pending_requirement_candidates_for_planner,
     select_restart_checkpoint_todo,
     todo_status_from_request_record,
     todo_status_rank,
@@ -171,6 +174,79 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(record["artifacts"], ["shared_workspace/backlog.md", "docs/spec.md"])
         self.assertEqual(record["git_baseline"], {"sha": "abc123"})
         self.assertTrue(record["fingerprint"])
+
+    def test_ongoing_planning_request_exposes_only_pending_requirement_candidates(self) -> None:
+        sprint_state = {
+            "sprint_id": "260421-Sprint-19:40",
+            "milestone_title": "refined milestone",
+            "kickoff_requirements": ["requirement A"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "requirement A",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "pending_requirement_candidates": [
+                {
+                    "candidate_id": "REQ-CAND-001",
+                    "status": "pending",
+                    "candidate_text": "Add keyboard-only acceptance.",
+                    "artifacts": ["docs/a.md"],
+                    "created_at": "2026-04-21T19:40:00+09:00",
+                },
+                {
+                    "candidate_id": "REQ-CAND-002",
+                    "status": "rejected",
+                    "candidate_text": "Rejected text.",
+                },
+            ],
+        }
+
+        record = build_sprint_planning_request_record(
+            sprint_state,
+            phase="ongoing_review",
+            iteration=3,
+            request_id="request-ongoing",
+            artifacts=[],
+            created_at="2026-04-21T19:40:00+09:00",
+            updated_at="2026-04-21T19:40:01+09:00",
+            git_baseline={},
+            requirement_checkpoint=True,
+        )
+
+        self.assertIn("pending_requirement_candidates:", record["body"])
+        self.assertIn("REQ-CAND-001: Add keyboard-only acceptance.", record["body"])
+        self.assertNotIn("Rejected text.", record["body"])
+        self.assertEqual(
+            record["params"]["pending_requirement_candidates"],
+            [
+                {
+                    "candidate_id": "REQ-CAND-001",
+                    "candidate_text": "Add keyboard-only acceptance.",
+                    "raw_body": "",
+                    "artifacts": ["docs/a.md"],
+                    "created_at": "2026-04-21T19:40:00+09:00",
+                }
+            ],
+        )
+        self.assertTrue(record["params"]["requirement_reconciliation_checkpoint"])
+
+        non_checkpoint_record = build_sprint_planning_request_record(
+            sprint_state,
+            phase="ongoing_review",
+            iteration=4,
+            request_id="request-ongoing-non-checkpoint",
+            artifacts=[],
+            created_at="2026-04-21T19:41:00+09:00",
+            updated_at="2026-04-21T19:41:01+09:00",
+            git_baseline={},
+        )
+        self.assertNotIn("pending_requirement_candidates:", non_checkpoint_record["body"])
+        self.assertEqual(non_checkpoint_record["params"]["pending_requirement_candidates"], [])
+        self.assertFalse(non_checkpoint_record["params"]["requirement_reconciliation_checkpoint"])
 
     def test_sprint_research_prepass_body_lines_include_planning_hints(self) -> None:
         lines = sprint_research_prepass_body_lines(
@@ -1148,6 +1224,94 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
             [item["id"] for item in normalize_original_requirements([], fallback_requirements=["a", "b"])],
             ["REQ-001", "REQ-002"],
         )
+
+    def test_requirement_candidate_reconciliation_registers_new_req_and_marks_candidate(self) -> None:
+        class _FakeService:
+            def __init__(self):
+                self.events: list[dict[str, object]] = []
+
+            def _append_sprint_event(self, sprint_id, *, event_type, summary, payload):
+                self.events.append(
+                    {
+                        "sprint_id": sprint_id,
+                        "event_type": event_type,
+                        "summary": summary,
+                        "payload": payload,
+                    }
+                )
+
+        sprint_state = {
+            "sprint_id": "sprint-1",
+            "kickoff_requirements": ["Keep original scope"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "Keep original scope",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "pending_requirement_candidates": [
+                {
+                    "candidate_id": "REQ-CAND-001",
+                    "status": "pending",
+                    "candidate_text": "Support keyboard-only operation.",
+                    "artifacts": ["docs/accessibility.md"],
+                    "created_at": "2026-04-21T19:40:00+09:00",
+                }
+            ],
+        }
+
+        summary = apply_requirement_candidate_reconciliation(
+            _FakeService(),
+            sprint_state,
+            {"request_id": "req-plan-1"},
+            {
+                "proposals": {
+                    "sprint_requirement_reconciliation": {
+                        "registered_requirements": [
+                            {
+                                "candidate_id": "REQ-CAND-001",
+                                "text": "Support keyboard-only operation.",
+                                "affected_todo_ids": ["todo-next"],
+                                "affected_spec_sections": ["Accessibility"],
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(summary["registered_count"], 1)
+        self.assertEqual(summary["registered_requirement_ids"], ["REQ-002"])
+        self.assertEqual(sprint_state["original_requirements"][1]["id"], "REQ-002")
+        self.assertEqual(sprint_state["original_requirements"][1]["source"], "mid_sprint_candidate")
+        self.assertEqual(sprint_state["original_requirements"][1]["source_candidate_ids"], ["REQ-CAND-001"])
+        self.assertEqual(sprint_state["original_requirements"][1]["artifacts"], ["docs/accessibility.md"])
+        self.assertEqual(sprint_state["original_requirements"][1]["affected_todo_ids"], ["todo-next"])
+        self.assertEqual(sprint_state["pending_requirement_candidates"][0]["status"], "registered")
+        self.assertEqual(sprint_state["pending_requirement_candidates"][0]["requirement_id"], "REQ-002")
+        self.assertEqual(pending_requirement_candidates_for_planner(sprint_state), [])
+
+    def test_archive_pending_requirement_candidates_expires_candidates_at_closeout(self) -> None:
+        sprint_state = {
+            "pending_requirement_candidates": [
+                {
+                    "candidate_id": "REQ-CAND-001",
+                    "status": "pending",
+                    "candidate_text": "Add export mode.",
+                }
+            ]
+        }
+
+        archived_count = archive_pending_requirement_candidates(sprint_state, reason="completed")
+
+        self.assertEqual(archived_count, 1)
+        self.assertEqual(sprint_state["pending_requirement_candidates"], [])
+        self.assertEqual(sprint_state["requirement_candidate_archive"][0]["candidate_id"], "REQ-CAND-001")
+        self.assertTrue(sprint_state["requirement_candidate_archive"][0]["non_authoritative"])
+        self.assertEqual(sprint_state["requirement_candidate_archive"][0]["archive_reason"], "completed")
 
     def test_requirement_traceability_matrix_tracks_todo_coverage_and_closeout_evidence(self) -> None:
         sprint_state = {

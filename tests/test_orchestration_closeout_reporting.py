@@ -2139,7 +2139,17 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                         "status": "completed",
                         "summary": f"{next_role} resumed the sprint.",
                         "insights": [],
-                        "proposals": {},
+                        "proposals": {
+                            "workflow_transition": {
+                                "outcome": "complete",
+                                "target_phase": "planning",
+                                "target_step": "planner_finalize",
+                                "reopen_category": "",
+                                "reason": f"{next_role} resumed the sprint.",
+                                "unresolved_items": [],
+                                "finalize_phase": True,
+                            }
+                        },
                         "artifacts": ["./shared_workspace/current_sprint.md"] if next_role == "planner" else [],
                         "next_role": "" if next_role != "planner" else "developer",
                         "approval_needed": False,

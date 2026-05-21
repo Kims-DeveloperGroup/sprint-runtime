@@ -15,7 +15,7 @@ from teams_runtime.shared.models import MessageEnvelope, RoleRuntimeConfig
 
 
 REQUEST_ID_TEXT_PATTERN = re.compile(r"\brequest[_\s-]*id\s*[:=]?\s*([A-Za-z0-9._-]+)", re.IGNORECASE)
-ALLOWED_PARSER_INTENTS = {"route", "status", "cancel", "execute"}
+ALLOWED_PARSER_INTENTS = {"route", "status", "cancel", "execute", "requirement_candidate"}
 ALLOWED_PARSER_CONFIDENCE = {"low", "medium", "high"}
 STATUS_INQUIRY_TERMS = (
     "what",
@@ -134,12 +134,27 @@ def normalize_intent_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 normalized["scope"] = scope or str(normalized.get("body") or "").strip()
     elif intent == "cancel":
         normalized["scope"] = "request" if request_id else (scope or str(normalized.get("body") or "").strip())
+    elif intent == "requirement_candidate":
+        params = normalized["params"]
+        candidate_text = str(
+            normalized.get("candidate_text")
+            or params.get("candidate_text")
+            or normalized.get("body")
+            or scope
+            or ""
+        ).strip()
+        normalized["scope"] = "sprint"
+        normalized["candidate_text"] = candidate_text
+        params["candidate_text"] = candidate_text
+        if str(normalized.get("body") or "").strip() == "":
+            normalized["body"] = candidate_text
     else:
         normalized["scope"] = scope or str(normalized.get("body") or "").strip()
 
     normalized["body"] = str(normalized.get("body") or "").strip()
     normalized["request_id"] = request_id
     normalized["reason"] = str(normalized.get("reason") or "").strip()
+    normalized["non_requirement_reason"] = str(normalized.get("non_requirement_reason") or "").strip()
 
     confidence = str(normalized.get("confidence") or "").strip().lower()
     if confidence not in ALLOWED_PARSER_CONFIDENCE:
@@ -225,12 +240,14 @@ You are not a public Discord bot. You help the orchestrator classify natural-lan
 
 Return strict JSON only with this shape:
 {{
-  "intent": "route|status|cancel|execute",
+  "intent": "route|status|cancel|execute|requirement_candidate",
   "scope": "sprint|backlog|request|short normalized scope",
   "request_id": "",
   "body": "normalized body or empty",
+  "candidate_text": "only for requirement_candidate; otherwise empty",
   "params": {{}},
   "reason": "short Korean reason",
+  "non_requirement_reason": "short Korean reason when not requirement_candidate",
   "confidence": "low|medium|high"
 }}
 
@@ -241,6 +258,10 @@ Rules:
 - For backlog status, set scope to "backlog".
 - Return "cancel" only when the user is clearly asking to cancel a request. Preserve request_id when available.
 - Return "execute" only when the user is clearly invoking a registered action.
+- Return "requirement_candidate" only when an active sprint exists and the user is clearly adding or changing a requirement, constraint, must-have behavior, or acceptance criterion for that active sprint.
+- For requirement_candidate, set scope to "sprint" and put the user's requirement text in candidate_text without rewriting, prioritizing, deduping, or accepting it.
+- Do not classify ordinary discussion, vague preferences, status questions, approvals, implementation progress feedback, or "consider this later" language as requirement_candidate.
+- If requirement intent is plausible but not clear, return "route" with confidence "low" or "medium" and explain non_requirement_reason.
 - If the current parsed envelope already contains `params.action_name`, preserve execute intent and that param.
 - For manual sprint control phrases like `start sprint` and `finalize sprint`, return intent `route` and set `params.sprint_control` to `start` or `finalize`.
 - English questions such as "What sprint is ongoing?", "What is the current sprint working for?", and "What are todos in backlog?" should map to sprint/backlog status when they are clearly asking for current state.
@@ -265,6 +286,8 @@ Active sprint summary:
     "sprint_id": active_sprint.get("sprint_id") or "",
     "status": active_sprint.get("status") or "",
     "trigger": active_sprint.get("trigger") or "",
+    "phase": active_sprint.get("phase") or "",
+    "milestone_title": active_sprint.get("milestone_title") or "",
 }, ensure_ascii=False, indent=2)}
 
 Backlog counts:

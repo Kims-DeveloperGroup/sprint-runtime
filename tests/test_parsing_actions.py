@@ -181,6 +181,25 @@ class TeamsRuntimeParsingAndActionsTests(unittest.TestCase):
         self.assertEqual(normalized["intent"], "execute")
         self.assertEqual(normalized["params"]["action_name"], "echo")
 
+    def test_normalize_intent_payload_preserves_requirement_candidate_text(self):
+        normalized = normalize_intent_payload(
+            {
+                "intent": "requirement_candidate",
+                "scope": "모바일에서도 같은 흐름이어야 합니다",
+                "body": "",
+                "candidate_text": "모바일에서도 같은 흐름이어야 합니다",
+                "params": {},
+                "reason": "active sprint requirement 추가",
+                "confidence": "high",
+            }
+        )
+
+        self.assertEqual(normalized["intent"], "requirement_candidate")
+        self.assertEqual(normalized["scope"], "sprint")
+        self.assertEqual(normalized["candidate_text"], "모바일에서도 같은 흐름이어야 합니다")
+        self.assertEqual(normalized["params"]["candidate_text"], "모바일에서도 같은 흐름이어야 합니다")
+        self.assertEqual(normalized["body"], "모바일에서도 같은 흐름이어야 합니다")
+
     def test_intent_parser_runtime_uses_codex_runner_for_status_inquiry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = IntentParserRuntime(

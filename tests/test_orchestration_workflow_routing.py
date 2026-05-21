@@ -1507,6 +1507,28 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                         "summary": "spec.md 기준 acceptance와 실제 결과가 어긋납니다.",
                                         "insights": ["todo_backlog와 canonical spec이 같은 정책을 가리키지 않습니다."],
                                         "proposals": {
+                                            "qa_validation": {
+                                                "methodology": "evidence_matrix",
+                                                "decision": "fail",
+                                                "evidence_matrix": [
+                                                    {
+                                                        "criterion": "spec.md acceptance matches todo_backlog.md",
+                                                        "source": "shared_workspace/sprints/demo/spec.md",
+                                                        "evidence": "canonical spec and todo backlog point to different policies.",
+                                                        "result": "fail",
+                                                    }
+                                                ],
+                                                "passed_checks": [],
+                                                "findings": [
+                                                    {
+                                                        "owner": "planner",
+                                                        "category": "scope",
+                                                        "summary": "spec.md contract drift",
+                                                    }
+                                                ],
+                                                "residual_risks": [],
+                                                "not_checked": [],
+                                            },
                                             "workflow_transition": {
                                                 "outcome": "reopen",
                                                 "target_phase": "validation",
@@ -1620,6 +1642,28 @@ class TeamsRuntimeOrchestrationWorkflowRoutingTests(OrchestrationTestCase):
                                         "summary": "formatters.py와 테스트는 통과했지만 current_sprint.md summary가 최신 결과와 어긋납니다.",
                                         "insights": ["current_sprint.md todo summary와 artifacts를 runtime이 다시 동기화해야 합니다."],
                                         "proposals": {
+                                            "qa_validation": {
+                                                "methodology": "evidence_matrix",
+                                                "decision": "blocked",
+                                                "evidence_matrix": [
+                                                    {
+                                                        "criterion": "current_sprint.md reflects latest runtime state",
+                                                        "source": "shared_workspace/current_sprint.md",
+                                                        "evidence": "summary drift can be reconciled from canonical request/todo state.",
+                                                        "result": "not_checked",
+                                                    }
+                                                ],
+                                                "passed_checks": ["formatters.py tests passed"],
+                                                "findings": [
+                                                    {
+                                                        "owner": "orchestrator",
+                                                        "category": "runtime_sync",
+                                                        "summary": "current_sprint.md sync drift",
+                                                    }
+                                                ],
+                                                "residual_risks": [],
+                                                "not_checked": ["current_sprint.md sync drift"],
+                                            },
                                             "workflow_transition": {
                                                 "outcome": "reopen",
                                                 "target_phase": "validation",

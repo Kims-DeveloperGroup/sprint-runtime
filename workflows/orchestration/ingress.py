@@ -409,6 +409,8 @@ async def handle_user_request(
     forwarded: bool,
 ) -> None:
     service._ensure_orchestrator_session_ready_for_sprint_start(envelope)
+    if await service._maybe_capture_sprint_requirement_candidate(message, envelope, forwarded=forwarded):
+        return
     duplicate_request = service._find_duplicate_request(message, envelope)
     if duplicate_request:
         reopened_request = await service._maybe_reopen_blocked_duplicate_request(

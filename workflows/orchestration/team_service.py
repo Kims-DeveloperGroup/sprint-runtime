@@ -383,6 +383,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     INITIAL_PHASE_STEPS,
     SPRINT_ACTIVE_BACKLOG_STATUSES,
     apply_sprint_planning_result as apply_sprint_planning_result_helper,
+    archive_pending_requirement_candidates as archive_pending_requirement_candidates_helper,
     build_idle_current_sprint_markdown as build_idle_current_sprint_markdown_helper,
     build_manual_sprint_names as build_manual_sprint_names_helper,
     build_manual_sprint_state as build_manual_sprint_state_helper,
@@ -4258,6 +4259,7 @@ class TeamService:
         phase: str,
         iteration: int,
         step: str = "",
+        requirement_checkpoint: bool = False,
     ) -> dict[str, Any]:
         artifact_paths = self._sprint_artifact_paths(sprint_state)
         normalized_step = str(step or "").strip().lower()
@@ -4316,6 +4318,7 @@ class TeamService:
             created_at=utc_now_iso(),
             updated_at=utc_now_iso(),
             git_baseline=capture_git_baseline(self.paths.project_workspace_root),
+            requirement_checkpoint=requirement_checkpoint,
         )
         if self._should_start_sprint_research_prepass(
             sprint_state,
@@ -4691,7 +4694,13 @@ class TeamService:
         )
         return False
 
-    async def _run_ongoing_sprint_review(self, sprint_state: dict[str, Any], *, force: bool = False) -> None:
+    async def _run_ongoing_sprint_review(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        force: bool = False,
+        requirement_checkpoint: bool = False,
+    ) -> None:
         if self._is_wrap_up_requested(sprint_state):
             sprint_state["phase"] = "wrap_up"
             self._save_sprint_state(sprint_state)
@@ -4705,6 +4714,7 @@ class TeamService:
             sprint_state,
             phase="ongoing_review",
             iteration=len(sprint_state.get("planning_iterations") or []) + 1,
+            requirement_checkpoint=requirement_checkpoint,
         )
         result = await self._run_internal_request_chain(
             sprint_id=str(sprint_state.get("sprint_id") or ""),
@@ -5385,6 +5395,7 @@ class TeamService:
             representative_commit_sha=representative_commit_sha,
             uncommitted_paths=uncommitted_paths,
         )
+        archive_pending_requirement_candidates_helper(sprint_state, reason=closeout_status or "sprint_closeout")
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
         await self._publish_sprint_issue_before_terminal_reports(sprint_state)
@@ -5409,6 +5420,10 @@ class TeamService:
                 closeout_result=closeout_result,
                 ended_at=utc_now_iso(),
             )
+        )
+        archive_pending_requirement_candidates_helper(
+            sprint_state,
+            reason=str(closeout_result.get("status") or "sprint_closeout"),
         )
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
@@ -6304,12 +6319,119 @@ class TeamService:
             has_active_sprint=bool(self._load_active_sprint_state()),
         )
 
+    @staticmethod
+    def _next_requirement_candidate_id(sprint_state: dict[str, Any]) -> str:
+        used_ids = {
+            str(item.get("candidate_id") or "").strip()
+            for collection_name in ("pending_requirement_candidates", "requirement_candidate_archive")
+            for item in (sprint_state.get(collection_name) or [])
+            if isinstance(item, dict)
+        }
+        index = 1
+        while True:
+            candidate_id = f"REQ-CAND-{index:03d}"
+            if candidate_id not in used_ids:
+                return candidate_id
+            index += 1
+
+    def _append_pending_requirement_candidate(
+        self,
+        sprint_state: dict[str, Any],
+        *,
+        message: DiscordMessage,
+        envelope: MessageEnvelope,
+        interpreted: MessageEnvelope,
+        forwarded: bool,
+    ) -> dict[str, Any]:
+        raw_body = self._combine_envelope_scope_and_body(envelope) or str(message.content or "").strip()
+        candidate_text = str(
+            interpreted.params.get("candidate_text")
+            or interpreted.body
+            or interpreted.scope
+            or raw_body
+            or ""
+        ).strip()
+        requester_route = build_requester_route(message, envelope, forwarded=forwarded)
+        candidate = {
+            "candidate_id": self._next_requirement_candidate_id(sprint_state),
+            "status": "pending",
+            "raw_body": raw_body,
+            "candidate_text": candidate_text,
+            "artifacts": [str(item).strip() for item in interpreted.artifacts if str(item).strip()],
+            "parser_reason": str(interpreted.params.get("parser_reason") or "").strip(),
+            "parser_confidence": str(interpreted.params.get("parser_confidence") or "").strip(),
+            "requester": dict(requester_route),
+            "message_id": str(message.message_id or "").strip(),
+            "channel_id": str(message.channel_id or "").strip(),
+            "created_at": utc_now_iso(),
+        }
+        candidates = [
+            dict(item)
+            for item in (sprint_state.get("pending_requirement_candidates") or [])
+            if isinstance(item, dict)
+        ]
+        candidates.append(candidate)
+        sprint_state["pending_requirement_candidates"] = candidates
+        sprint_state["last_requirement_candidate_at"] = candidate["created_at"]
+        self._save_sprint_state(sprint_state)
+        self._append_sprint_event(
+            str(sprint_state.get("sprint_id") or ""),
+            event_type="requirement_candidate_captured",
+            summary="사용자 입력을 sprint-local requirement candidate로 저장했습니다.",
+            payload={
+                "candidate_id": candidate["candidate_id"],
+                "message_id": candidate["message_id"],
+                "parser_confidence": candidate["parser_confidence"],
+            },
+        )
+        return candidate
+
+    async def _maybe_capture_sprint_requirement_candidate(
+        self,
+        message: DiscordMessage,
+        envelope: MessageEnvelope,
+        *,
+        forwarded: bool,
+    ) -> bool:
+        active_sprint = self._load_active_sprint_state()
+        if not active_sprint:
+            return False
+        if self._is_manual_sprint_start_request(envelope) or self._is_manual_sprint_finalize_request(envelope):
+            return False
+        normalized_intent = str(envelope.intent or "").strip().lower()
+        if normalized_intent in {"status", "cancel", "execute", "approve"}:
+            return False
+        interpreted = await self._reinterpret_user_envelope(message, envelope, forwarded=forwarded)
+        if str(interpreted.intent or "").strip().lower() != "requirement_candidate":
+            return False
+        if str(interpreted.params.get("parser_confidence") or "").strip().lower() != "high":
+            return False
+        candidate_text = str(
+            interpreted.params.get("candidate_text")
+            or interpreted.body
+            or interpreted.scope
+            or ""
+        ).strip()
+        if not candidate_text and not interpreted.artifacts:
+            return False
+        refreshed_sprint = self._load_active_sprint_state() or active_sprint
+        self._append_pending_requirement_candidate(
+            refreshed_sprint,
+            message=message,
+            envelope=envelope,
+            interpreted=interpreted,
+            forwarded=forwarded,
+        )
+        return True
+
     async def _reinterpret_user_envelope(
         self,
         message: DiscordMessage,
         envelope: MessageEnvelope,
+        *,
+        forwarded: bool = False,
     ) -> MessageEnvelope:
-        raw_text = str(message.content or "").strip()
+        raw_text = self._combine_envelope_scope_and_body(envelope) or str(message.content or "").strip()
         if not raw_text:
             return envelope
         scheduler_state = self._load_scheduler_state()
@@ -6322,7 +6444,7 @@ class TeamService:
                 scheduler_state=scheduler_state,
                 active_sprint=active_sprint,
                 backlog_counts=self._backlog_counts(),
-                forwarded=False,
+                forwarded=forwarded,
             )
         except Exception:
             LOGGER.exception("Intent parser failed for message: %s", raw_text)
@@ -6346,6 +6468,8 @@ class TeamService:
                 "_intent_source": "internal_parser",
                 "parser_confidence": str(classification.get("confidence") or "").strip(),
                 "parser_reason": str(classification.get("reason") or "").strip(),
+                "parser_non_requirement_reason": str(classification.get("non_requirement_reason") or "").strip(),
+                "candidate_text": str(classification.get("candidate_text") or "").strip(),
             },
             body=str(classification.get("body") or envelope.body or "").strip(),
         )
