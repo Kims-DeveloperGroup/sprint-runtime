@@ -226,9 +226,14 @@ In the autonomous sprint model, normal change requests do not execute immediatel
 - the first reply includes `request_id=...`
 - backlog IDs appear only after planner directly persists a backlog record and reports it
 - when the scheduler or an operator starts a sprint, the first initial-phase delegation is `research` with workflow step `research_initial`; the resulting research prepass report reaches planner before milestone refinement
-- planner then uses that report to refine the raw kickoff milestone, write or update specs, define sprint-relevant backlog, prioritize it, and only then turn selected backlog items into sprint todos
+- planner then uses that report to refine the raw kickoff milestone and write or update plan/spec drafts
+- before backlog or TODO definition, planner returns `proposals.initial_implementation_plan`; orchestrator sends that implementation plan to the requester and mirrors it to the configured Discord report channel
+- the user must confirm the plan before planner can define sprint-relevant backlog, prioritize it, or turn selected backlog items into sprint todos
+- while the implementation plan is pending, user feedback is interpreted only as `plan_confirm` or `plan_change_request`: confirmation resumes sprint startup, while change requests are stored in `initial_plan_confirmation.change_requests` and routed back to planner for another plan revision
 - `backlog 0건` is not a valid sprint-start state; the runtime blocks the sprint with `planning_incomplete` instead
 - sprint execution creates additional sprint-internal `request_id` values for each todo; these are separate from the intake/planner request ID
+- during an active sprint, clear new user requirements are stored as sprint-local `REQ-CAND-*` candidates in `pending_requirement_candidates`; they are not acknowledged as accepted scope and are not visible to other roles until planner reconciles them at the next completed/committed TODO checkpoint
+- planner is the only role that can register a mid-sprint candidate as a new `REQ-*`; registered scope may update only undone work or newly defined TODOs, while completed/committed TODOs remain fixed evidence
 
 When a sprint todo starts, it follows the standard orchestrator-governed workflow:
 

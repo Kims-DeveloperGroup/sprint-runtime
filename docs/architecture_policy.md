@@ -72,7 +72,7 @@ Current ownership:
 - `adapters/discord/lifecycle.py`
   - canonical background runtime service PID/lock/state lifecycle helpers
 - `workflows/orchestration/team_service.py`
-  - canonical `TeamService` composition surface, backlog intake, scheduler loop, sprint execution, relay handling, and orchestration-side glue while decomposition continues
+  - canonical `TeamService` composition surface, backlog intake, initial implementation-plan confirmation routing, sprint-local requirement-candidate capture, scheduler loop, sprint execution, relay handling, and orchestration-side glue while decomposition continues
 - `workflows/roles/__init__.py`
   - canonical role prompt registry, version-controller extra response fields, and role capability metadata used as orchestration routing inputs
 - `shared/models.py`
@@ -113,7 +113,7 @@ Current ownership:
   - canonical shared role runtime execution, prompt framing, and payload normalization stay in `base_runtime.py`
   - canonical Codex/Gemini subprocess execution and JSON output recovery stay in `codex_runner.py`
   - developer-specific implementation-step and revision-step prompt rules stay in `developer_role.py`
-  - internal parser runtime plus status-intent normalization stay in `internal/intent_parser.py`
+  - internal parser runtime, status-intent normalization, plan confirmation/change classification, and sprint-local requirement-candidate classification stay in `internal/intent_parser.py`
   - internal backlog sourcing runtime plus backlog candidate normalization stay in `internal/backlog_sourcing.py`
   - research runtime orchestration and external deep-research execution stay in `research_runtime.py`
   - `*_role.py` and `role_registry.py` remain compatibility facades for `workflows/roles/*`
@@ -197,7 +197,7 @@ Layer ownership rules:
 - `workflows/orchestration/`
   - routing, workflow engine, orchestration side effects, and `TeamService`
 - `workflows/sprints/`
-  - sprint lifecycle/report helpers, including todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, sprint folder/attachment filename policy, and sprint planning request record assembly
+  - sprint lifecycle/report helpers, including todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, sprint folder/attachment filename policy, initial implementation-plan confirmation context, requirement-candidate checkpoint exposure/reconciliation, and sprint planning request record assembly
   - sprint report rendering, closeout shaping, closeout request-id/path utility policy, artifact preview/status-label/line-limit helpers, planner initial-phase activity report key/section/body assembly, report-body parsing/refresh, history/archive helpers and write/refresh side effects, sprint report delivery body/artifact/progress-report/context assembly, terminal report section composition, sprint artifact path/spec/iteration/kickoff markdown rendering, and Spec/TODO report section formatting
 - `templates/`
   - scaffold and prompt assets only

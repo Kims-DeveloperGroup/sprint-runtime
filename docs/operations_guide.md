@@ -64,10 +64,28 @@ python -m teams_runtime sprint restart
 - Planner should persist canonical `backlog_items` / `backlog_item` payloads through the backlog helper boundary, then return `proposals.backlog_writes` receipts with affected `backlog_id` values and optional artifact paths.
 - `proposals.backlog_item` and `proposals.backlog_items` remain planning rationale and execution context. Orchestrator does not treat them as persistence instructions.
 - Orchestrator verifies `proposals.backlog_writes` against persisted `.teams_runtime/backlog/*.json` state and then continues routing, sprint selection, and status reporting from the saved backlog state.
-- During sprint `initial` planning, orchestrator must run the `research` prepass first. Planner must reference that report when refining the milestone, writing specs, and defining or reopening sprint-relevant backlog from the current milestone, kickoff requirements, research findings, and `spec.md`.
+- During sprint `initial` planning, orchestrator must run the `research` prepass first. Planner must reference that report when refining the milestone and writing plan/spec drafts.
+- After initial `artifact_sync`, planner must return `proposals.initial_implementation_plan` instead of defining backlog/TODOs. Orchestrator sends that implementation plan through the requester route and mirrors a progress report to the configured Discord report channel.
+- While `initial_plan_confirmation.status` is `pending`, orchestrator accepts only clear plan confirmation or plan change feedback for the startup gate. `plan_confirm` marks the plan `confirmed` and resumes backlog/TODO definition; `plan_change_request` appends a `PLAN-CHANGE-*` entry to `initial_plan_confirmation.change_requests`, clears the completed `artifact_sync` checkpoint, and routes planner through the revision loop.
+- Planner may define or reopen sprint-relevant backlog from the current milestone, kickoff requirements, research findings, and `spec.md` only after the implementation plan is confirmed.
 - `backlog 0건` is not an acceptable sprint-start result. If initial-phase backlog definition leaves zero sprint-relevant backlog, orchestrator blocks sprint start with `planning_incomplete`.
 - Sprint backlog definition items should carry concrete `acceptance_criteria` plus planner trace in `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs`, and `origin.research_refs` when a source-backed or local-evidence research report is available.
+- During an active sprint, clear new user requirements are stored as sprint-local `REQ-CAND-*` entries in `pending_requirement_candidates`. They are not accepted scope, not acknowledged as registered requirements, and not included in role context until planner reaches the next completed/committed TODO checkpoint.
+- At that checkpoint, planner receives pending candidates in an `ongoing_review` request and may return `proposals.sprint_requirement_reconciliation` with `registered_requirements`, `merged_candidates`, `deferred_candidates`, and `rejected_candidates`. Only registered candidates become `REQ-*`; unresolved candidates expire into `requirement_candidate_archive` at sprint closeout.
 - Legacy planner aliases such as `planned_backlog_updates` are compatibility inputs only inside role-runtime normalization. They are not accepted by the canonical backlog helper interface.
+
+## Sprint Requirement Feedback
+
+Orchestrator is responsible for detecting incoming requirement feedback, but it does not accept that feedback as scope.
+
+- The intake path first excludes manual sprint control, `status`, `cancel`, `execute`, and startup plan-confirmation feedback.
+- For the remaining user text, orchestrator calls `runtime/internal/intent_parser.py` with the current active sprint summary and parsed envelope.
+- The parser may return `requirement_candidate` only with high confidence, an active sprint, and clear requirement/constraint/acceptance-criterion language. Plausible but unclear text remains normal routing text.
+- Orchestrator stores accepted parser output as a pending `REQ-CAND-*` record with raw text, candidate text, artifacts, parser reason/confidence, requester route, Discord message/channel IDs, and `created_at`.
+- A pending candidate is sprint-local and non-authoritative. It should not be treated as accepted scope, and it is not sent to downstream roles while the current TODO continues.
+- Planner is the only role that can accept a candidate. The runtime exposes pending candidates to planner only after a TODO reaches `completed` or `committed`.
+- Planner accepts scope by returning `proposals.sprint_requirement_reconciliation.registered_requirements`; the runtime then creates registered `REQ-*` entries in `original_requirements` and marks the source candidates `registered`.
+- Planner may also merge, defer, or reject candidates. Pending candidates that still exist at sprint closeout move to `requirement_candidate_archive` with `non_authoritative: true`.
 
 ## Designer Advisory Contract
 
@@ -142,7 +160,20 @@ User
   -> direct completion or delegated next role
 ```
 
-When the orchestrator starts a sprint, selected backlog items become internal requests and then follow the standard orchestrator-governed workflow contract.
+When the orchestrator starts a sprint, the startup flow first pauses after the planner implementation plan is drafted. The user either confirms the plan or sends change feedback; planner revises and resends the plan until confirmation. Only then do selected backlog items become internal requests and follow the standard orchestrator-governed workflow contract.
+
+Sprint startup confirmation loop:
+
+```text
+Scheduler / sprint start
+  -> Orchestrator
+  -> Research prepass
+  -> Planner milestone/spec/plan draft
+  -> Orchestrator
+  -> User confirmation or change request
+  -> Planner revision loop until confirmed
+  -> Planner backlog/TODO finalization
+```
 
 Standard sprint chain:
 
@@ -380,7 +411,7 @@ Session rollover is lazy:
 
 Planner persistence behavior:
 
-- planner sprint-internal write requests such as `artifact_sync`, `backlog_definition`, backlog prioritization, and sprint backlog persistence may update both `shared_workspace/` and `.teams_runtime/`
+- planner sprint-internal write requests such as pre-confirmation `artifact_sync`, post-confirmation `backlog_definition`, backlog prioritization, requirement reconciliation, and sprint backlog persistence may update both `shared_workspace/` and `.teams_runtime/`
 - developer requests run with `--dangerously-bypass-approvals-and-sandbox` by default, and planner write-bearing requests do as well, so implementation work plus runtime-owned sprint/backlog persistence are not blocked by session-symlink sandbox boundaries
 - seeing `./shared_workspace` or `./.teams_runtime` inside a role session does not by itself mean the sandbox can write to the resolved target path
 - non-bypass Codex runs still add the resolved targets for `./workspace`, `./shared_workspace`, and `./.teams_runtime` as extra writable roots when available

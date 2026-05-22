@@ -169,6 +169,42 @@ Tradeoff:
 
 - operators must define commands up front
 
+### 11. Confirm sprint implementation plans before TODOs
+
+Decision:
+
+- initial sprint planning pauses after planner drafts `proposals.initial_implementation_plan`
+- orchestrator routes confirmation or change feedback between the user and planner until the plan is confirmed
+- backlog and execution TODO definition starts only after confirmation
+
+Why:
+
+- lets the user shape the plan before sprint work becomes executable
+- keeps mid-startup feedback in the planner lane instead of interrupting downstream roles
+- makes the accepted plan visible in sprint state through `initial_plan_confirmation`
+
+Tradeoff:
+
+- sprint startup can take an extra user-confirmation round trip
+
+### 12. Sprint-local requirement candidates
+
+Decision:
+
+- user-added requirements during an active sprint are captured as `REQ-CAND-*` candidates
+- planner is the only role that may reconcile candidates into registered `REQ-*` requirements
+- reconciliation happens only at completed/committed TODO checkpoints
+
+Why:
+
+- preserves user participation during a sprint without interrupting the current workflow
+- prevents unreviewed feedback from silently changing active scope
+- gives all downstream roles a stable `REQ-*` contract once planner accepts a candidate
+
+Tradeoff:
+
+- candidates that miss a checkpoint remain non-authoritative and can expire at sprint closeout
+
 ## Maintainer Guidance
 
 ### When to update the specification doc

@@ -166,10 +166,14 @@ Normal change and enhancement requests are backlog-first.
 - an internal non-public sourcer agent can independently propose new backlog candidates from workspace/runtime findings, but planner review is required before backlog persistence
 - when a sprint starts, the first initial-phase delegation must be `research` at workflow step `research_initial`, before planner milestone refinement
 - the research prepass must define the research subject, provide source-backed findings or local-evidence/no-subject rationale, and give planner hints/backing reasons for refining the raw milestone
-- planner must then derive sprint-relevant backlog from the refined milestone, kickoff requirements, research report, and `spec.md`
+- planner must then draft or revise `proposals.initial_implementation_plan` from the refined milestone, kickoff requirements, research report, and `spec.md`
+- orchestrator must send the implementation plan through the requester route, mirror it to Discord reporting, and wait for user confirmation before backlog/TODO definition
+- while confirmation is pending, parser/orchestrator must distinguish `plan_confirm` from `plan_change_request`; confirmation resumes startup, and change requests are stored in `initial_plan_confirmation.change_requests` for planner revision
+- planner must derive sprint-relevant backlog from the refined milestone, kickoff requirements, research report, `spec.md`, and confirmed implementation plan only after `initial_plan_confirmation.status == "confirmed"`
 - sprint start cannot proceed with `backlog 0건`; if sprint-relevant backlog is empty, the runtime blocks with `planning_incomplete`
 - the scheduler later selects pending backlog items only after that initial-phase backlog-definition gate passes
 - selected items become sprint todos and are executed through internal `request_id` records with a standard workflow contract
+- during an active sprint, clear user-added requirements are stored only as sprint-local `REQ-CAND-*` entries in `pending_requirement_candidates`; they are not accepted scope until planner reconciles them into registered `REQ-*` requirements at a completed/committed TODO checkpoint
 
 ### Standard sprint workflow
 
@@ -185,8 +189,10 @@ Workflow rules:
 - `planner` is the sole final owner of planning output
 - `designer` and `architect` are advisory specialists during planning
 - planning advisory is capped at 2 shared passes total
-- sprint initial planning follows `research_initial -> planner_draft`, where planner covers `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
+- sprint initial planning follows `research_initial -> planner_draft`, where planner covers `milestone_refinement -> artifact_sync`, then waits for implementation-plan confirmation before `backlog_definition -> backlog_prioritization -> todo_finalization`
 - `backlog_definition` is mandatory and must persist sprint-relevant backlog before prioritization
+- before confirmation, planner output is limited to plan/spec artifacts and `proposals.initial_implementation_plan`; it must not create backlog items, set `planned_in_sprint_id`, select backlog, or define execution TODOs
+- mid-sprint user requirement candidates are exposed only during `ongoing_review` checkpoints after a TODO is completed or committed, where planner may return `proposals.sprint_requirement_reconciliation`
 - planning-only clarification on planner-owned surfaces such as `current_sprint.md`, `todo_backlog.md`, and `iteration_log.md` closes in planning instead of opening implementation
 - planner가 planner-owned artifact만 보고하더라도 `workflow_transition.target_phase=implementation`을 명시하면 orchestrator는 planning close 대신 다음 implementation step을 열어야 함
 - implementation follows the standard sequence:
@@ -202,7 +208,7 @@ Workflow rules:
 - current implemented pure-policy boundary:
   - `workflows/orchestration/engine.py` owns normalized workflow state, phase/step mutation helpers, next-role decisions, terminal-routing decisions, and governed routing-selection scoring
   - `workflows/roles/__init__.py` owns role capability metadata and agent utilization policy loading consumed by orchestration scoring
-  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery decisions
+  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, initial implementation-plan feedback intake, sprint-local requirement-candidate intake, and reply-route recovery decisions
   - `workflows/sprints/reporting.py` owns sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, terminal state update plus closeout-result state/payload assembly, report path text, history-archive refresh gating, history archive markdown/index/path preparation, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, and user-facing/live sprint report markdown assembly
   - `workflows/orchestration/relay.py` owns relay-send status mutation, relay failure-payload shaping, internal relay path, enqueue/archive, inbox scanning/loading, envelope round-trip helpers, synthetic relay-message stubs, pure internal relay action resolution, relay-summary fragment wrapping, relay-section grouping, and section-message rendering
   - `workflows/orchestration/notifications.py` owns startup report rendering, boxed-report excerpt summarization, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, low-level Discord chunking, runtime signature tagging, cross-process send locking, startup fallback recovery, requester-status message formatting, requester reply delivery, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, and Discord relay-envelope sending
@@ -217,7 +223,7 @@ Workflow rules:
   - `workflows/roles/__init__.py` owns runtime-side registration of role prompt modules and extra response fields
   - `runtime/base_runtime.py` owns the shared role runtime contract, generic prompt framing, sandbox retry rules, and role payload normalization
   - `runtime/codex_runner.py` owns Codex/Gemini subprocess execution, command shaping, and JSON response recovery
-  - `runtime/internal/intent_parser.py` owns the internal parser runtime, conservative status-intent inference, and parser payload normalization
+  - `runtime/internal/intent_parser.py` owns the internal parser runtime, conservative status-intent inference, parser payload normalization, `plan_confirm`, `plan_change_request`, and high-confidence sprint-local `requirement_candidate` classification when active sprint state makes those intents valid
   - `runtime/internal/backlog_sourcing.py` owns the internal sourcer runtime, sourcer payload normalization, and sourcing-monitoring receipts
   - `workflows/roles/designer.py` owns designer-specific advisory prompt rules and `design_feedback` contract guidance
   - `runtime/session_manager.py` owns session lifecycle, archival, and session-workspace seeding
@@ -342,6 +348,8 @@ Normalization rules:
 - sprint state preserves both a refined `milestone_title` and immutable kickoff source fields such as `kickoff_brief`, `kickoff_requirements`, `kickoff_request_text`, `kickoff_source_request_id`, and `kickoff_reference_artifacts`
 - inbound Discord attachments are stored under the resolved sprint folder so sprint-start reference docs live with the sprint artifacts
 - `kickoff.md` stores the original sprint-start brief/requirements/source request, while `milestone.md` stores derived milestone framing
+- `initial_plan_confirmation` stores startup implementation-plan confirmation state, including `status`, `revision`, `draft_request_id`, `draft_proposal`, requester route, and `PLAN-CHANGE-*` feedback entries
+- `pending_requirement_candidates` stores sprint-local `REQ-CAND-*` inputs until planner reconciles them, while `requirement_candidate_archive` stores unresolved candidates that expire at closeout as non-authoritative history
 - sprint-start attachments, generated todo artifacts, and linked code paths referenced by sprint reports are resolved relative to the sprint folder or workspace and should be preserved in linked-artifact views
 - planner receives those saved attachment paths through `request.artifacts` and should use them as planning references before declaring missing context
 - scheduler state and startup/report/status outputs expose only `active_sprint_id`, while sprint records keep a single `sprint_id`
@@ -357,6 +365,10 @@ Not every incoming message immediately becomes a new `request_id`.
 
 - `backlog_id`
   - one backlog candidate / deferred work item
+- `REQ-*`
+  - one registered sprint requirement in `original_requirements`
+- `REQ-CAND-*`
+  - one sprint-local requirement candidate that is not authoritative until planner reconciliation
 - `request_id`
   - one runtime request record
   - may identify either an intake/planner request or a sprint-internal execution request
@@ -502,16 +514,17 @@ If `actions: {}` remains empty:
 ## Planner vs Orchestrator Boundary
 
 - planner owns planning, backlog-management decisions, and planner-initiated backlog persistence
-- orchestrator owns sprint-state status mutations, workflow phase/step state, pass limits, reopen routing, and bounded execution routing
+- planner also owns implementation-plan revision before startup confirmation and sprint requirement-candidate reconciliation at completed/committed TODO checkpoints
+- orchestrator owns sprint-state status mutations, workflow phase/step state, pass limits, reopen routing, initial-plan confirmation routing, requirement-candidate capture, and bounded execution routing
 - current implemented module split:
   - `workflows/orchestration/engine.py` owns pure workflow state helpers, routing-policy helpers, governed routing-selection scoring, role-specific workflow report normalization, and planner-owned artifact filtering
   - `workflows/roles/__init__.py` owns role capability metadata and agent utilization policy loading consumed by orchestration scoring
-  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, and reply-route recovery decisions
+  - `workflows/orchestration/ingress.py` owns requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, initial implementation-plan feedback intake, sprint-local requirement-candidate intake, and reply-route recovery decisions
   - `workflows/sprints/reporting.py` owns sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, terminal state update plus closeout-result state/payload assembly, report path text, history-archive refresh gating, history archive markdown/index/path preparation, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, and user-facing/live sprint report markdown assembly
   - `workflows/orchestration/relay.py` owns pure relay-send status mutation, failure-payload shaping, internal relay file transport, inbox scanning/loading, envelope deserialization, synthetic relay-message stubs, pure internal relay action resolution, relay-summary rendering, and report-section assembly
   - `workflows/orchestration/relay.py` owns request-aware relay delivery/event glue, internal relay consume/dispatch helpers, and internal-vs-Discord transport branching
   - `workflows/orchestration/notifications.py` owns low-level Discord notification delivery, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, requester summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate-receipt trusted-relay suppression, generic Discord content send delegation, and startup notification send/fallback state glue
-  - `workflows/sprints/lifecycle.py` owns manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, sprint-relevant backlog selection, initial-phase validation policy, planning-iteration bookkeeping, and phase-ready policy
+  - `workflows/sprints/lifecycle.py` owns manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, initial implementation-plan confirmation context, sprint-relevant backlog selection, requirement-candidate checkpoint exposure/reconciliation, initial-phase validation policy, planning-iteration bookkeeping, and phase-ready policy
   - `core/orchestration.py` composes those helpers with backlog/request inspection and remaining runtime side effects
 
 Sprint-state status mutations include:
@@ -521,6 +534,8 @@ Sprint-state status mutations include:
 - blocker fields such as `blocked_reason`, `blocked_by_role`, `required_inputs`, and `recommended_next_step`
 - todo lifecycle state such as `queued`, `running`, `completed`, `blocked`, and `failed`
 - sprint lifecycle state such as `planning`, `running`, `wrap_up`, `completed`, `failed`, and `blocked`
+- initial plan confirmation fields under `initial_plan_confirmation`
+- sprint-local requirement candidate fields under `pending_requirement_candidates` and `requirement_candidate_archive`
 
 ## Testing Surface
 

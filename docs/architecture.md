@@ -78,6 +78,10 @@ Identity model:
 
 - `backlog_id`
   - one deferred work candidate
+- `REQ-*`
+  - one registered sprint requirement in `original_requirements`
+- `REQ-CAND-*`
+  - one sprint-local requirement candidate that is pending planner reconciliation and is not accepted scope
 - `request_id`
   - one runtime request record
   - may identify either an intake/planner request or a sprint-internal execution request
@@ -177,6 +181,12 @@ Scheduler tick
   -> orchestrator runs backlog discovery and queues planner review when needed
   -> pending backlog items selected
   -> sprint file and current_sprint.md written
+  -> research prepass
+  -> planner drafts milestone/spec/implementation plan
+  -> orchestrator sends the implementation plan to the requester and mirrors it to Discord reporting
+  -> user confirms the plan or sends change feedback through orchestrator
+  -> planner revises until the plan is confirmed
+  -> planner defines backlog/TODOs
   -> Discord sprint kickoff and todo list reported
   -> each todo becomes an internal request
   -> roles execute through a phase-based workflow owned by orchestrator
@@ -243,10 +253,14 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
 - sprint initial planning:
   - `research_initial` is always the first delegation, for both manual and scheduled sprint kickoff
   - the research report defines the external/local-evidence subject, sources or rationale, and planning hints before planner milestone refinement
-  - planner then runs `milestone_refinement -> artifact_sync -> backlog_definition -> backlog_prioritization -> todo_finalization`
-  - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec`
+  - planner runs `milestone_refinement -> artifact_sync`, then returns `proposals.initial_implementation_plan` and stops before backlog/TODO definition
+  - orchestrator stores `initial_plan_confirmation`, sends the plan through the requester route, mirrors it to Discord reporting, and waits for user feedback
+  - while confirmation is pending, parser/orchestrator interpret incoming user feedback as either `plan_confirm` or `plan_change_request`; change requests append `PLAN-CHANGE-*` entries and reopen planner `artifact_sync`
+  - after confirmation, planner runs `backlog_definition -> backlog_prioritization -> todo_finalization`
+  - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec + confirmed implementation plan`
   - `backlog 0건` is invalid; orchestrator blocks sprint start with `planning_incomplete` instead of looping or silently continuing
   - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/research/spec
+  - during an ongoing sprint, clear new user requirements are stored only as `pending_requirement_candidates` (`REQ-CAND-*`); planner sees them only at the next completed/committed TODO checkpoint and may reconcile them into registered `REQ-*`
 - planner-owned planning surfaces:
   - `shared_workspace/backlog.md`
   - `shared_workspace/completed_backlog.md`
@@ -267,7 +281,7 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
   - `workflows/orchestration/relay.py` owns relay-send status mutation, relay failure-payload shaping, internal relay path/enqueue/archive/deserialization helpers, inbox scanning/loading, synthetic message stubs, pure action resolution, relay-summary fragment wrapping, and report-section rendering
   - `workflows/orchestration/relay.py` now owns request-aware relay delivery/event glue, internal relay consume/dispatch helpers, and internal-vs-Discord transport branching
   - `workflows/orchestration/notifications.py` now owns low-level Discord notification delivery, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, requester summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate-receipt trusted-relay suppression, generic Discord content send delegation, and startup notification send/fallback state glue
-  - `workflows/sprints/lifecycle.py` now owns manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, sprint-relevant backlog selection, initial-phase validation policy, planning-iteration bookkeeping, and phase-ready policy
+  - `workflows/sprints/lifecycle.py` now owns manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, initial implementation-plan confirmation context, sprint-relevant backlog selection, requirement-candidate checkpoint exposure/reconciliation, initial-phase validation policy, planning-iteration bookkeeping, and phase-ready policy
   - `core/orchestration.py` still owns planning-close heuristics plus the remaining persistence and side effects that compose those helpers
 
 #### Routing scenarios
@@ -487,12 +501,13 @@ Human-readable state:
 ## Role Responsibilities In The Sprint Model
 
 - `orchestrator`
-  - owns intake routing, planner-owned backlog flow orchestration, internal sourcer review orchestration, version_controller delegation, scheduling, sprint state, todo execution, and final reporting
+  - owns intake routing, planner-owned backlog flow orchestration, initial implementation-plan confirmation routing, sprint-local requirement candidate capture, internal sourcer review orchestration, version_controller delegation, scheduling, sprint state, todo execution, and final reporting
   - acts as the workflow governor: it applies the workflow contract first, then uses the orchestrator-local `agent_utilization` skill plus sibling `policy.yaml` as bounded routing/scoring authority
   - owns all phase changes, step changes, reopen routing, pass counting, and terminal decisions
 - `planner`
-  - owns planning, backlog-management decisions, and direct backlog persistence
+  - owns planning, backlog-management decisions, direct backlog persistence, implementation-plan revisions before sprint startup confirmation, and mid-sprint requirement-candidate reconciliation
   - treats `Current request.artifacts`, sprint attachment docs, and preserved kickoff docs under `shared_workspace/sprints/<sprint_folder_name>/kickoff.md` as planning reference inputs, extracting concrete requirements and constraints into plan/spec/backlog outputs before blocking on missing context
+  - registers accepted mid-sprint candidate scope as new `REQ-*` only at completed/committed TODO checkpoints; newly registered scope may affect only undone work or new TODOs
   - is the sole final owner of planning output
 - `designer`
   - contributes UX, messaging, and interaction design during planning or orchestrator-chosen reopen handling
@@ -550,6 +565,8 @@ Sprint-state status mutations mean execution-state writes such as:
 - carry-over backlog creation from failed sprint execution
 - todo lifecycle state such as `queued`, `running`, `uncommitted`, `committed`, `completed`, `blocked`, and `failed`
 - sprint lifecycle state such as `planning`, `running`, `wrap_up`, `completed`, `failed`, and `blocked`
+- initial plan confirmation state such as `initial_plan_confirmation.status`, revision metadata, draft proposal, and `PLAN-CHANGE-*` feedback
+- sprint-local requirement candidate state such as `pending_requirement_candidates`, reconciliation status, and `requirement_candidate_archive`
 
 ## Commit Model
 
@@ -573,6 +590,7 @@ Discord is used for:
 - backlog intake acknowledgement
 - internal relay summaries (default transport)
 - debug relay envelope traffic (when `--relay-transport discord`)
+- initial implementation plan confirmation requests and mirrored progress reports
 - sprint kickoff
 - sprint todo list publication
 - per-todo completion / blocked / carry-over updates
