@@ -20,6 +20,7 @@
 - `shared_workspace/sprints/<sprint_id>/research/<request_id>.md` raw report artifact가 있으면 planner guidance의 source-of-truth로 함께 확인한다
 - source-backed research prepass가 있으면 milestone refinement, problem framing, spec 작성, backlog/todo 정의에서 `milestone_refinement_hints`, `problem_framing_hints`, `spec_implications`, `todo_definition_hints`, `backing_reasoning`, `backing_sources`를 명시적으로 참고한다
 - `research_subject_definition`이 있으면 `planning_decision`, `knowledge_gap`, `external_boundary`, `planner_impact`, `source_requirements`, `rejected_subjects`를 먼저 읽고 planner가 무엇을 해결해야 하는지 framing한다
+- `research_prepass.requirement_traceability_matrix`가 있으면 그 RTM row의 `req_id`, sufficiency, `research_status`, missing evidence, source/failure refs를 출발점으로 삼고 backlog/todo/acceptance/closeout evidence까지 matrix를 확장한다
 - user가 준 milestone은 구체 요구사항이 아니라 문제 해결의 entry point로 취급한다. planner는 이를 그대로 채택하지 말고 research와 kickoff context를 이용해 더 구체적인 refined milestone, problem framing, spec boundary를 작성한다
 - `Current request.params._teams_kind == "sourcer_review"`이면 backlog management 결정만 수행하고 planner 결과로 종료한다
 - `Current request.params._teams_kind == "blocked_backlog_review"`이면 blocked backlog를 검토해 항목별로 `blocked 유지` 또는 `pending 재개`를 명시적으로 결정하고, 재개 시 blocker 필드를 비운 뒤 planner 결과로 종료한다
@@ -60,6 +61,7 @@
 - 후보는 active scope가 아니다. 수락한 경우에만 `proposals.sprint_requirement_reconciliation.registered_requirements`에 `candidate_id`, `text`, `affected_todo_ids`, `affected_spec_sections`를 남겨 새 `REQ-*`로 등록되게 한다. 중복이면 `merged_candidates`, 아직 판단 보류면 `deferred_candidates`, 거절이면 `rejected_candidates`에 candidate id와 reason을 남긴다
 - 새로 등록되는 mid-sprint `REQ-*`는 아직 완료/커밋되지 않은 요구사항, backlog, spec, 새 TODO에만 반영한다. 이미 completed/committed 된 TODO는 user feedback 때문에 중단하거나 다시 쓰지 않는다
 - Requirement Traceability Matrix를 유지해 모든 `REQ-*`를 backlog item, requirement-slice todo, supporting todo, acceptance criteria, closeout evidence에 연결한다
+- research RTM의 failed row는 unresolved research risk로 유지하고, 해당 `REQ-*` scope를 줄이거나 삭제하는 근거로 쓰지 않는다
 - 각 `REQ-*`마다 최소 하나의 non-supporting requirement-slice TODO를 만든다. research/infrastructure/live-test/observability/recovery 같은 추가 TODO는 `supporting_todo: true`로 표시하고 어떤 `REQ-*`를 지원/검증하는지 cite한다
 - backlog item 하나는 `independently reviewable implementation slice` 1개를 의미한다
 - 하나의 backlog item이 여러 subsystem, contract, phase, deliverable을 동시에 포함하면 더 작은 실행 단위로 분리한다

@@ -181,7 +181,7 @@ Scheduler tick
   -> orchestrator runs backlog discovery and queues planner review when needed
   -> pending backlog items selected
   -> sprint file and current_sprint.md written
-  -> research prepass
+  -> research prepass builds REQ-* RTM and attempts Deep Research for missing local evidence
   -> planner drafts milestone/spec/implementation plan
   -> orchestrator sends the implementation plan to the requester and mirrors it to Discord reporting
   -> user confirms the plan or sends change feedback through orchestrator
@@ -200,6 +200,9 @@ Scheduler tick
   -> closeout checks leftover sprint-owned changes and delegates version_controller only when needed
   -> sprint report archived
 ```
+
+Research prepass RTM rows are persisted into `research_prepass.requirement_traceability_matrix`.
+When Deep Research fails during sprint prepass, the runtime persists a completed degraded handoff with failed RTM rows and no backing sources so planner can proceed without treating the handoff as source-backed.
 
 ### 3. Internal role chain
 

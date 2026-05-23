@@ -225,7 +225,8 @@ In the autonomous sprint model, normal change requests do not execute immediatel
 - the orchestrator first routes them to planner for planning and backlog-management decisions
 - the first reply includes `request_id=...`
 - backlog IDs appear only after planner directly persists a backlog record and reports it
-- when the scheduler or an operator starts a sprint, the first initial-phase delegation is `research` with workflow step `research_initial`; the resulting research prepass report reaches planner before milestone refinement
+- when the scheduler or an operator starts a sprint, the first initial-phase delegation is `research` with workflow step `research_initial`; the resulting research prepass report, including the `REQ-*` requirement traceability matrix, reaches planner before milestone refinement
+- if Deep Research fails during this sprint prepass, planner still receives failed RTM rows and proceeds with the unresolved research risk visible instead of blocking sprint startup
 - planner then uses that report to refine the raw kickoff milestone and write or update plan/spec drafts
 - before backlog or TODO definition, planner returns `proposals.initial_implementation_plan`; orchestrator sends that implementation plan to the requester and mirrors it to the configured Discord report channel
 - the user must confirm the plan before planner can define sprint-relevant backlog, prioritize it, or turn selected backlog items into sprint todos

@@ -47,6 +47,23 @@ RESEARCH_SUBJECT_DEFINITION_FIELDS = (
     "rejected_subjects",
     "no_subject_rationale",
 )
+REQUIREMENT_TRACEABILITY_MATRIX_FIELD = "requirement_traceability_matrix"
+ALLOWED_REQUIREMENT_KINDS = {
+    "external_fact",
+    "repo_state",
+    "implementation_evidence",
+    "local_policy",
+    "preference",
+    "mixed",
+}
+ALLOWED_LOCAL_EVIDENCE_TYPES = {
+    "artifact",
+    "runtime_observation",
+    "comment",
+    "opinion",
+    "assumption",
+}
+REQUIREMENT_ID_PATTERN = re.compile(r"\bREQ-\d{3}\b", re.IGNORECASE)
 
 
 def _collapse_whitespace(value: Any) -> str:
@@ -63,6 +80,18 @@ def _normalize_text_list(value: Any) -> list[str]:
         ]
         return [line for line in lines if line]
     return []
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n", ""}:
+            return False
+    return bool(value)
 
 
 def _normalize_comparison_text(value: Any) -> str:
@@ -107,6 +136,262 @@ def _matches_raw_request_text(candidate: str, request_record: RequestRecord) -> 
         if normalized_seed and normalized_candidate == normalized_seed:
             return True
     return False
+
+
+def closeout_original_requirements_from_request(
+    request_record: RequestRecord | None,
+) -> list[dict[str, str]]:
+    if not isinstance(request_record, dict):
+        return []
+    params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
+    candidates: list[Any] = [
+        params.get("original_requirements"),
+        request_record.get("original_requirements"),
+    ]
+    sprint_state = params.get("sprint_state")
+    if isinstance(sprint_state, dict):
+        candidates.append(sprint_state.get("original_requirements"))
+    sprint_state = request_record.get("sprint_state")
+    if isinstance(sprint_state, dict):
+        candidates.append(sprint_state.get("original_requirements"))
+
+    requirements: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for raw_requirements in candidates:
+        if not isinstance(raw_requirements, list):
+            continue
+        for raw_item in raw_requirements:
+            if not isinstance(raw_item, dict):
+                continue
+            if not _coerce_bool(raw_item.get("closeout_required", True)):
+                continue
+            req_id = str(raw_item.get("id") or raw_item.get("req_id") or "").strip().upper()
+            if not REQUIREMENT_ID_PATTERN.fullmatch(req_id):
+                continue
+            if req_id in seen_ids:
+                continue
+            requirement = _collapse_whitespace(raw_item.get("text") or raw_item.get("requirement") or "")
+            requirements.append({"req_id": req_id, "requirement": requirement})
+            seen_ids.add(req_id)
+        if requirements:
+            break
+    return requirements
+
+
+def _normalize_local_evidence(value: Any, *, req_id: str) -> list[dict[str, str]]:
+    if value in (None, ""):
+        return []
+    raw_items = value if isinstance(value, list) else [value]
+    evidence: list[dict[str, str]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"{req_id} local_evidence entries must be objects with a type.")
+        evidence_type = str(raw_item.get("type") or "").strip().lower()
+        if evidence_type not in ALLOWED_LOCAL_EVIDENCE_TYPES:
+            raise ValueError(f"{req_id} local_evidence has unsupported type: {evidence_type or 'empty'}")
+        normalized = {
+            "type": evidence_type,
+            "source": _collapse_whitespace(raw_item.get("source") or raw_item.get("artifact") or raw_item.get("ref") or ""),
+            "summary": _collapse_whitespace(raw_item.get("summary") or raw_item.get("rationale") or raw_item.get("text") or ""),
+        }
+        if _collapse_whitespace(raw_item.get("quote") or ""):
+            normalized["quote"] = _collapse_whitespace(raw_item.get("quote") or "")
+        evidence.append(normalized)
+    return evidence
+
+
+def _evidence_can_satisfy_requirement_kind(
+    *,
+    requirement_kind: str,
+    evidence: list[dict[str, str]],
+) -> bool:
+    evidence_types = {str(item.get("type") or "").strip().lower() for item in evidence}
+    if not evidence_types:
+        return False
+    if requirement_kind in {"local_policy", "preference"}:
+        return bool(evidence_types & {"artifact", "runtime_observation", "comment", "opinion"})
+    return bool(evidence_types & {"artifact", "runtime_observation"})
+
+
+def _synthesize_research_subject_from_rtm(rows: list[dict[str, Any]]) -> tuple[str, str, list[str]]:
+    req_ids = [str(row.get("req_id") or "").strip() for row in rows if str(row.get("req_id") or "").strip()]
+    joined_ids = ", ".join(req_ids[:6])
+    subject = f"Closeout evidence gaps for {joined_ids}" if joined_ids else "Closeout requirement evidence gaps"
+    gap_lines = []
+    source_requirements: list[str] = []
+    for row in rows:
+        req_id = str(row.get("req_id") or "").strip()
+        missing = "; ".join(_normalize_text_list(row.get("missing_evidence")))
+        delta = _collapse_whitespace(row.get("research_query_delta") or "")
+        requirement = _collapse_whitespace(row.get("requirement") or "")
+        gap_lines.append(
+            f"{req_id}: {delta or missing or requirement}".strip()
+        )
+        if delta:
+            source_requirements.append(delta)
+    query = (
+        "Resolve these closeout requirement evidence gaps with authoritative, current sources where external grounding is needed: "
+        + " | ".join(item for item in gap_lines if item)
+    )
+    if not source_requirements:
+        source_requirements = [
+            "Use authoritative or primary sources for every unresolved requirement evidence gap."
+        ]
+    return subject, query, source_requirements
+
+
+def normalize_requirement_traceability_matrix(
+    value: Any,
+    *,
+    request_record: RequestRecord | None = None,
+) -> list[dict[str, Any]]:
+    expected_requirements = closeout_original_requirements_from_request(request_record)
+    expected_by_id = {item["req_id"]: item for item in expected_requirements}
+    if value in (None, ""):
+        raw_rows: list[Any] = []
+    elif isinstance(value, list):
+        raw_rows = value
+    else:
+        raise ValueError("requirement_traceability_matrix must be a list.")
+
+    if not expected_by_id and raw_rows:
+        raise ValueError("requirement_traceability_matrix included REQ-* rows without structured original_requirements.")
+
+    normalized_rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            raise ValueError("requirement_traceability_matrix rows must be JSON objects.")
+        req_id = str(raw_row.get("req_id") or raw_row.get("id") or "").strip().upper()
+        if req_id not in expected_by_id:
+            raise ValueError(f"requirement_traceability_matrix has unknown req_id: {req_id or 'empty'}")
+        if req_id in seen_ids:
+            raise ValueError(f"requirement_traceability_matrix has duplicate req_id: {req_id}")
+        seen_ids.add(req_id)
+
+        requirement_kind = str(raw_row.get("requirement_kind") or "").strip().lower()
+        if requirement_kind not in ALLOWED_REQUIREMENT_KINDS:
+            raise ValueError(f"{req_id} has unsupported requirement_kind: {requirement_kind or 'empty'}")
+        planner_decisions = _normalize_text_list(
+            raw_row.get("planner_decisions")
+            or raw_row.get("planner_decision")
+        )
+        if not planner_decisions:
+            raise ValueError(f"{req_id} must include planner_decisions.")
+        decision_rationale = _collapse_whitespace(raw_row.get("decision_rationale") or "")
+        if not decision_rationale:
+            raise ValueError(f"{req_id} must include decision_rationale.")
+
+        local_evidence = _normalize_local_evidence(raw_row.get("local_evidence"), req_id=req_id)
+        local_evidence_sufficient = _coerce_bool(raw_row.get("local_evidence_sufficient"))
+        missing_evidence = _normalize_text_list(raw_row.get("missing_evidence"))
+        if not local_evidence and not missing_evidence:
+            raise ValueError(f"{req_id} must include local_evidence or explicit missing_evidence.")
+        if local_evidence_sufficient and not local_evidence:
+            raise ValueError(f"{req_id} cannot be locally sufficient without local_evidence.")
+        if local_evidence_sufficient and not _evidence_can_satisfy_requirement_kind(
+            requirement_kind=requirement_kind,
+            evidence=local_evidence,
+        ):
+            raise ValueError(
+                f"{req_id} local_evidence cannot satisfy requirement_kind={requirement_kind}."
+            )
+        if not local_evidence_sufficient and not missing_evidence:
+            raise ValueError(f"{req_id} must include missing_evidence when local evidence is insufficient.")
+
+        research_reopen_required = _coerce_bool(raw_row.get("research_reopen_required")) or not local_evidence_sufficient
+        research_query_delta = _collapse_whitespace(raw_row.get("research_query_delta") or "")
+        if research_reopen_required and not research_query_delta:
+            raise ValueError(f"{req_id} must include research_query_delta when research_reopen_required=true.")
+        research_status = _collapse_whitespace(raw_row.get("research_status") or "")
+        if not research_status:
+            research_status = "pending_external_research" if research_reopen_required else "local_sufficient"
+
+        normalized_rows.append(
+            {
+                "req_id": req_id,
+                "requirement": expected_by_id[req_id]["requirement"],
+                "requirement_kind": requirement_kind,
+                "planner_decisions": planner_decisions,
+                "local_evidence": local_evidence,
+                "local_evidence_sufficient": local_evidence_sufficient,
+                "missing_evidence": missing_evidence,
+                "research_reopen_required": research_reopen_required,
+                "research_query_delta": research_query_delta,
+                "research_status": research_status,
+                "decision_rationale": decision_rationale,
+                "source_refs": _normalize_text_list(raw_row.get("source_refs")),
+                "failure_refs": _normalize_text_list(raw_row.get("failure_refs")),
+            }
+        )
+
+    expected_ids = [item["req_id"] for item in expected_requirements]
+    missing_ids = [req_id for req_id in expected_ids if req_id not in seen_ids]
+    if missing_ids:
+        raise ValueError(
+            "requirement_traceability_matrix is missing closeout-required rows: "
+            + ", ".join(missing_ids)
+        )
+    return normalized_rows
+
+
+def requirement_traceability_rows_requiring_research(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in rows
+        if _coerce_bool(row.get("research_reopen_required"))
+    ]
+
+
+def source_refs_from_backing_sources(sources: Any) -> list[str]:
+    refs: list[str] = []
+    if not isinstance(sources, list):
+        return refs
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        title = _collapse_whitespace(item.get("title") or "")
+        url = _collapse_whitespace(item.get("url") or "")
+        ref = " | ".join(part for part in (title, url) if part)
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def mark_requirement_traceability_research_status(
+    rows: list[dict[str, Any]],
+    *,
+    research_status: str,
+    source_refs: Any = None,
+    failure_details: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    normalized_status = _collapse_whitespace(research_status or "")
+    source_ref_list = _normalize_text_list(source_refs)
+    failure_ref = ""
+    if failure_details:
+        stage = _collapse_whitespace(failure_details.get("failure_stage") or "")
+        exception_type = _collapse_whitespace(failure_details.get("exception_type") or "")
+        research_url = _collapse_whitespace(failure_details.get("research_url") or "")
+        failure_ref = " | ".join(
+            part
+            for part in (
+                f"stage={stage}" if stage else "",
+                f"exception={exception_type}" if exception_type else "",
+                research_url,
+            )
+            if part
+        )
+    updated_rows: list[dict[str, Any]] = []
+    for row in rows:
+        updated = dict(row)
+        if _coerce_bool(updated.get("research_reopen_required")):
+            updated["research_status"] = normalized_status or updated.get("research_status") or ""
+            if source_ref_list:
+                updated["source_refs"] = source_ref_list
+            if failure_ref:
+                updated["failure_refs"] = [failure_ref]
+        updated_rows.append(updated)
+    return updated_rows
 
 
 def _subject_definition_from_payload(raw_payload: dict[str, Any]) -> dict[str, Any]:
@@ -222,12 +507,51 @@ def normalize_research_decision(
 ) -> dict[str, Any]:
     if not isinstance(raw_payload, dict):
         raise ValueError("Research decision response must be a JSON object.")
+    decision_payload = dict(raw_payload)
     reason_code = str(raw_payload.get("reason_code") or "").strip()
     if reason_code not in MODEL_RESEARCH_SIGNAL_REASON_CODES:
         raise ValueError(f"Unsupported research reason_code: {reason_code or 'empty'}")
-    needed = bool(raw_payload.get("needed"))
+    needed = _coerce_bool(raw_payload.get("needed"))
+    requirement_traceability_matrix = normalize_requirement_traceability_matrix(
+        raw_payload.get(REQUIREMENT_TRACEABILITY_MATRIX_FIELD),
+        request_record=request_record,
+    )
+    rows_requiring_research = requirement_traceability_rows_requiring_research(requirement_traceability_matrix)
+    reopened_from_reason_code = ""
+    if rows_requiring_research and (not needed or reason_code != RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING):
+        reopened_from_reason_code = reason_code
+        reason_code = RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING
+        needed = True
+    if rows_requiring_research and reason_code == RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING:
+        synthesized_subject, synthesized_query, synthesized_source_requirements = _synthesize_research_subject_from_rtm(
+            rows_requiring_research
+        )
+        if not _collapse_whitespace(decision_payload.get("subject") or ""):
+            decision_payload["subject"] = synthesized_subject
+        if not _collapse_whitespace(decision_payload.get("research_query") or ""):
+            decision_payload["research_query"] = synthesized_query
+        raw_definition = (
+            dict(decision_payload.get("research_subject_definition") or {})
+            if isinstance(decision_payload.get("research_subject_definition"), dict)
+            else {}
+        )
+        synthesized_definition_defaults = {
+            "planning_decision": "planner closeout requirement coverage and sprint backlog/todo traceability",
+            "knowledge_gap": "some closeout-required REQ-* rows lack sufficient local evidence",
+            "external_boundary": "Deep Research may provide current external grounding for unresolved requirement evidence gaps",
+            "planner_impact": "planner should keep unresolved RTM rows visible in backlog, todos, acceptance criteria, and closeout evidence",
+            "candidate_subject": decision_payload["subject"],
+            "research_query": decision_payload["research_query"],
+        }
+        for field, default_value in synthesized_definition_defaults.items():
+            if not _collapse_whitespace(raw_definition.get(field) or ""):
+                raw_definition[field] = default_value
+        if not _normalize_text_list(raw_definition.get("source_requirements")):
+            raw_definition["source_requirements"] = synthesized_source_requirements
+        decision_payload["research_subject_definition"] = raw_definition
+
     subject_definition = normalize_research_subject_definition(
-        raw_payload,
+        decision_payload,
         reason_code=reason_code,
         needed=needed,
         request_record=request_record,
@@ -255,15 +579,25 @@ def normalize_research_decision(
             raise ValueError("Research decision used not_needed_no_subject with needed=true.")
         subject = ""
         research_query = ""
+    if not needed and any(
+        not _coerce_bool(row.get("local_evidence_sufficient")) or _coerce_bool(row.get("research_reopen_required"))
+        for row in requirement_traceability_matrix
+    ):
+        raise ValueError("Research decision used needed=false with unresolved requirement_traceability_matrix rows.")
+
+    signal: dict[str, Any] = {
+        "needed": needed,
+        "subject": subject,
+        "research_query": research_query,
+        "reason_code": reason_code,
+    }
+    if reopened_from_reason_code:
+        signal["reopened_from_reason_code"] = reopened_from_reason_code
 
     return {
-        "signal": {
-            "needed": needed,
-            "subject": subject,
-            "research_query": research_query,
-            "reason_code": reason_code,
-        },
+        "signal": signal,
         "research_subject_definition": subject_definition,
+        REQUIREMENT_TRACEABILITY_MATRIX_FIELD: requirement_traceability_matrix,
         "planner_guidance": planner_guidance,
     }
 
@@ -276,11 +610,12 @@ def build_research_decision_prompt(
 ) -> str:
     params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
     public_targeted = str(params.get("user_requested_role") or "").strip().lower() == "research"
+    closeout_requirements = closeout_original_requirements_from_request(request_record)
     return "\n".join(
         [
             "You are the research prepass decision gate inside teams_runtime.",
             "Decide whether planner needs external grounding beyond the current local request, repo context, and sprint artifacts.",
-            "You must first define the research subject, then choose the reason_code.",
+            "You must first build the requirement_traceability_matrix for structured closeout-required original_requirements, then define the research subject, then choose the reason_code.",
             "Do not use keyword heuristics. Read the provided request context and make the judgment.",
             "Return strict JSON only with this exact shape:",
             "{",
@@ -288,6 +623,21 @@ def build_research_decision_prompt(
             '  "subject": "",',
             '  "research_query": "",',
             '  "reason_code": "needed_external_grounding|not_needed_local_evidence|not_needed_no_subject",',
+            '  "requirement_traceability_matrix": [',
+            "    {",
+            '      "req_id": "REQ-001",',
+            '      "requirement": "exact normalized requirement text",',
+            '      "requirement_kind": "external_fact|repo_state|implementation_evidence|local_policy|preference|mixed",',
+            '      "planner_decisions": ["planner decision this requirement affects"],',
+            '      "local_evidence": [{"type":"artifact|runtime_observation|comment|opinion|assumption","source":"","summary":""}],',
+            '      "local_evidence_sufficient": false,',
+            '      "missing_evidence": ["explicit missing evidence"],',
+            '      "research_reopen_required": true,',
+            '      "research_query_delta": "specific query delta needed for this REQ-*",',
+            '      "research_status": "pending_external_research|local_sufficient",',
+            '      "decision_rationale": "why this row is sufficient or must reopen research"',
+            "    }",
+            "  ],",
             '  "research_subject_definition": {',
             '    "planning_decision": "",',
             '    "knowledge_gap": "",',
@@ -311,6 +661,15 @@ def build_research_decision_prompt(
             "- `external_boundary`: why outside/current/domain knowledge is needed instead of repo inspection.",
             "- `planner_impact`: how answers should affect milestone wording, spec boundaries, acceptance criteria, dependencies, priorities, or backlog slicing.",
             "- If `original_requirements` / `REQ-*` records exist, cite affected IDs in planner_guidance and do not recommend weakened scope without user-approved variance.",
+            "- Build exactly one requirement_traceability_matrix row for each structured closeout-required `params.original_requirements` / sprint `original_requirements` item. Do not infer rows from free-text REQ-* regex matches.",
+            "- Do not emit missing, duplicate, or unknown `REQ-*` rows. If no structured closeout-required original_requirements exist, emit an empty matrix.",
+            "- Every RTM row needs planner_decisions, decision_rationale, and either concrete local_evidence or explicit missing_evidence.",
+            "- Allowed requirement_kind values: external_fact, repo_state, implementation_evidence, local_policy, preference, mixed.",
+            "- Allowed local_evidence.type values: artifact, runtime_observation, comment, opinion, assumption.",
+            "- comment/opinion evidence can make a row locally sufficient only for local_policy or preference requirements.",
+            "- assumption evidence never makes factual, repo-state, mixed, or implementation rows locally sufficient.",
+            "- Missing local evidence must set local_evidence_sufficient=false, research_reopen_required=true, research_status=pending_external_research, and a concrete research_query_delta.",
+            "- `needed=false` is valid only when every RTM row has local_evidence_sufficient=true and research_reopen_required=false.",
             "- `candidate_subject`: the smallest researchable external subject; it must be narrower than the whole milestone and must not copy the user request.",
             "- `research_query`: the exact query/instruction for deep research.",
             "- `source_requirements`: official/primary/recency/comparison/source-diversity needs for deep research.",
@@ -321,6 +680,12 @@ def build_research_decision_prompt(
             "- `planner_guidance` must be 1-2 short Korean sentences.",
             "",
             f"Public research role explicitly targeted: {json.dumps(public_targeted)}",
+            "Closeout-required original_requirements for RTM:",
+            *(
+                [f"- {item['req_id']}: {item['requirement']}" for item in closeout_requirements]
+                if closeout_requirements
+                else ["- none"]
+            ),
             "Local sources already checked:",
             *[f"- {item}" for item in local_sources_checked],
             "",
@@ -370,10 +735,12 @@ def build_research_prompt(
     *,
     signal: dict[str, Any],
     subject_definition: dict[str, Any] | None = None,
+    requirement_traceability_matrix: list[dict[str, Any]] | None = None,
     local_sources_checked: list[str],
     artifact_hint: str,
 ) -> str:
     definition = dict(subject_definition or {})
+    rtm_reopen_rows = requirement_traceability_rows_requiring_research(requirement_traceability_matrix or [])
     prompt_payload = _omit_empty_fields(
         {
             "request": {
@@ -387,6 +754,17 @@ def build_research_prompt(
                 "planner_decision": _collapse_whitespace(definition.get("planning_decision") or ""),
                 "knowledge_gap": _collapse_whitespace(definition.get("knowledge_gap") or ""),
                 "planner_impact": _collapse_whitespace(definition.get("planner_impact") or ""),
+                "requirement_evidence_gaps": [
+                    {
+                        "req_id": row.get("req_id") or "",
+                        "requirement": row.get("requirement") or "",
+                        "requirement_kind": row.get("requirement_kind") or "",
+                        "planner_decisions": _normalize_text_list(row.get("planner_decisions")),
+                        "missing_evidence": _normalize_text_list(row.get("missing_evidence")),
+                        "research_query_delta": _collapse_whitespace(row.get("research_query_delta") or ""),
+                    }
+                    for row in rtm_reopen_rows
+                ],
             },
             "sources": {
                 "requirements": _normalize_text_list(definition.get("source_requirements")),
@@ -421,6 +799,7 @@ def build_research_prompt(
                 "rules": [
                     "Focus only on the external research subject in this request.",
                     "When original requirements or REQ-* IDs are present, cite the affected IDs in Planner Guidance, hints, and open questions.",
+                    "When requirement_evidence_gaps are present, address each gap by req_id and explain which source-backed finding reduces planner risk.",
                     "If a requirement appears impossible or unsafe, recommend planner recovery or user-approved variance instead of narrowing the requirement yourself.",
                     "Planner Guidance must explain how findings affect milestone framing, spec boundaries, or todo decomposition.",
                     "Backing Reasoning must connect sources to planning recommendations.",
@@ -596,17 +975,23 @@ __all__ = [
     "RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING",
     "RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE",
     "RESEARCH_REASON_CODE_NOT_NEEDED_NO_SUBJECT",
+    "REQUIREMENT_TRACEABILITY_MATRIX_FIELD",
+    "closeout_original_requirements_from_request",
     "build_research_decision_prompt",
     "build_research_prompt",
     "default_research_planner_guidance",
     "default_research_signal",
+    "mark_requirement_traceability_research_status",
     "normalize_research_decision",
+    "normalize_requirement_traceability_matrix",
     "normalize_research_subject_definition",
     "normalize_research_report_list",
     "parse_backing_sources",
     "parse_research_report",
+    "requirement_traceability_rows_requiring_research",
     "research_reason_code_summary",
     "research_skip_summary",
+    "source_refs_from_backing_sources",
     "valid_backing_sources",
     "validate_source_backed_research_report",
 ]

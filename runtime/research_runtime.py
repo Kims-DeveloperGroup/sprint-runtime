@@ -28,9 +28,11 @@ from teams_runtime.workflows.roles.research import (
     build_research_prompt,
     default_research_planner_guidance,
     default_research_signal,
+    mark_requirement_traceability_research_status,
     normalize_research_decision,
     parse_research_report,
     research_skip_summary,
+    source_refs_from_backing_sources,
     validate_source_backed_research_report,
 )
 
@@ -52,6 +54,22 @@ def _empty_research_subject_definition() -> dict[str, Any]:
 def _resolve_deep_research_mode(mode: str | None) -> str | list[str] | None:
     normalized = str(mode or "").strip()
     return normalized or None
+
+
+def _is_sprint_research_prepass_request(
+    envelope: MessageEnvelope,
+    request_record: RequestRecord,
+) -> bool:
+    params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
+    envelope_params = dict(envelope.params or {})
+    workflow = dict(params.get("workflow") or {}) if isinstance(params.get("workflow"), dict) else {}
+    return (
+        (
+            str(params.get("_teams_kind") or "").strip() == "sprint_internal"
+            or str(envelope_params.get("_origin") or "").strip() == "sprint_internal"
+        )
+        and str(workflow.get("step") or "").strip().lower() == "research_initial"
+    )
 
 
 class ResearchAgentRuntime(RoleAgentRuntime):
@@ -112,11 +130,14 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         "proposals": {
                             "research_signal": signal,
                             "research_subject_definition": subject_definition,
+                            "requirement_traceability_matrix": [],
                             "research_report": {
                                 "report_artifact": "",
                                 "headline": "research 필요 판단 실패",
                                 "planner_guidance": planner_guidance,
                                 "research_subject_definition": subject_definition,
+                                "requirement_traceability_matrix": [],
+                                "research_execution_status": "decision_failed",
                                 "backing_sources": [],
                                 **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                                 "open_questions": [],
@@ -136,6 +157,11 @@ class ResearchAgentRuntime(RoleAgentRuntime):
 
             signal = dict(decision.get("signal") or {})
             subject_definition = dict(decision.get("research_subject_definition") or {})
+            requirement_traceability_matrix = [
+                dict(item)
+                for item in (decision.get("requirement_traceability_matrix") or [])
+                if isinstance(item, dict)
+            ]
             planner_guidance = str(decision.get("planner_guidance") or "").strip() or default_research_planner_guidance(
                 signal,
                 local_sources_checked=local_sources_checked,
@@ -149,6 +175,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 "proposals": {
                     "research_signal": signal,
                     "research_subject_definition": subject_definition,
+                    "requirement_traceability_matrix": requirement_traceability_matrix,
                 },
                 "artifacts": [],
                 "error": "",
@@ -161,6 +188,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     request_record,
                     signal=signal,
                     subject_definition=subject_definition,
+                    requirement_traceability_matrix=requirement_traceability_matrix,
                     local_sources_checked=local_sources_checked,
                     artifact_hint=artifact_hint,
                 )
@@ -216,6 +244,12 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         signal,
                         parsed_report,
                     )
+                    requirement_traceability_matrix = mark_requirement_traceability_research_status(
+                        requirement_traceability_matrix,
+                        research_status="completed",
+                        source_refs=source_refs_from_backing_sources(parsed_report["backing_sources"]),
+                    )
+                    payload["proposals"]["requirement_traceability_matrix"] = requirement_traceability_matrix
                     payload["summary"] = (
                         parsed_report["headline"]
                         or "외부 research를 수행하고 planner용 source-backed guidance를 정리했습니다."
@@ -226,6 +260,8 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         "headline": parsed_report["headline"],
                         "planner_guidance": parsed_report["planner_guidance"],
                         "research_subject_definition": subject_definition,
+                        "requirement_traceability_matrix": requirement_traceability_matrix,
+                        "research_execution_status": "completed",
                         "milestone_refinement_hints": parsed_report["milestone_refinement_hints"],
                         "problem_framing_hints": parsed_report["problem_framing_hints"],
                         "spec_implications": parsed_report["spec_implications"],
@@ -258,9 +294,28 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     if parsed_backing_sources:
                         failure_details["parsed_backing_sources"] = parsed_backing_sources[:3]
 
-                    payload["status"] = "failed"
-                    payload["summary"] = "research prepass를 완료하지 못했습니다."
-                    payload["error"] = str(exc) or "research execution failed"
+                    sprint_prepass_failure_handoff = _is_sprint_research_prepass_request(envelope, request_record)
+                    requirement_traceability_matrix = mark_requirement_traceability_research_status(
+                        requirement_traceability_matrix,
+                        research_status="failed",
+                        failure_details=failure_details,
+                    )
+                    payload["proposals"]["requirement_traceability_matrix"] = requirement_traceability_matrix
+                    if sprint_prepass_failure_handoff:
+                        degraded_guidance = (
+                            f"{planner_guidance} "
+                            "Deep Research 실행은 실패했지만 sprint research prepass는 planner로 진행합니다. "
+                            "planner는 failed RTM rows의 missing_evidence를 unresolved research risk로 유지하고 backlog/todo/acceptance criteria에 반영하세요."
+                        ).strip()
+                        payload["status"] = "completed"
+                        payload["summary"] = "Deep Research 실패를 failed RTM rows로 남기고 planner handoff를 계속합니다."
+                        payload["error"] = ""
+                        report_planner_guidance = degraded_guidance
+                    else:
+                        payload["status"] = "failed"
+                        payload["summary"] = "research prepass를 완료하지 못했습니다."
+                        payload["error"] = str(exc) or "research execution failed"
+                        report_planner_guidance = planner_guidance
                     payload["artifacts"] = [artifact_hint] if artifact_written else []
                     payload["proposals"]["research_report"] = {
                         "report_artifact": artifact_hint if artifact_written else "",
@@ -270,8 +325,10 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                             else ""
                         ),
                         "headline": "external research 실행 실패",
-                        "planner_guidance": planner_guidance,
+                        "planner_guidance": report_planner_guidance,
                         "research_subject_definition": subject_definition,
+                        "requirement_traceability_matrix": requirement_traceability_matrix,
+                        "research_execution_status": "failed",
                         "backing_sources": [],
                         **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                         "open_questions": [],
@@ -286,6 +343,8 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     "headline": "외부 research 불필요",
                     "planner_guidance": planner_guidance,
                     "research_subject_definition": subject_definition,
+                    "requirement_traceability_matrix": requirement_traceability_matrix,
+                    "research_execution_status": "not_needed",
                     "backing_sources": [],
                     **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
                     "open_questions": [],

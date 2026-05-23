@@ -103,6 +103,7 @@ class TeamsRuntimePlannerRoleTests(unittest.TestCase):
         self.assertIn("proposals.workflow_transition", rules)
         self.assertIn("sprint_closeout_report", rules)
         self.assertIn("Requirement Traceability Matrix", rules)
+        self.assertIn("research_prepass.requirement_traceability_matrix", rules)
         self.assertIn("REQ-*", rules)
         self.assertIn("supporting_todo: true", rules)
         self.assertIn("./shared_workspace", rules)

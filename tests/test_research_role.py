@@ -12,12 +12,50 @@ from teams_runtime.workflows.roles.research import (
     default_research_planner_guidance,
     default_research_signal,
     normalize_research_decision,
+    normalize_requirement_traceability_matrix,
     normalize_research_subject_definition,
     parse_research_report,
     research_reason_code_summary,
     research_skip_summary,
 )
 from teams_runtime.shared.models import MessageEnvelope
+
+
+def _request_with_original_requirements(*requirements: dict[str, object]) -> dict[str, object]:
+    return {"params": {"original_requirements": list(requirements)}}
+
+
+def _rtm_row(
+    *,
+    req_id: str = "REQ-001",
+    kind: str = "repo_state",
+    evidence_type: str = "artifact",
+    sufficient: bool = True,
+    missing: list[str] | None = None,
+    reopen: bool | None = None,
+) -> dict[str, object]:
+    row = {
+        "req_id": req_id,
+        "requirement": "Keep provider pricing sourced.",
+        "requirement_kind": kind,
+        "planner_decisions": ["provider cost acceptance criteria"],
+        "local_evidence": [
+            {
+                "type": evidence_type,
+                "source": "shared_workspace/sprints/current/spec.md",
+                "summary": "Spec already captures the policy.",
+            }
+        ],
+        "local_evidence_sufficient": sufficient,
+        "missing_evidence": missing or [],
+        "research_reopen_required": (not sufficient) if reopen is None else reopen,
+        "research_query_delta": "Find current official provider pricing evidence." if (not sufficient or reopen) else "",
+        "research_status": "pending_external_research" if (not sufficient or reopen) else "local_sufficient",
+        "decision_rationale": "Planner needs this requirement to set acceptance criteria.",
+    }
+    if not row["local_evidence"]:
+        row.pop("local_evidence")
+    return row
 
 
 class TeamsRuntimeResearchRoleTests(unittest.TestCase):
@@ -85,6 +123,109 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
             "provider cost assumption",
         )
 
+    def test_normalize_research_decision_accepts_needed_false_when_all_rtm_rows_are_sufficient(self):
+        payload = normalize_research_decision(
+            {
+                "needed": False,
+                "subject": "Provider pricing acceptance criteria",
+                "research_query": "Review local provider pricing acceptance criteria.",
+                "reason_code": RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE,
+                "requirement_traceability_matrix": [_rtm_row()],
+                "research_subject_definition": {
+                    "planning_decision": "provider cost acceptance criteria",
+                    "knowledge_gap": "local evidence already resolves the requirement",
+                    "external_boundary": "",
+                    "planner_impact": "planner can proceed from local spec evidence",
+                    "candidate_subject": "Provider pricing acceptance criteria",
+                    "research_query": "Review local provider pricing acceptance criteria.",
+                    "source_requirements": [],
+                    "rejected_subjects": ["external pricing because local policy is sufficient"],
+                    "no_subject_rationale": "",
+                },
+                "planner_guidance": "planner는 local RTM evidence로 진행하면 됩니다.",
+            },
+            request_record=_request_with_original_requirements(
+                {"id": "REQ-001", "text": "Keep provider pricing sourced."}
+            ),
+        )
+
+        self.assertFalse(payload["signal"]["needed"])
+        self.assertEqual(payload["signal"]["reason_code"], RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE)
+        self.assertEqual(payload["requirement_traceability_matrix"][0]["research_status"], "local_sufficient")
+
+    def test_normalize_research_decision_promotes_missing_rtm_evidence_to_external_research(self):
+        payload = normalize_research_decision(
+            {
+                "needed": False,
+                "subject": "Provider pricing acceptance criteria",
+                "research_query": "Review local provider pricing acceptance criteria.",
+                "reason_code": RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE,
+                "requirement_traceability_matrix": [
+                    _rtm_row(sufficient=False, missing=["No current source-backed pricing evidence exists locally."])
+                ],
+                "research_subject_definition": {
+                    "planning_decision": "provider cost acceptance criteria",
+                    "knowledge_gap": "current source-backed provider pricing",
+                    "external_boundary": "",
+                    "planner_impact": "planner should keep cost assumptions unresolved until sourced",
+                    "candidate_subject": "Provider pricing acceptance criteria",
+                    "research_query": "Review local provider pricing acceptance criteria.",
+                    "source_requirements": [],
+                    "rejected_subjects": [],
+                    "no_subject_rationale": "",
+                },
+                "planner_guidance": "planner는 source-backed 가격 근거를 기다려야 합니다.",
+            },
+            request_record=_request_with_original_requirements(
+                {"id": "REQ-001", "text": "Keep provider pricing sourced."}
+            ),
+        )
+
+        self.assertTrue(payload["signal"]["needed"])
+        self.assertEqual(payload["signal"]["reason_code"], RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING)
+        self.assertEqual(payload["signal"]["reopened_from_reason_code"], RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE)
+        self.assertTrue(payload["requirement_traceability_matrix"][0]["research_reopen_required"])
+
+    def test_normalize_requirement_traceability_matrix_rejects_missing_duplicate_and_unknown_rows(self):
+        request_record = _request_with_original_requirements(
+            {"id": "REQ-001", "text": "Keep provider pricing sourced."},
+            {"id": "REQ-002", "text": "Show source-backed closeout evidence."},
+        )
+
+        with self.assertRaisesRegex(ValueError, "missing"):
+            normalize_requirement_traceability_matrix([_rtm_row(req_id="REQ-001")], request_record=request_record)
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            normalize_requirement_traceability_matrix(
+                [_rtm_row(req_id="REQ-001"), _rtm_row(req_id="REQ-001")],
+                request_record=request_record,
+            )
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            normalize_requirement_traceability_matrix([_rtm_row(req_id="REQ-999")], request_record=request_record)
+
+    def test_local_evidence_sufficiency_rules_follow_requirement_kind(self):
+        preference_request = _request_with_original_requirements(
+            {"id": "REQ-001", "text": "Prefer compact planner handoffs."}
+        )
+        normalized = normalize_requirement_traceability_matrix(
+            [_rtm_row(kind="preference", evidence_type="opinion")],
+            request_record=preference_request,
+        )
+        self.assertTrue(normalized[0]["local_evidence_sufficient"])
+
+        factual_request = _request_with_original_requirements(
+            {"id": "REQ-001", "text": "Use current provider pricing."}
+        )
+        with self.assertRaisesRegex(ValueError, "cannot satisfy"):
+            normalize_requirement_traceability_matrix(
+                [_rtm_row(kind="external_fact", evidence_type="opinion")],
+                request_record=factual_request,
+            )
+        with self.assertRaisesRegex(ValueError, "cannot satisfy"):
+            normalize_requirement_traceability_matrix(
+                [_rtm_row(kind="implementation_evidence", evidence_type="assumption")],
+                request_record=factual_request,
+            )
+
     def test_normalize_research_subject_definition_rejects_copied_milestone(self):
         with self.assertRaisesRegex(ValueError, "must not simply copy"):
             normalize_research_subject_definition(
@@ -142,10 +283,12 @@ class TeamsRuntimeResearchRoleTests(unittest.TestCase):
         self.assertIn("not_needed_local_evidence", prompt)
         self.assertIn("not_needed_no_subject", prompt)
         self.assertIn("research_subject_definition", prompt)
+        self.assertIn("requirement_traceability_matrix", prompt)
         self.assertIn("planning_decision", prompt)
         self.assertIn("external_boundary", prompt)
         self.assertIn("REQ-*", prompt)
         self.assertIn("original_requirements", prompt)
+        self.assertIn("Closeout-required original_requirements for RTM:", prompt)
         self.assertIn("Local sources already checked:", prompt)
 
     def test_build_research_prompt_uses_external_provider_payload(self):

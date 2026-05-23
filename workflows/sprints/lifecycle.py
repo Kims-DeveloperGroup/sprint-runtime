@@ -66,6 +66,10 @@ def _string_list(values: Any) -> list[str]:
     return [str(item).strip() for item in (values or []) if str(item).strip()]
 
 
+def _dict_list(values: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in (values or []) if isinstance(item, dict)]
+
+
 def utc_now() -> datetime:
     # Kept for compatibility with older call sites; runtime timestamps are stored in KST.
     return runtime_now()
@@ -1630,6 +1634,39 @@ def sprint_research_prepass_body_lines(sprint_state: dict[str, Any] | None) -> l
             title = str(source.get("title") or "").strip()
             url = str(source.get("url") or "").strip()
             lines.append(f"  - {title} | {url}".rstrip(" |"))
+    rtm_rows = _dict_list(prepass.get("requirement_traceability_matrix"))
+    if rtm_rows:
+        lines.append("- requirement_traceability_matrix:")
+        for row in rtm_rows:
+            req_id = str(row.get("req_id") or row.get("id") or "").strip()
+            if not req_id:
+                continue
+            lines.append(f"  - req_id: {req_id}")
+            requirement = str(row.get("requirement") or "").strip()
+            if requirement:
+                lines.append(f"    requirement: {requirement}")
+            requirement_kind = str(row.get("requirement_kind") or "").strip()
+            if requirement_kind:
+                lines.append(f"    requirement_kind: {requirement_kind}")
+            lines.append(f"    local_evidence_sufficient: {str(bool(row.get('local_evidence_sufficient'))).lower()}")
+            lines.append(f"    research_reopen_required: {str(bool(row.get('research_reopen_required'))).lower()}")
+            lines.append(f"    research_status: {str(row.get('research_status') or '').strip()}")
+            planner_decisions = _string_list(row.get("planner_decisions"))
+            if planner_decisions:
+                lines.append("    planner_decisions:")
+                lines.extend(f"      - {item}" for item in planner_decisions[:4])
+            missing_evidence = _string_list(row.get("missing_evidence"))
+            if missing_evidence:
+                lines.append("    missing_evidence:")
+                lines.extend(f"      - {item}" for item in missing_evidence[:4])
+            source_refs = _string_list(row.get("source_refs"))
+            if source_refs:
+                lines.append("    source_refs:")
+                lines.extend(f"      - {item}" for item in source_refs[:4])
+            failure_refs = _string_list(row.get("failure_refs"))
+            if failure_refs:
+                lines.append("    failure_refs:")
+                lines.extend(f"      - {item}" for item in failure_refs[:4])
     section_labels = {
         "milestone_refinement_hints": "milestone_refinement_hints",
         "problem_framing_hints": "problem_framing_hints",
@@ -2562,6 +2599,10 @@ def sync_internal_sprint_artifacts_from_role_report(
             for item in (research_report.get("backing_sources") or [])
             if isinstance(item, dict)
         ]
+        requirement_traceability_matrix = _dict_list(
+            research_report.get("requirement_traceability_matrix")
+            or proposals.get("requirement_traceability_matrix")
+        )
         prepass = {
             "request_id": str(request_record.get("request_id") or result.get("request_id") or "").strip(),
             "status": status,
@@ -2573,9 +2614,13 @@ def sync_internal_sprint_artifacts_from_role_report(
             "headline": str(research_report.get("headline") or result.get("summary") or "").strip(),
             "planner_guidance": str(research_report.get("planner_guidance") or "").strip(),
             "backing_sources": backing_sources,
+            "requirement_traceability_matrix": requirement_traceability_matrix,
+            "research_execution_status": str(research_report.get("research_execution_status") or "").strip(),
             "artifacts": artifacts,
             "completed_at": utc_now_iso(),
         }
+        if isinstance(research_report.get("failure_details"), dict):
+            prepass["failure_details"] = dict(research_report.get("failure_details") or {})
         for field in RESEARCH_REPORT_LIST_FIELDS:
             prepass[field] = _string_list(research_report.get(field))
         sprint_state["research_prepass"] = prepass
@@ -2594,6 +2639,7 @@ def sync_internal_sprint_artifacts_from_role_report(
                 "request_id": prepass["request_id"],
                 "artifacts": artifacts,
                 "backing_source_count": len(backing_sources),
+                "research_execution_status": prepass["research_execution_status"],
             },
         )
         return prepass

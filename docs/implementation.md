@@ -459,7 +459,8 @@ At sprint start:
 - sprint state is created
 - immutable kickoff source fields plus `kickoff.md` are persisted from the sprint-start request before research and planner derive execution framing
 - the first initial-phase request is delegated to `research` as `research_initial`, including manual `sprint start` flows
-- the research prepass defines the research subject, sources or local-evidence/no-subject rationale, and planning hints before planner refines the milestone
+- the research prepass builds `requirement_traceability_matrix` rows for every closeout-required `REQ-*`, defines the research subject, sources or local-evidence/no-subject rationale, and planning hints before planner refines the milestone
+- missing local RTM evidence attempts Deep Research for the affected rows; if Deep Research fails during sprint prepass, research returns a completed degraded handoff with `research_execution_status=failed`, failed RTM rows, empty `backing_sources`, and planner guidance to carry unresolved risk forward
 - planner runs the pre-confirmation initial phase:
   - `milestone_refinement`
   - `artifact_sync`

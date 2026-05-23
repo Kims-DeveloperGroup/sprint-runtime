@@ -165,7 +165,8 @@ Normal change and enhancement requests are backlog-first.
 - orchestrator verifies planner `backlog_writes` receipts against persisted backlog state and must not re-persist planner backlog proposals on behalf of planner
 - an internal non-public sourcer agent can independently propose new backlog candidates from workspace/runtime findings, but planner review is required before backlog persistence
 - when a sprint starts, the first initial-phase delegation must be `research` at workflow step `research_initial`, before planner milestone refinement
-- the research prepass must define the research subject, provide source-backed findings or local-evidence/no-subject rationale, and give planner hints/backing reasons for refining the raw milestone
+- the research prepass must evaluate every closeout-required `REQ-*` from structured `original_requirements` in a `requirement_traceability_matrix`, then define the research subject, provide source-backed findings or local-evidence/no-subject rationale, and give planner hints/backing reasons for refining the raw milestone
+- if any RTM row lacks sufficient local evidence, research attempts Deep Research for those rows before planner runs; if Deep Research fails during sprint prepass, the prepass is still persisted as completed with `research_execution_status=failed`, failed RTM rows, empty `backing_sources`, and planner guidance to proceed with unresolved research risk visible
 - planner must then draft or revise `proposals.initial_implementation_plan` from the refined milestone, kickoff requirements, research report, and `spec.md`
 - orchestrator must send the implementation plan through the requester route, mirror it to Discord reporting, and wait for user confirmation before backlog/TODO definition
 - while confirmation is pending, parser/orchestrator must distinguish `plan_confirm` from `plan_change_request`; confirmation resumes startup, and change requests are stored in `initial_plan_confirmation.change_requests` for planner revision
@@ -217,8 +218,8 @@ Workflow rules:
   - `workflows/roles/developer.py` owns developer-specific implementation-step and revision-step prompt rules
   - `workflows/roles/orchestrator.py` owns orchestrator-specific intake/control-action prompt rules
   - `workflows/roles/planner.py` owns planner-specific prompt rules and planner proposal normalization
-  - `workflows/roles/research.py` owns research prepass decision prompts, research decision normalization, and external-research report parsing
-  - `runtime/research_runtime.py` owns session-scoped research execution and external deep-research orchestration
+  - `workflows/roles/research.py` owns research prepass decision prompts, RTM validation, research decision normalization, and external-research report parsing
+  - `runtime/research_runtime.py` owns session-scoped research execution, RTM status handoff, and external deep-research orchestration
   - `workflows/roles/qa.py` owns QA-specific validation-step prompt rules and reopen guidance
   - `workflows/roles/__init__.py` owns runtime-side registration of role prompt modules and extra response fields
   - `runtime/base_runtime.py` owns the shared role runtime contract, generic prompt framing, sandbox retry rules, and role payload normalization

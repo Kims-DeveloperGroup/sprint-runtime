@@ -279,6 +279,20 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                             "url": "https://example.com/workflow",
                         }
                     ],
+                    "requirement_traceability_matrix": [
+                        {
+                            "req_id": "REQ-001",
+                            "requirement": "Keep workflow evidence source-backed.",
+                            "requirement_kind": "external_fact",
+                            "planner_decisions": ["milestone framing"],
+                            "local_evidence_sufficient": False,
+                            "missing_evidence": ["No local source-backed workflow evidence."],
+                            "research_reopen_required": True,
+                            "research_status": "failed",
+                            "source_refs": [],
+                            "failure_refs": ["stage=run_deep_research | exception=RuntimeError"],
+                        }
+                    ],
                 }
             }
         )
@@ -290,6 +304,11 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertIn("todo_definition_hints", body)
         self.assertIn("backing_reasoning", body)
         self.assertIn("Workflow Source | https://example.com/workflow", body)
+        self.assertIn("requirement_traceability_matrix", body)
+        self.assertIn("req_id: REQ-001", body)
+        self.assertIn("research_status: failed", body)
+        self.assertIn("No local source-backed workflow evidence.", body)
+        self.assertIn("stage=run_deep_research", body)
 
     def test_initial_phase_step_metadata_is_stable(self) -> None:
         self.assertEqual(

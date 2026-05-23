@@ -182,6 +182,206 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertIn("research_subject_definition:", next_planning_request["body"])
                 self.assertIn(research_artifact, next_planning_request["artifacts"])
 
+    def test_degraded_research_prepass_rtm_persists_into_next_planner_request(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="provider pricing evidence handoff",
+                    trigger="test",
+                    kickoff_requirements=[
+                        "Use current provider pricing.",
+                        "Keep planner handoff risk visible.",
+                    ],
+                )
+                sprint_state["original_requirements"] = [
+                    {
+                        "id": "REQ-002",
+                        "text": "Use current provider pricing.",
+                        "source": "kickoff_requirements",
+                        "must": True,
+                        "closeout_required": True,
+                    },
+                    {
+                        "id": "REQ-004",
+                        "text": "Keep planner handoff risk visible.",
+                        "source": "kickoff_requirements",
+                        "must": True,
+                        "closeout_required": True,
+                    },
+                ]
+                service._save_sprint_state(sprint_state)
+                request_record = service._build_sprint_planning_request_record(
+                    sprint_state,
+                    phase="initial",
+                    iteration=1,
+                    step="milestone_refinement",
+                )
+                rtm = [
+                    {
+                        "req_id": "REQ-002",
+                        "requirement": "Use current provider pricing.",
+                        "requirement_kind": "external_fact",
+                        "planner_decisions": ["provider cost acceptance criteria"],
+                        "local_evidence": [],
+                        "local_evidence_sufficient": False,
+                        "missing_evidence": ["No current source-backed provider pricing evidence exists locally."],
+                        "research_reopen_required": True,
+                        "research_query_delta": "Find current official provider pricing evidence.",
+                        "research_status": "failed",
+                        "decision_rationale": "Planner needs current pricing evidence.",
+                        "failure_refs": ["stage=run_deep_research | exception=RuntimeError"],
+                    },
+                    {
+                        "req_id": "REQ-004",
+                        "requirement": "Keep planner handoff risk visible.",
+                        "requirement_kind": "implementation_evidence",
+                        "planner_decisions": ["planner degraded handoff acceptance criteria"],
+                        "local_evidence": [],
+                        "local_evidence_sufficient": False,
+                        "missing_evidence": ["No exact local evidence confirms degraded handoff propagation."],
+                        "research_reopen_required": True,
+                        "research_query_delta": "Find evidence needed to preserve failed research risk in planner handoff.",
+                        "research_status": "failed",
+                        "decision_rationale": "Planner needs failed RTM rows to remain visible.",
+                        "failure_refs": ["stage=run_deep_research | exception=RuntimeError"],
+                    },
+                ]
+
+                delegated_steps: list[tuple[str, str]] = []
+
+                async def fake_delegate(delegated_request, next_role):
+                    workflow = dict(delegated_request.get("params", {}).get("workflow") or {})
+                    delegated_steps.append((next_role, str(workflow.get("step") or "")))
+                    if next_role == "research":
+                        result = {
+                            "request_id": delegated_request["request_id"],
+                            "role": "research",
+                            "status": "completed",
+                            "summary": "Deep Research 실패를 failed RTM rows로 남기고 planner handoff를 계속합니다.",
+                            "insights": [],
+                            "proposals": {
+                                "research_signal": {
+                                    "needed": True,
+                                    "subject": "Provider pricing closeout evidence",
+                                    "research_query": "Find current official provider pricing evidence.",
+                                    "reason_code": "needed_external_grounding",
+                                },
+                                "research_subject_definition": {
+                                    "planning_decision": "provider cost acceptance criteria",
+                                    "knowledge_gap": "current provider pricing evidence",
+                                    "external_boundary": "current provider pricing outside repo",
+                                    "planner_impact": "planner keeps unresolved risk visible",
+                                    "candidate_subject": "Provider pricing closeout evidence",
+                                    "research_query": "Find current official provider pricing evidence.",
+                                    "source_requirements": ["official pricing pages"],
+                                    "rejected_subjects": [],
+                                    "no_subject_rationale": "",
+                                },
+                                "requirement_traceability_matrix": rtm,
+                                "research_report": {
+                                    "report_artifact": "",
+                                    "research_url": "",
+                                    "headline": "external research 실행 실패",
+                                    "planner_guidance": "planner는 failed RTM rows의 missing_evidence를 unresolved research risk로 유지합니다.",
+                                    "research_subject_definition": {
+                                        "planning_decision": "provider cost acceptance criteria",
+                                        "knowledge_gap": "current provider pricing evidence",
+                                        "external_boundary": "current provider pricing outside repo",
+                                        "planner_impact": "planner keeps unresolved risk visible",
+                                        "candidate_subject": "Provider pricing closeout evidence",
+                                        "research_query": "Find current official provider pricing evidence.",
+                                        "source_requirements": ["official pricing pages"],
+                                        "rejected_subjects": [],
+                                        "no_subject_rationale": "",
+                                    },
+                                    "requirement_traceability_matrix": rtm,
+                                    "research_execution_status": "failed",
+                                    "backing_sources": [],
+                                    "milestone_refinement_hints": [],
+                                    "problem_framing_hints": [],
+                                    "spec_implications": [],
+                                    "todo_definition_hints": [],
+                                    "backing_reasoning": [],
+                                    "open_questions": [],
+                                    "failure_details": {
+                                        "failure_stage": "run_deep_research",
+                                        "exception_type": "RuntimeError",
+                                        "artifact_written": False,
+                                        "parsed_backing_source_count": 0,
+                                    },
+                                },
+                            },
+                            "artifacts": [],
+                            "next_role": "",
+                            "approval_needed": False,
+                            "error": "",
+                        }
+                    elif next_role == "planner":
+                        result = {
+                            "request_id": delegated_request["request_id"],
+                            "role": "planner",
+                            "status": "completed",
+                            "summary": "failed RTM risk를 보존하고 milestone refinement를 완료했습니다.",
+                            "insights": [],
+                            "proposals": {
+                                "initial_implementation_plan": {
+                                    "title": "provider pricing evidence handoff",
+                                    "summary": "keep failed RTM risk visible",
+                                    "requirements": ["REQ-002", "REQ-004"],
+                                    "approach": ["preserve unresolved research risk"],
+                                    "risks": ["Deep Research failed"],
+                                    "artifacts": [],
+                                    "confirmation_prompt": "진행할까요?",
+                                }
+                            },
+                            "artifacts": ["shared_workspace/current_sprint.md"],
+                            "next_role": "",
+                            "approval_needed": False,
+                            "error": "",
+                        }
+                    else:
+                        raise AssertionError(f"unexpected delegation: {next_role}")
+                    await service._apply_role_result(delegated_request, result, sender_role=next_role)
+                    return True
+
+                with patch.object(service, "_delegate_request", side_effect=fake_delegate):
+                    result = asyncio.run(
+                        service._run_internal_request_chain(
+                            sprint_id=sprint_state["sprint_id"],
+                            request_record=request_record,
+                            initial_role="planner",
+                        )
+                    )
+
+                self.assertEqual(result["role"], "planner")
+                self.assertEqual(delegated_steps, [("research", "research_initial"), ("planner", "planner_draft")])
+                updated_sprint = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(
+                    [row["req_id"] for row in updated_sprint["research_prepass"]["requirement_traceability_matrix"]],
+                    ["REQ-002", "REQ-004"],
+                )
+                self.assertEqual(updated_sprint["research_prepass"]["backing_sources"], [])
+                next_planning_request = service._build_sprint_planning_request_record(
+                    updated_sprint,
+                    phase="initial",
+                    iteration=1,
+                    step="artifact_sync",
+                )
+                self.assertIn("requirement_traceability_matrix:", next_planning_request["body"])
+                self.assertIn("req_id: REQ-002", next_planning_request["body"])
+                self.assertIn("req_id: REQ-004", next_planning_request["body"])
+                self.assertIn("research_status: failed", next_planning_request["body"])
+                self.assertIn(
+                    "No current source-backed provider pricing evidence exists locally.",
+                    next_planning_request["body"],
+                )
+                self.assertIn(
+                    "No exact local evidence confirms degraded handoff propagation.",
+                    next_planning_request["body"],
+                )
+
     def test_sprint_internal_todo_starts_at_planner_without_research_prepass(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)

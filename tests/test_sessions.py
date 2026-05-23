@@ -59,6 +59,27 @@ def _no_subject_definition(rationale: str = "The task is repo-local and local ar
     }
 
 
+def _requirement_rtm_row(
+    *,
+    req_id: str = "REQ-001",
+    sufficient: bool = False,
+    status: str = "pending_external_research",
+) -> dict[str, object]:
+    return {
+        "req_id": req_id,
+        "requirement": "Use current provider pricing.",
+        "requirement_kind": "external_fact",
+        "planner_decisions": ["provider cost acceptance criteria"],
+        "local_evidence": [],
+        "local_evidence_sufficient": sufficient,
+        "missing_evidence": [] if sufficient else ["No current source-backed provider pricing evidence exists locally."],
+        "research_reopen_required": not sufficient,
+        "research_query_delta": "" if sufficient else "Find current official provider pricing evidence.",
+        "research_status": status,
+        "decision_rationale": "Planner needs source-backed evidence before locking provider cost criteria.",
+    }
+
+
 class TeamsRuntimeSessionTests(unittest.TestCase):
     def test_runtime_identity_plan_helpers_match_compatibility_names(self):
         self.assertEqual(service_identity(" planner "), "planner")
@@ -666,6 +687,104 @@ Prefer a provider-neutral abstraction until pricing volatility stabilizes.
             )
             self.assertEqual(len(payload["proposals"]["research_report"]["backing_sources"]), 2)
 
+    def test_research_runtime_reopens_deep_research_for_missing_rtm_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260523-Sprint-12:21",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-rtm-reopen",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="provider pricing planning",
+                body="Planner needs source-backed closeout evidence.",
+            )
+            request_record = {
+                "request_id": "request-rtm-reopen",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {
+                    "workflow": {"step": "research_initial", "phase_owner": "research"},
+                    "original_requirements": [
+                        {"id": "REQ-001", "text": "Use current provider pricing.", "closeout_required": True}
+                    ],
+                },
+                "sprint_id": "260523-Sprint-12:21",
+            }
+            report_text = """# Executive Summary
+Official pricing evidence is needed for planner.
+
+# Planner Guidance
+Use current official pricing sources for REQ-001.
+
+# Milestone Refinement Hints
+- Keep provider pricing source-backed.
+
+# Backing Reasoning
+- Official pricing sources resolve REQ-001 cost assumptions.
+
+# Backing Sources
+- title: Provider Pricing
+  url: https://example.com/pricing
+  published_at: 2026-05-23
+  relevance: Current provider pricing evidence.
+  summary: Confirms current price shape.
+"""
+            decision_output = json.dumps(
+                {
+                    "needed": False,
+                    "subject": "Provider pricing closeout evidence",
+                    "research_query": "Review local provider pricing evidence.",
+                    "reason_code": "not_needed_local_evidence",
+                    "requirement_traceability_matrix": [_requirement_rtm_row(req_id="REQ-001")],
+                    "research_subject_definition": {
+                        "planning_decision": "provider cost acceptance criteria",
+                        "knowledge_gap": "current provider pricing evidence",
+                        "external_boundary": "",
+                        "planner_impact": "planner should keep pricing criteria source-backed",
+                        "candidate_subject": "Provider pricing closeout evidence",
+                        "research_query": "Review local provider pricing evidence.",
+                        "source_requirements": [],
+                        "rejected_subjects": [],
+                        "no_subject_rationale": "",
+                    },
+                    "planner_guidance": "planner는 REQ-001 근거를 확인해야 합니다.",
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-rtm")), patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync",
+                return_value=SimpleNamespace(
+                    completed=True,
+                    response_text=report_text,
+                    url="https://gemini.google.com/rtm-success",
+                ),
+            ) as deep_research_mock:
+                payload = runtime.run_task(envelope, request_record)
+
+            deep_research_mock.assert_called_once()
+            deep_prompt = deep_research_mock.call_args.args[0]
+            self.assertIn("REQ-001", deep_prompt)
+            self.assertIn("Find current official provider pricing evidence.", deep_prompt)
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["proposals"]["research_signal"]["reason_code"], "needed_external_grounding")
+            self.assertEqual(
+                payload["proposals"]["research_signal"]["reopened_from_reason_code"],
+                "not_needed_local_evidence",
+            )
+            rtm_row = payload["proposals"]["research_report"]["requirement_traceability_matrix"][0]
+            self.assertEqual(rtm_row["research_status"], "completed")
+            self.assertIn("Provider Pricing | https://example.com/pricing", rtm_row["source_refs"])
+
     def test_research_runtime_fails_external_research_without_valid_sources(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -810,6 +929,88 @@ Keep provider assumptions soft.
             )
             self.assertEqual(payload["proposals"]["research_report"]["report_artifact"], "")
             self.assertEqual(payload["proposals"]["research_report"]["research_url"], "")
+
+    def test_research_runtime_degrades_sprint_prepass_deep_research_failure_to_completed_handoff(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            runtime = ResearchAgentRuntime(
+                paths=paths,
+                role="research",
+                sprint_id="260523-Sprint-12:21",
+                runtime_config=RoleRuntimeConfig(),
+                research_defaults=load_team_runtime_config(tmpdir).research_defaults,
+            )
+            envelope = MessageEnvelope(
+                request_id="request-sprint-rtm-fail",
+                sender="orchestrator",
+                target="research",
+                intent="route",
+                urgency="normal",
+                scope="sprint requirement evidence",
+                body="Research must hand off failed RTM rows instead of blocking planner.",
+                params={"_origin": "sprint_internal", "sprint_id": "260523-Sprint-12:21"},
+            )
+            request_record = {
+                "request_id": "request-sprint-rtm-fail",
+                "scope": envelope.scope,
+                "body": envelope.body,
+                "artifacts": [],
+                "params": {
+                    "_teams_kind": "sprint_internal",
+                    "sprint_id": "260523-Sprint-12:21",
+                    "sprint_phase": "initial",
+                    "workflow": {"step": "research_initial", "phase_owner": "research"},
+                    "original_requirements": [
+                        {"id": "REQ-002", "text": "Use current provider pricing.", "closeout_required": True},
+                        {"id": "REQ-004", "text": "Keep planner handoff risk visible.", "closeout_required": True},
+                    ],
+                },
+                "sprint_id": "260523-Sprint-12:21",
+            }
+            decision_output = json.dumps(
+                {
+                    "needed": True,
+                    "subject": "Provider pricing closeout evidence",
+                    "research_query": "Find current official provider pricing evidence.",
+                    "reason_code": "needed_external_grounding",
+                    "requirement_traceability_matrix": [
+                        _requirement_rtm_row(req_id="REQ-002"),
+                        _requirement_rtm_row(req_id="REQ-004"),
+                    ],
+                    "research_subject_definition": _external_subject_definition(
+                        subject="Provider pricing closeout evidence",
+                        query="Find current official provider pricing evidence.",
+                    ),
+                    "planner_guidance": "planner는 REQ-001 근거를 확인해야 합니다.",
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(runtime.codex_runner, "run", return_value=(decision_output, "research-session-sprint-fail")), patch(
+                "teams_runtime.runtime.research_runtime.run_deep_research_sync",
+                side_effect=RuntimeError("Deep Research browser crashed"),
+            ):
+                payload = runtime.run_task(envelope, request_record)
+
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["error"], "")
+            report = payload["proposals"]["research_report"]
+            self.assertEqual(report["research_execution_status"], "failed")
+            self.assertEqual(report["backing_sources"], [])
+            self.assertIn("planner로 진행", report["planner_guidance"])
+            self.assertEqual(report["failure_details"]["exception_type"], "RuntimeError")
+            self.assertEqual(report["failure_details"]["failure_stage"], "run_deep_research")
+            self.assertEqual(
+                [row["req_id"] for row in report["requirement_traceability_matrix"]],
+                ["REQ-002", "REQ-004"],
+            )
+            for rtm_row in report["requirement_traceability_matrix"]:
+                self.assertEqual(rtm_row["research_status"], "failed")
+                self.assertIn("stage=run_deep_research", rtm_row["failure_refs"][0])
+            self.assertEqual(
+                report["requirement_traceability_matrix"][0]["missing_evidence"],
+                ["No current source-backed provider pricing evidence exists locally."],
+            )
 
     def test_research_runtime_fails_when_deep_research_never_reaches_final_report(self):
         with tempfile.TemporaryDirectory() as tmpdir:
