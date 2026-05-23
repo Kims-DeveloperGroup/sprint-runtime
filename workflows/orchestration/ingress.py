@@ -663,9 +663,18 @@ def build_forwarded_request_params(
     valid_user_requested_roles: Collection[str],
 ) -> dict[str, Any]:
     user_requested_role = str(envelope.target or "").strip().lower()
+    requester_route = {
+        "author_id": message.author_id,
+        "author_name": message.author_name,
+        "channel_id": message.channel_id,
+        "guild_id": message.guild_id or "",
+        "is_dm": message.is_dm,
+        "message_id": message.message_id,
+    }
     return {
         **dict(envelope.params),
         "_teams_kind": "forward",
+        "original_requester": requester_route,
         "requester_author_id": message.author_id,
         "requester_author_name": message.author_name,
         "requester_channel_id": message.channel_id,

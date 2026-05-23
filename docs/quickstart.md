@@ -228,7 +228,7 @@ In the autonomous sprint model, normal change requests do not execute immediatel
 - when the scheduler or an operator starts a sprint, the first initial-phase delegation is `research` with workflow step `research_initial`; the resulting research prepass report, including the `REQ-*` requirement traceability matrix, reaches planner before milestone refinement
 - if Deep Research fails during this sprint prepass, planner still receives failed RTM rows and proceeds with the unresolved research risk visible instead of blocking sprint startup
 - planner then uses that report to refine the raw kickoff milestone and write or update plan/spec drafts
-- before backlog or TODO definition, planner returns `proposals.initial_implementation_plan`; orchestrator sends that implementation plan to the requester and mirrors it to the configured Discord report channel
+- before backlog or TODO definition, planner returns `proposals.initial_implementation_plan`; orchestrator posts that implementation plan to the configured relay channel with the actual requester mentioned and mirrors it to the configured Discord report channel
 - the user must confirm the plan before planner can define sprint-relevant backlog, prioritize it, or turn selected backlog items into sprint todos
 - while the implementation plan is pending, user feedback is interpreted only as `plan_confirm` or `plan_change_request`: confirmation resumes sprint startup, while change requests are stored in `initial_plan_confirmation.change_requests` and routed back to planner for another plan revision
 - `backlog 0건` is not a valid sprint-start state; the runtime blocks the sprint with `planning_incomplete` instead

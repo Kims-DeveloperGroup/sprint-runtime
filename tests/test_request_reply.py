@@ -120,6 +120,8 @@ class TeamsRuntimeRequestReplyTests(unittest.TestCase):
         self.assertEqual(params["_teams_kind"], "forward")
         self.assertEqual(params["existing"], "value")
         self.assertEqual(params["requester_author_id"], "user-direct")
+        self.assertEqual(params["original_requester"]["author_id"], "user-direct")
+        self.assertEqual(params["original_requester"]["channel_id"], "channel-direct")
         self.assertEqual(params["user_requested_role"], "research")
 
     def test_build_forwarded_user_envelope_wraps_requester_metadata(self):

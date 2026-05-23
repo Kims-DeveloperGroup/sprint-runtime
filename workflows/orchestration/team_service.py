@@ -3602,6 +3602,31 @@ class TeamService:
             log_traceback=False,
         )
 
+    async def _send_initial_plan_confirmation_relay_request(
+        self,
+        *,
+        requester_route: dict[str, Any],
+        request_record: dict[str, Any],
+        message: str,
+    ) -> None:
+        channel_id = str(self.discord_config.relay_channel_id or "").strip()
+        if not channel_id:
+            LOGGER.warning(
+                "Skipping initial plan confirmation request because relay_channel_id is missing. request_id=%s",
+                request_record.get("request_id") or "",
+            )
+            return
+        author_id = str(requester_route.get("author_id") or "").strip()
+        prefix = f"<@{author_id}> " if author_id else ""
+        await self._send_discord_content(
+            content=message,
+            send=lambda chunk: self.discord_client.send_channel_message(channel_id, chunk),
+            target_description=f"initial-plan-confirmation-relay:{channel_id}:{request_record.get('request_id') or ''}",
+            prefix=prefix,
+            swallow_exceptions=False,
+            log_traceback=False,
+        )
+
     async def _send_initial_plan_confirmation_request(
         self,
         sprint_state: dict[str, Any],
@@ -3670,16 +3695,15 @@ class TeamService:
                 "request_id": request_record.get("request_id") or "",
                 "revision": revision,
                 "artifact_count": len(artifacts),
+                "relay_channel_id": str(self.discord_config.relay_channel_id or "").strip(),
+                "mentioned_author_id": str(requester_route.get("author_id") or "").strip(),
             },
         )
         if requester_route:
-            await self._reply_to_requester(
-                {
-                    "request_id": str(request_record.get("request_id") or ""),
-                    "reply_route": requester_route,
-                    "params": {},
-                },
-                message,
+            await self._send_initial_plan_confirmation_relay_request(
+                requester_route=requester_route,
+                request_record=request_record,
+                message=message,
             )
         await self._mirror_initial_plan_confirmation_report(
             sprint_state,
@@ -4983,7 +5007,32 @@ class TeamService:
                     initial_role="planner",
                 )
                 request_record = self._load_request(str(request_record.get("request_id") or "")) or request_record
-                if str(result.get("status") or "").strip().lower() != "completed":
+                result_status = str(result.get("status") or "").strip().lower()
+                initial_plan_ready_for_confirmation = (
+                    result_status == "blocked"
+                    and step == INITIAL_PHASE_STEP_ARTIFACT_SYNC
+                    and not self._initial_plan_confirmed(sprint_state)
+                    and bool(self._initial_plan_payload_from_result(result))
+                )
+                if result_status != "completed" and initial_plan_ready_for_confirmation:
+                    result = {**result, "status": "completed"}
+                    request_record["status"] = "completed"
+                    request_record["result"] = dict(result)
+                    append_request_event(
+                        request_record,
+                        event_type="initial_plan_confirmation_routed",
+                        actor="orchestrator",
+                        summary=(
+                            "planner가 사용자 확인용 implementation plan을 반환해 "
+                            "orchestrator confirmation gate로 라우팅했습니다."
+                        ),
+                        payload={
+                            "previous_status": result_status,
+                            "initial_phase_step": step,
+                        },
+                    )
+                    self._save_request(request_record)
+                elif result_status != "completed":
                     reopen_reason = (
                         "initial phase planning이 완료되지 않았습니다. "
                         f"step={self._initial_phase_step_title(step)} | "

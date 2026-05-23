@@ -1567,10 +1567,101 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertEqual(updated["initial_phase_completed_steps"], ["milestone_refinement", "artifact_sync"])
                 self.assertEqual(updated["selected_items"], [])
                 self.assertEqual(updated["todos"], [])
-                self.assertIn("workflow initial implementation", service.discord_client.sent_dms[0][1])
-                self.assertIn("이 계획으로 진행할까요?", service.discord_client.sent_dms[0][1])
-                self.assertEqual(len(service.discord_client.sent_channels), 1)
-                self.assertIn("planner initial implementation plan confirmation", service.discord_client.sent_channels[0][1])
+                self.assertEqual(service.discord_client.sent_dms, [])
+                self.assertEqual(len(service.discord_client.sent_channels), 2)
+                confirmation_channel_id, confirmation_message = service.discord_client.sent_channels[0]
+                self.assertEqual(confirmation_channel_id, service.discord_config.relay_channel_id)
+                self.assertIn("<@user-1>", confirmation_message)
+                self.assertIn("workflow initial implementation", confirmation_message)
+                self.assertIn("이 계획으로 진행할까요?", confirmation_message)
+                self.assertIn("planner initial implementation plan confirmation", service.discord_client.sent_channels[1][1])
+
+    def test_run_initial_sprint_phase_routes_blocked_initial_plan_confirmation_to_user(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            config_text = config_text.replace('  start_mode: "auto"\n', '  start_mode: "manual_daily"\n', 1)
+            config_path.write_text(config_text, encoding="utf-8")
+
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="workflow initial",
+                    trigger="manual_start",
+                    kickoff_requester_route={
+                        "author_id": "user-1",
+                        "channel_id": "dm-1",
+                        "is_dm": True,
+                    },
+                )
+
+                async def fake_run_internal_request_chain(*, sprint_id, request_record, initial_role):
+                    step = str(request_record["params"].get("initial_phase_step") or "")
+                    persisted = service._load_request(request_record["request_id"])
+                    if step == orchestration_module.INITIAL_PHASE_STEP_MILESTONE_REFINEMENT:
+                        persisted["status"] = "completed"
+                        persisted["result"] = {
+                            "request_id": request_record["request_id"],
+                            "role": "planner",
+                            "status": "completed",
+                            "summary": "milestone refinement 완료",
+                            "insights": [],
+                            "proposals": {"sprint_plan_update": {"revised_milestone_title": "workflow initial"}},
+                            "artifacts": [],
+                            "error": "",
+                        }
+                        service._save_request(persisted)
+                        return dict(persisted["result"])
+                    persisted["status"] = "blocked"
+                    persisted["result"] = {
+                        "request_id": request_record["request_id"],
+                        "role": "planner",
+                        "status": "blocked",
+                        "summary": f"{step} 사용자 확인 대기",
+                        "insights": [],
+                        "proposals": {
+                            "initial_implementation_plan": {
+                                "title": "blocked status implementation plan",
+                                "summary": "planner가 확인용 계획을 반환했습니다.",
+                                "requirements": ["확인 전 backlog를 만들지 않음"],
+                                "approach": ["orchestrator가 사용자에게 확인 요청"],
+                                "risks": [],
+                                "confirmation_prompt": "이 계획으로 진행할까요?",
+                            }
+                        },
+                        "artifacts": ["shared_workspace/sprints/demo/plan.md"],
+                        "error": "approval flow is no longer supported; converted approval_needed to blocked",
+                    }
+                    service._save_request(persisted)
+                    return dict(persisted["result"])
+
+                with (
+                    patch.object(service, "_run_internal_request_chain", side_effect=fake_run_internal_request_chain),
+                    patch.object(service, "_apply_sprint_planning_result", return_value=False),
+                    patch.object(service, "_validate_initial_phase_step_result", return_value=""),
+                ):
+                    ready = asyncio.run(service._run_initial_sprint_phase(sprint_state))
+
+                self.assertFalse(ready)
+                updated = service._load_sprint_state(sprint_state["sprint_id"])
+                self.assertEqual(updated["initial_plan_confirmation"]["status"], "pending")
+                self.assertEqual(updated["status"], "planning")
+                self.assertEqual(service.discord_client.sent_dms, [])
+                self.assertEqual(len(service.discord_client.sent_channels), 2)
+                confirmation_channel_id, confirmation_message = service.discord_client.sent_channels[0]
+                self.assertEqual(confirmation_channel_id, service.discord_config.relay_channel_id)
+                self.assertIn("<@user-1>", confirmation_message)
+                self.assertIn("blocked status implementation plan", confirmation_message)
+                self.assertIn("이 계획으로 진행할까요?", confirmation_message)
+                request_files = list(service.paths.requests_dir.glob("*.json"))
+                routed_requests = [
+                    read_json(path)
+                    for path in request_files
+                    if any(event.get("type") == "initial_plan_confirmation_routed" for event in read_json(path).get("events", []))
+                ]
+                self.assertTrue(routed_requests)
+                self.assertEqual(routed_requests[-1]["status"], "completed")
 
     def test_run_initial_sprint_phase_reopens_incomplete_step_before_advancing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

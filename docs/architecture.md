@@ -183,7 +183,7 @@ Scheduler tick
   -> sprint file and current_sprint.md written
   -> research prepass builds REQ-* RTM and attempts Deep Research for missing local evidence
   -> planner drafts milestone/spec/implementation plan
-  -> orchestrator sends the implementation plan to the requester and mirrors it to Discord reporting
+  -> orchestrator posts the implementation plan to the relay channel with the actual requester mentioned, and mirrors it to Discord reporting
   -> user confirms the plan or sends change feedback through orchestrator
   -> planner revises until the plan is confirmed
   -> planner defines backlog/TODOs
@@ -257,7 +257,7 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
   - `research_initial` is always the first delegation, for both manual and scheduled sprint kickoff
   - the research report defines the external/local-evidence subject, sources or rationale, and planning hints before planner milestone refinement
   - planner runs `milestone_refinement -> artifact_sync`, then returns `proposals.initial_implementation_plan` and stops before backlog/TODO definition
-  - orchestrator stores `initial_plan_confirmation`, sends the plan through the requester route, mirrors it to Discord reporting, and waits for user feedback
+  - orchestrator stores `initial_plan_confirmation`, posts the plan to the relay channel with the actual requester mentioned, mirrors it to Discord reporting, and waits for user feedback
   - while confirmation is pending, parser/orchestrator interpret incoming user feedback as either `plan_confirm` or `plan_change_request`; change requests append `PLAN-CHANGE-*` entries and reopen planner `artifact_sync`
   - after confirmation, planner runs `backlog_definition -> backlog_prioritization -> todo_finalization`
   - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec + confirmed implementation plan`

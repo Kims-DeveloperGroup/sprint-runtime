@@ -465,7 +465,7 @@ At sprint start:
   - `milestone_refinement`
   - `artifact_sync`
 - after `artifact_sync`, planner returns `proposals.initial_implementation_plan` with `title`, `summary`, `requirements`, `approach`, `risks`, `artifacts`, and `confirmation_prompt`
-- orchestrator stores `initial_plan_confirmation` with `status: pending`, sends the plan through the requester route, mirrors a progress report to the configured Discord report channel, and pauses before backlog/TODO definition
+- orchestrator stores `initial_plan_confirmation` with `status: pending`, posts the plan to the configured relay channel with the actual requester mentioned, mirrors a progress report to the configured Discord report channel, and pauses before backlog/TODO definition
 - if the user confirms the plan, orchestrator marks `initial_plan_confirmation.status` as `confirmed` and resumes the active sprint
 - if the user sends a change request, orchestrator appends a `PLAN-CHANGE-*` entry under `initial_plan_confirmation.change_requests`, clears the completed `artifact_sync` checkpoint, and routes planner back through the revision loop
 - only after confirmation does planner continue with:
