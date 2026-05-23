@@ -34,7 +34,10 @@ from teams_runtime.workflows.sprints.lifecycle import (
     is_sprint_planning_request,
     merge_recovered_sprint_todo,
     inspect_original_requirement_closeout,
+    missing_plan_action_backlog_coverage,
+    missing_plan_action_todo_coverage,
     missing_requirement_todo_coverage,
+    normalize_initial_implementation_plan,
     normalize_original_requirements,
     normalize_trace_list,
     next_initial_phase_step,
@@ -42,6 +45,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     record_sprint_planning_iteration,
     requirement_traceability_matrix_for_sprint,
     recover_sprint_todos_from_recovered,
+    render_initial_implementation_plan_markdown,
     sort_sprint_todos,
     sprint_todo_dependencies_satisfied,
     sprint_todo_dependency_waiting_on,
@@ -309,6 +313,118 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertIn("research_status: failed", body)
         self.assertIn("No local source-backed workflow evidence.", body)
         self.assertIn("stage=run_deep_research", body)
+
+    def test_normalize_initial_implementation_plan_renders_canonical_sections_with_legacy_fallback(self) -> None:
+        sprint_state = {
+            "sprint_id": "Sprint-01",
+            "milestone_title": "workflow initial",
+            "kickoff_requirements": ["Need audit trail"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "Need audit trail",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "research_prepass": {
+                "status": "completed",
+                "backing_sources": [{"title": "Workflow Source", "url": "https://example.com/workflow"}],
+                "artifacts": ["shared_workspace/sprints/Sprint-01/research/request-research.md"],
+            },
+        }
+
+        normalized = normalize_initial_implementation_plan(
+            {
+                "title": "Audit workflow implementation",
+                "summary": "Implement the confirmed audit workflow.",
+                "requirements": ["REQ-001: Need audit trail"],
+                "approach": ["Wire audit persistence through the workflow path."],
+                "risks": ["Audit evidence may be incomplete."],
+                "confirmation_prompt": "Proceed with this plan?",
+            },
+            sprint_state=sprint_state,
+            result={"summary": "planner summary"},
+            artifacts=["shared_workspace/sprints/Sprint-01/plan.md"],
+            revision=2,
+            plan_artifact="shared_workspace/sprints/Sprint-01/plan.md",
+        )
+
+        self.assertEqual(normalized["implementation_changes"], ["Wire audit persistence through the workflow path."])
+        self.assertEqual(normalized["plan_actions"][0]["plan_action_id"], "PLAN-ACT-001")
+        self.assertEqual(normalized["plan_actions"][0]["requirement_refs"], ["REQ-001"])
+        self.assertIn("Workflow Source | https://example.com/workflow", normalized["research_refs"])
+        markdown = render_initial_implementation_plan_markdown(
+            normalized,
+            sprint_state=sprint_state,
+            revision=2,
+            plan_artifact="shared_workspace/sprints/Sprint-01/plan.md",
+        )
+        self.assertIn("# Sprint Implementation Plan", markdown)
+        self.assertIn("## Plan Actions", markdown)
+        self.assertIn("PLAN-ACT-001", markdown)
+        self.assertIn("## Research References", markdown)
+        self.assertIn("shared_workspace/sprints/Sprint-01/plan.md", markdown)
+        self.assertIn("Proceed with this plan?", markdown)
+
+    def test_build_sprint_planning_request_includes_confirmed_plan_actions(self) -> None:
+        sprint_state = {
+            "sprint_id": "Sprint-01",
+            "requested_milestone_title": "workflow initial",
+            "milestone_title": "workflow initial",
+            "sprint_name": "Workflow Initial",
+            "sprint_folder": "shared_workspace/sprints/Sprint-01",
+            "kickoff_requirements": ["Need audit trail"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "Need audit trail",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "initial_plan_confirmation": {
+                "status": "confirmed",
+                "revision": 1,
+                "plan_artifact": "shared_workspace/sprints/Sprint-01/plan.md",
+                "draft_proposal": {
+                    "title": "Audit workflow implementation",
+                    "summary": "Implement audit workflow.",
+                    "plan_actions": [
+                        {
+                            "plan_action_id": "PLAN-ACT-001",
+                            "title": "Implement audit workflow",
+                            "summary": "Add audit workflow behavior.",
+                            "requirement_refs": ["REQ-001"],
+                            "research_refs": ["research-1"],
+                            "acceptance": ["Audit workflow passes."],
+                        }
+                    ],
+                },
+            },
+        }
+
+        record = build_sprint_planning_request_record(
+            sprint_state,
+            phase="initial",
+            iteration=2,
+            step=INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+            request_id="planning-1",
+            artifacts=[],
+            created_at="2026-04-21T19:40:00+09:00",
+            updated_at="2026-04-21T19:40:01+09:00",
+            git_baseline={},
+        )
+
+        self.assertIn("confirmed_initial_implementation_plan:", record["body"])
+        self.assertIn("PLAN-ACT-001", record["body"])
+        self.assertEqual(record["params"]["confirmed_plan_actions"][0]["plan_action_id"], "PLAN-ACT-001")
+        self.assertEqual(
+            record["params"]["confirmed_initial_implementation_plan"]["plan_actions"][0]["requirement_refs"],
+            ["REQ-001"],
+        )
 
     def test_initial_phase_step_metadata_is_stable(self) -> None:
         self.assertEqual(
@@ -883,6 +999,130 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                 request_record=todo_request,
                 sync_summary={},
                 relevant_items=sprint_state["selected_items"],
+            ),
+            "",
+        )
+
+    def test_validate_initial_phase_step_result_requires_confirmed_plan_action_coverage(self) -> None:
+        sprint_state = {
+            "sprint_id": "Sprint-01",
+            "kickoff_requirements": ["Need audit trail"],
+            "original_requirements": [
+                {
+                    "id": "REQ-001",
+                    "text": "Need audit trail",
+                    "source": "kickoff_requirements",
+                    "must": True,
+                    "closeout_required": True,
+                }
+            ],
+            "initial_plan_confirmation": {
+                "status": "confirmed",
+                "revision": 1,
+                "draft_proposal": {
+                    "title": "Audit workflow implementation",
+                    "summary": "Implement audit workflow.",
+                    "plan_actions": [
+                        {
+                            "plan_action_id": "PLAN-ACT-001",
+                            "title": "Implement audit workflow",
+                            "summary": "Add audit workflow behavior.",
+                            "requirement_refs": ["REQ-001"],
+                            "acceptance": ["Audit workflow passes."],
+                        },
+                        {
+                            "plan_action_id": "PLAN-ACT-002",
+                            "title": "Prepare audit fixtures",
+                            "summary": "Supporting setup.",
+                            "requirement_refs": ["REQ-001"],
+                            "supporting_todo": True,
+                            "acceptance": ["Fixtures exist."],
+                        },
+                    ],
+                },
+            },
+        }
+        backlog_request = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_BACKLOG_DEFINITION,
+            },
+        }
+        todo_request = {
+            "intent": "plan",
+            "params": {
+                "_teams_kind": "sprint_internal",
+                "sprint_phase": "initial",
+                "initial_phase_step": INITIAL_PHASE_STEP_TODO_FINALIZATION,
+            },
+        }
+        traced_item = {
+            "backlog_id": "backlog-1",
+            "title": "Audit workflow",
+            "milestone_title": "workflow initial",
+            "planned_in_sprint_id": "Sprint-01",
+            "acceptance_criteria": ["REQ-001 passes."],
+            "origin": {
+                "milestone_ref": "workflow initial",
+                "requirement_refs": ["REQ-001"],
+                "spec_refs": ["./shared_workspace/sprints/Sprint-01/spec.md#audit"],
+            },
+        }
+
+        self.assertIn(
+            "confirmed plan action backlog coverage missing: PLAN-ACT-001",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=backlog_request,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[traced_item],
+            ),
+        )
+
+        traced_item["origin"]["plan_action_refs"] = ["PLAN-ACT-001"]
+        self.assertEqual(
+            missing_plan_action_backlog_coverage(sprint_state, [traced_item]),
+            [],
+        )
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=backlog_request,
+                sync_summary={"planner_persisted_backlog": True},
+                relevant_items=[traced_item],
+            ),
+            "",
+        )
+
+        sprint_state["selected_items"] = [traced_item]
+        sprint_state["selected_backlog_ids"] = ["backlog-1"]
+        sprint_state["todos"] = [
+            {
+                "todo_id": "todo-1",
+                "backlog_id": "backlog-1",
+                "title": "Audit workflow",
+                "requirement_refs": ["REQ-001"],
+            }
+        ]
+        self.assertEqual(missing_plan_action_todo_coverage(sprint_state), ["PLAN-ACT-001"])
+        self.assertIn(
+            "confirmed plan action todo coverage",
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=todo_request,
+                sync_summary={},
+                relevant_items=[traced_item],
+            ),
+        )
+        sprint_state["todos"][0]["plan_action_refs"] = ["PLAN-ACT-001"]
+        self.assertEqual(
+            validate_initial_phase_step_result(
+                sprint_state,
+                request_record=todo_request,
+                sync_summary={},
+                relevant_items=[traced_item],
             ),
             "",
         )

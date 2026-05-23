@@ -415,12 +415,14 @@ from teams_runtime.workflows.sprints.lifecycle import (
     maybe_update_sprint_name_from_result as maybe_update_sprint_name_from_result_helper,
     merge_recovered_sprint_todo as merge_recovered_sprint_todo_helper,
     next_initial_phase_step as next_initial_phase_step_helper,
+    normalize_initial_implementation_plan as normalize_initial_implementation_plan_helper,
     normalize_original_requirements as normalize_original_requirements_helper,
     normalize_trace_list as normalize_trace_list_helper,
     prepare_requested_restart_checkpoint as prepare_requested_restart_checkpoint_helper,
     queue_original_requirement_recovery_work as queue_original_requirement_recovery_work_helper,
     record_sprint_planning_iteration as record_sprint_planning_iteration_helper,
     requirement_traceability_matrix_for_sprint as requirement_traceability_matrix_for_sprint_helper,
+    render_initial_implementation_plan_markdown as render_initial_implementation_plan_markdown_helper,
     recover_sprint_todos_from_requests as recover_sprint_todos_from_requests_helper,
     resume_active_sprint as resume_active_sprint_helper,
     resume_uncommitted_sprint_todo as resume_uncommitted_sprint_todo_helper,
@@ -3529,38 +3531,17 @@ class TeamService:
         self,
         sprint_state: dict[str, Any],
         *,
-        request_record: dict[str, Any],
-        result: dict[str, Any],
+        plan_payload: dict[str, Any],
         revision: int,
-        artifacts: list[str],
+        plan_artifact: str,
     ) -> str:
-        plan_payload = self._initial_plan_payload_from_result(result)
-        title = str(
-            plan_payload.get("title")
-            or sprint_state.get("milestone_title")
-            or sprint_state.get("requested_milestone_title")
-            or "Implementation plan"
-        ).strip()
-        summary = str(plan_payload.get("summary") or result.get("summary") or "").strip()
-        confirmation_prompt = str(plan_payload.get("confirmation_prompt") or "").strip() or (
-            "이 구현 계획을 기준으로 backlog/TODO 정의를 시작해도 되는지 확인해 주세요. "
-            "수정이 필요하면 변경 요청을 보내 주세요."
-        )
-        lines = [
-            "## Sprint Implementation Plan",
-            f"sprint_id: {sprint_state.get('sprint_id') or ''}",
-            f"revision: {revision}",
-            f"title: {title}",
-        ]
-        if summary:
-            lines.extend(["", "summary:", summary])
-        lines.extend(["", *self._initial_plan_list_lines("requirements", plan_payload.get("requirements"))])
-        lines.extend(["", *self._initial_plan_list_lines("approach", plan_payload.get("approach"))])
-        lines.extend(["", *self._initial_plan_list_lines("risks", plan_payload.get("risks"))])
-        if artifacts:
-            lines.extend(["", "artifacts:", *[f"- {item}" for item in artifacts[:8]]])
-        lines.extend(["", "confirmation:", confirmation_prompt])
-        return "\n".join(line for line in lines if str(line).strip())
+        return render_initial_implementation_plan_markdown_helper(
+            plan_payload,
+            sprint_state=sprint_state,
+            revision=revision,
+            plan_artifact=plan_artifact,
+            include_confirmation=True,
+        ).rstrip()
 
     async def _mirror_initial_plan_confirmation_report(
         self,
@@ -3640,16 +3621,27 @@ class TeamService:
             and str(existing.get("draft_request_id") or "").strip() == str(request_record.get("request_id") or "").strip()
         ):
             return
-        plan_payload = self._initial_plan_payload_from_result(result)
+        raw_plan_payload = self._initial_plan_payload_from_result(result)
         current_revision = int(existing.get("revision") or 0)
-        revision = int(plan_payload.get("revision") or 0) or current_revision + 1 or 1
-        artifacts = _dedupe_preserving_order(
+        revision = int(raw_plan_payload.get("revision") or 0) or current_revision + 1 or 1
+        plan_artifact = self._workspace_artifact_hint(self._sprint_artifact_paths(sprint_state)["plan"])
+        raw_artifacts = _dedupe_preserving_order(
             [
                 *[str(item).strip() for item in (result.get("artifacts") or []) if str(item).strip()],
-                *[str(item).strip() for item in (plan_payload.get("artifacts") or []) if str(item).strip()],
+                *[str(item).strip() for item in (raw_plan_payload.get("artifacts") or []) if str(item).strip()],
                 *[str(item).strip() for item in (request_record.get("artifacts") or []) if str(item).strip()],
+                plan_artifact,
             ]
         )
+        plan_payload = normalize_initial_implementation_plan_helper(
+            raw_plan_payload,
+            sprint_state=sprint_state,
+            result=result,
+            artifacts=raw_artifacts,
+            revision=revision,
+            plan_artifact=plan_artifact,
+        )
+        artifacts = [str(item).strip() for item in (plan_payload.get("artifacts") or []) if str(item).strip()]
         requester_route = merge_requester_route(
             dict(existing.get("requester_route") or {}),
             dict(sprint_state.get("kickoff_requester_route") or {}),
@@ -3665,13 +3657,6 @@ class TeamService:
                 item["status"] = "addressed"
                 item["addressed_by_request_id"] = str(request_record.get("request_id") or "")
                 item["addressed_at"] = now
-        message = self._render_initial_plan_confirmation_message(
-            sprint_state,
-            request_record=request_record,
-            result=result,
-            revision=revision,
-            artifacts=artifacts,
-        )
         sprint_state["initial_plan_confirmation"] = {
             **existing,
             "status": "pending",
@@ -3680,6 +3665,7 @@ class TeamService:
             "draft_summary": str(result.get("summary") or "").strip(),
             "draft_artifacts": artifacts,
             "draft_proposal": plan_payload,
+            "plan_artifact": plan_artifact,
             "requester_route": requester_route,
             "requested_at": now,
             "confirmed_at": "",
@@ -3687,6 +3673,17 @@ class TeamService:
             "change_requests": change_requests,
         }
         self._save_sprint_state(sprint_state)
+        plan_path = self._sprint_artifact_paths(sprint_state)["plan"]
+        message = (
+            plan_path.read_text(encoding="utf-8").strip()
+            if plan_path.exists()
+            else self._render_initial_plan_confirmation_message(
+                sprint_state,
+                plan_payload=plan_payload,
+                revision=revision,
+                plan_artifact=plan_artifact,
+            )
+        )
         self._append_sprint_event(
             str(sprint_state.get("sprint_id") or ""),
             event_type="initial_plan_confirmation_requested",
@@ -3695,16 +3692,16 @@ class TeamService:
                 "request_id": request_record.get("request_id") or "",
                 "revision": revision,
                 "artifact_count": len(artifacts),
+                "plan_artifact": plan_artifact,
                 "relay_channel_id": str(self.discord_config.relay_channel_id or "").strip(),
                 "mentioned_author_id": str(requester_route.get("author_id") or "").strip(),
             },
         )
-        if requester_route:
-            await self._send_initial_plan_confirmation_relay_request(
-                requester_route=requester_route,
-                request_record=request_record,
-                message=message,
-            )
+        await self._send_initial_plan_confirmation_relay_request(
+            requester_route=requester_route,
+            request_record=request_record,
+            message=message,
+        )
         await self._mirror_initial_plan_confirmation_report(
             sprint_state,
             request_record=request_record,

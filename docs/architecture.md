@@ -256,13 +256,14 @@ Sprint-internal requests use an orchestrator-owned workflow contract in request 
 - sprint initial planning:
   - `research_initial` is always the first delegation, for both manual and scheduled sprint kickoff
   - the research report defines the external/local-evidence subject, sources or rationale, and planning hints before planner milestone refinement
-  - planner runs `milestone_refinement -> artifact_sync`, then returns `proposals.initial_implementation_plan` and stops before backlog/TODO definition
-  - orchestrator stores `initial_plan_confirmation`, posts the plan to the relay channel with the actual requester mentioned, mirrors it to Discord reporting, and waits for user feedback
+  - planner runs `milestone_refinement -> artifact_sync`, then returns a Codex-plan-mode style `proposals.initial_implementation_plan` and stops before backlog/TODO definition
+  - the plan is built from kickoff requirements, original `REQ-*`, reference artifacts, `spec.md`, and the research report/prepass; `plan_actions` use stable `PLAN-ACT-*` IDs
+  - orchestrator normalizes that plan, persists it in `initial_plan_confirmation.draft_proposal`, renders the same content to sprint `plan.md`, posts it to the relay channel with the actual requester mentioned, mirrors it to Discord reporting, and waits for user feedback
   - while confirmation is pending, parser/orchestrator interpret incoming user feedback as either `plan_confirm` or `plan_change_request`; change requests append `PLAN-CHANGE-*` entries and reopen planner `artifact_sync`
-  - after confirmation, planner runs `backlog_definition -> backlog_prioritization -> todo_finalization`
+  - after confirmation, planner runs `backlog_definition -> backlog_prioritization -> todo_finalization` from the confirmed plan context
   - `backlog_definition` is mandatory and must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec + confirmed implementation plan`
   - `backlog 0건` is invalid; orchestrator blocks sprint start with `planning_incomplete` instead of looping or silently continuing
-  - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/research/spec
+  - backlog definition items must carry concrete acceptance criteria and planner trace for milestone/requirements/research/spec plus `plan_action_refs`; TODOs are execution actions of the confirmed plan and must cite matching `PLAN-ACT-*` refs
   - during an ongoing sprint, clear new user requirements are stored only as `pending_requirement_candidates` (`REQ-CAND-*`); planner sees them only at the next completed/committed TODO checkpoint and may reconcile them into registered `REQ-*`
 - planner-owned planning surfaces:
   - `shared_workspace/backlog.md`
@@ -568,7 +569,7 @@ Sprint-state status mutations mean execution-state writes such as:
 - carry-over backlog creation from failed sprint execution
 - todo lifecycle state such as `queued`, `running`, `uncommitted`, `committed`, `completed`, `blocked`, and `failed`
 - sprint lifecycle state such as `planning`, `running`, `wrap_up`, `completed`, `failed`, and `blocked`
-- initial plan confirmation state such as `initial_plan_confirmation.status`, revision metadata, draft proposal, and `PLAN-CHANGE-*` feedback
+- initial plan confirmation state such as `initial_plan_confirmation.status`, revision metadata, normalized draft proposal, `plan_artifact`, and `PLAN-CHANGE-*` feedback
 - sprint-local requirement candidate state such as `pending_requirement_candidates`, reconciliation status, and `requirement_candidate_archive`
 
 ## Commit Model

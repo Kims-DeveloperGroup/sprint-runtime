@@ -204,6 +204,7 @@ def build_todo_item(backlog_item: dict[str, Any], *, owner_role: str = "planner"
         or origin.get("supports_requirement_refs")
         or []
     )
+    plan_action_refs = plan_action_refs_for_item(backlog_item)
     return {
         "todo_id": new_todo_id(),
         "backlog_id": str(backlog_item.get("backlog_id") or "").strip(),
@@ -227,6 +228,7 @@ def build_todo_item(backlog_item: dict[str, Any], *, owner_role: str = "planner"
         "original_requirement_refs": requirement_refs,
         "supporting_todo": bool(backlog_item.get("supporting_todo")),
         "supports_requirement_refs": supporting_requirement_refs,
+        "plan_action_refs": plan_action_refs,
         "recovery_todo": bool(backlog_item.get("recovery_todo")),
     }
 
@@ -460,6 +462,9 @@ def build_recovered_sprint_todo_from_request(
     )
     if supporting_refs:
         todo["supports_requirement_refs"] = supporting_refs
+    plan_action_refs = plan_action_refs_for_item(source_backlog)
+    if plan_action_refs:
+        todo["plan_action_refs"] = plan_action_refs
     if bool(source_backlog.get("supporting_todo")):
         todo["supporting_todo"] = True
     if bool(source_backlog.get("recovery_todo")):
@@ -595,6 +600,7 @@ def normalize_trace_list(values: Any) -> list[str]:
 
 ORIGINAL_REQUIREMENT_ID_PATTERN = re.compile(r"\bREQ-\d{3}\b", re.IGNORECASE)
 REQUIREMENT_CANDIDATE_ID_PATTERN = re.compile(r"\bREQ-CAND-\d{3}\b", re.IGNORECASE)
+PLAN_ACTION_ID_PATTERN = re.compile(r"\bPLAN-ACT-\d{3}\b", re.IGNORECASE)
 ORIGINAL_REQUIREMENT_METADATA_FIELDS = (
     "source_candidate_ids",
     "artifacts",
@@ -749,6 +755,368 @@ def format_original_requirement_ref(requirement: dict[str, Any]) -> str:
     requirement_id = str(requirement.get("id") or "").strip()
     text = str(requirement.get("text") or "").strip()
     return f"{requirement_id}: {text}" if requirement_id and text else requirement_id or text
+
+
+def _markdown_record_text(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("text", "summary", "title", "requirement", "id", "path", "artifact"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                if key == "id":
+                    label = str(value.get("text") or value.get("summary") or "").strip()
+                    return f"{text}: {label}" if label else text
+                return text
+        parts = [f"{key}={item}" for key, item in value.items() if str(item).strip()]
+        return ", ".join(parts)
+    return str(value or "").strip()
+
+
+def normalize_initial_plan_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = [line.strip("- ").strip() for line in value.splitlines()]
+    elif isinstance(value, dict):
+        values = [_markdown_record_text(value)]
+    elif isinstance(value, (list, tuple, set)):
+        values = [_markdown_record_text(item) for item in value]
+    else:
+        values = []
+    return _dedupe_preserving_order([item for item in values if item])
+
+
+def _plan_action_ids_from_refs(values: Any) -> list[str]:
+    ids: list[str] = []
+    for value in normalize_trace_list(values):
+        for match in PLAN_ACTION_ID_PATTERN.findall(value):
+            normalized = match.upper()
+            if normalized not in ids:
+                ids.append(normalized)
+    return ids
+
+
+def _next_plan_action_id(index: int) -> str:
+    return f"PLAN-ACT-{index:03d}"
+
+
+def normalize_plan_action_refs(values: Any) -> list[str]:
+    refs = _plan_action_ids_from_refs(values)
+    if refs:
+        return refs
+    return [
+        str(item).strip().upper()
+        for item in normalize_trace_list(values)
+        if PLAN_ACTION_ID_PATTERN.fullmatch(str(item).strip().upper())
+    ]
+
+
+def plan_action_refs_for_item(item: dict[str, Any]) -> list[str]:
+    origin = dict(item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}
+    raw_refs: list[str] = []
+    for value in (
+        item.get("plan_action_refs"),
+        item.get("implementation_plan_action_refs"),
+        origin.get("plan_action_refs"),
+        origin.get("implementation_plan_action_refs"),
+    ):
+        raw_refs.extend(normalize_trace_list(value))
+    return normalize_plan_action_refs(
+        raw_refs
+    )
+
+
+def plan_action_is_supporting(action: dict[str, Any]) -> bool:
+    action_type = str(action.get("type") or action.get("action_type") or action.get("todo_type") or "").strip().lower()
+    return (
+        bool(action.get("supporting_todo"))
+        or bool(action.get("supporting_action"))
+        or bool(action.get("supporting"))
+        or action_type == "supporting"
+    )
+
+
+def _plan_research_refs_from_sprint(sprint_state: dict[str, Any] | None) -> list[str]:
+    if not sprint_state:
+        return []
+    refs: list[str] = []
+    refs.extend(sprint_research_prepass_reference_lines(sprint_state))
+    refs.extend(sprint_research_prepass_artifacts(sprint_state))
+    return _dedupe_preserving_order(refs)
+
+
+def _plan_requirements_from_sprint(sprint_state: dict[str, Any] | None) -> list[str]:
+    if not sprint_state:
+        return []
+    requirements = ensure_sprint_original_requirements(sprint_state)
+    if requirements:
+        return [format_original_requirement_ref(item) for item in requirements]
+    return normalize_initial_plan_text_list((sprint_state or {}).get("kickoff_requirements"))
+
+
+def _normalize_initial_plan_action(
+    raw_action: Any,
+    *,
+    index: int,
+    used_ids: set[str],
+    fallback_requirement_refs: list[str],
+    fallback_research_refs: list[str],
+) -> dict[str, Any]:
+    if isinstance(raw_action, dict):
+        raw = dict(raw_action)
+    else:
+        raw = {"summary": str(raw_action or "").strip()}
+    raw_id = str(raw.get("plan_action_id") or raw.get("action_id") or raw.get("id") or "").strip().upper()
+    if not PLAN_ACTION_ID_PATTERN.fullmatch(raw_id) or raw_id in used_ids:
+        raw_id = _next_plan_action_id(index)
+        while raw_id in used_ids:
+            index += 1
+            raw_id = _next_plan_action_id(index)
+    used_ids.add(raw_id)
+    title = str(raw.get("title") or raw.get("name") or "").strip()
+    summary = str(raw.get("summary") or raw.get("description") or raw.get("body") or "").strip()
+    if not title:
+        title = summary.splitlines()[0].strip() if summary else f"Plan action {index}"
+    if not summary:
+        summary = title
+    acceptance = normalize_initial_plan_text_list(
+        raw.get("acceptance")
+        if raw.get("acceptance") is not None
+        else raw.get("acceptance_criteria")
+    )
+    requirement_refs = normalize_trace_list(
+        raw.get("requirement_refs")
+        or raw.get("original_requirement_refs")
+        or raw.get("supports_requirement_refs")
+        or []
+    )
+    if not requirement_refs:
+        requirement_refs = requirement_ids_from_refs([title, summary, *acceptance], [{"id": ref, "text": ref} for ref in fallback_requirement_refs])
+    if not requirement_refs and len(fallback_requirement_refs) == 1:
+        requirement_refs = list(fallback_requirement_refs)
+    research_refs = normalize_initial_plan_text_list(raw.get("research_refs") or raw.get("source_refs") or [])
+    if not research_refs:
+        research_refs = list(fallback_research_refs)
+    action = {
+        "plan_action_id": raw_id,
+        "title": title,
+        "summary": summary,
+        "requirement_refs": _dedupe_preserving_order(requirement_refs),
+        "research_refs": _dedupe_preserving_order(research_refs),
+        "acceptance": acceptance,
+    }
+    if plan_action_is_supporting(raw):
+        action["supporting_todo"] = True
+        supports_refs = normalize_trace_list(raw.get("supports_requirement_refs") or raw.get("requirement_refs") or [])
+        if supports_refs:
+            action["supports_requirement_refs"] = supports_refs
+    return action
+
+
+def normalize_initial_implementation_plan(
+    raw_plan: Any,
+    *,
+    sprint_state: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    artifacts: list[str] | None = None,
+    revision: int = 0,
+    plan_artifact: str = "",
+) -> dict[str, Any]:
+    raw = dict(raw_plan or {}) if isinstance(raw_plan, dict) else {}
+    role_result = dict(result or {}) if isinstance(result, dict) else {}
+    title = str(
+        raw.get("title")
+        or (sprint_state or {}).get("milestone_title")
+        or (sprint_state or {}).get("requested_milestone_title")
+        or "Implementation plan"
+    ).strip()
+    summary = str(raw.get("summary") or role_result.get("summary") or title).strip()
+    fallback_requirement_refs = [
+        str(item.get("id") or "").strip()
+        for item in ensure_sprint_original_requirements(sprint_state or {})
+        if str(item.get("id") or "").strip()
+    ]
+    fallback_research_refs = normalize_initial_plan_text_list(
+        raw.get("research_refs")
+        or raw.get("source_refs")
+        or _plan_research_refs_from_sprint(sprint_state)
+    )
+    implementation_changes = normalize_initial_plan_text_list(
+        raw.get("implementation_changes")
+        if raw.get("implementation_changes") is not None
+        else raw.get("approach")
+    )
+    public_interfaces = normalize_initial_plan_text_list(
+        raw.get("public_interfaces")
+        if raw.get("public_interfaces") is not None
+        else raw.get("interfaces")
+    )
+    raw_actions = raw.get("plan_actions")
+    if not isinstance(raw_actions, list) or not raw_actions:
+        raw_actions = raw.get("actions")
+    if not isinstance(raw_actions, list) or not raw_actions:
+        raw_actions = implementation_changes
+    if not isinstance(raw_actions, list):
+        raw_actions = []
+    used_ids: set[str] = set()
+    plan_actions = [
+        _normalize_initial_plan_action(
+            item,
+            index=index,
+            used_ids=used_ids,
+            fallback_requirement_refs=fallback_requirement_refs,
+            fallback_research_refs=fallback_research_refs,
+        )
+        for index, item in enumerate(raw_actions, start=1)
+        if isinstance(item, dict) or str(item or "").strip()
+    ]
+    normalized_artifacts = _dedupe_preserving_order(
+        [
+            *normalize_initial_plan_text_list(artifacts),
+            *normalize_initial_plan_text_list(raw.get("artifacts")),
+            plan_artifact,
+        ]
+    )
+    confirmation_prompt = str(raw.get("confirmation_prompt") or "").strip() or (
+        "이 구현 계획을 기준으로 backlog/TODO 정의를 시작해도 되는지 확인해 주세요. "
+        "수정이 필요하면 변경 요청을 보내 주세요."
+    )
+    return {
+        "title": title,
+        "summary": summary,
+        "requirements": normalize_initial_plan_text_list(raw.get("requirements")) or _plan_requirements_from_sprint(sprint_state),
+        "research_refs": fallback_research_refs,
+        "implementation_changes": implementation_changes,
+        "public_interfaces": public_interfaces,
+        "plan_actions": plan_actions,
+        "test_plan": normalize_initial_plan_text_list(raw.get("test_plan") or raw.get("tests")),
+        "assumptions": normalize_initial_plan_text_list(raw.get("assumptions")),
+        "risks": normalize_initial_plan_text_list(raw.get("risks")),
+        "artifacts": normalized_artifacts,
+        "confirmation_prompt": confirmation_prompt,
+        "revision": int(raw.get("revision") or revision or 0),
+    }
+
+
+def _append_markdown_list(lines: list[str], title: str, values: list[str], *, empty: str = "") -> None:
+    lines.extend(["", f"## {title}", ""])
+    if values:
+        lines.extend(f"- {item}" for item in values)
+    elif empty:
+        lines.append(f"- {empty}")
+
+
+def render_initial_implementation_plan_markdown(
+    plan: dict[str, Any],
+    *,
+    sprint_state: dict[str, Any] | None = None,
+    revision: int = 0,
+    plan_artifact: str = "",
+    include_confirmation: bool = True,
+) -> str:
+    normalized = normalize_initial_implementation_plan(
+        plan,
+        sprint_state=sprint_state,
+        revision=revision,
+        plan_artifact=plan_artifact,
+    )
+    action_records = [dict(item) for item in normalized.get("plan_actions") or [] if isinstance(item, dict)]
+    lines = [
+        "# Sprint Implementation Plan",
+        "",
+        f"- sprint_id: {(sprint_state or {}).get('sprint_id') or ''}",
+        f"- revision: {int(normalized.get('revision') or revision or 0) or 'N/A'}",
+        f"- title: {normalized.get('title') or 'Implementation plan'}",
+    ]
+    if plan_artifact:
+        lines.append(f"- plan_artifact: {plan_artifact}")
+    lines.extend(["", "## Summary", "", str(normalized.get("summary") or "").strip() or "summary 없음"])
+    _append_markdown_list(lines, "Requirements", list(normalized.get("requirements") or []), empty="requirement 없음")
+    _append_markdown_list(lines, "Research References", list(normalized.get("research_refs") or []), empty="research reference 없음")
+    _append_markdown_list(lines, "Implementation Changes", list(normalized.get("implementation_changes") or []), empty="implementation change 없음")
+    _append_markdown_list(lines, "Public Interfaces", list(normalized.get("public_interfaces") or []), empty="public interface 변경 없음")
+    lines.extend(["", "## Plan Actions", ""])
+    if action_records:
+        for action in action_records:
+            lines.extend(
+                [
+                    f"### {action.get('plan_action_id') or ''}: {action.get('title') or 'Untitled action'}",
+                    "",
+                    str(action.get("summary") or "").strip(),
+                    "",
+                    f"- requirement_refs: {', '.join(normalize_trace_list(action.get('requirement_refs'))) or 'N/A'}",
+                    f"- research_refs: {', '.join(normalize_initial_plan_text_list(action.get('research_refs'))) or 'N/A'}",
+                    f"- supporting_todo: {'yes' if plan_action_is_supporting(action) else 'no'}",
+                ]
+            )
+            acceptance = normalize_initial_plan_text_list(action.get("acceptance"))
+            if acceptance:
+                lines.extend(["- acceptance:", *[f"  - {item}" for item in acceptance]])
+            lines.append("")
+    else:
+        lines.append("- plan action 없음")
+    _append_markdown_list(lines, "Test Plan", list(normalized.get("test_plan") or []), empty="test plan 없음")
+    _append_markdown_list(lines, "Assumptions", list(normalized.get("assumptions") or []), empty="assumption 없음")
+    _append_markdown_list(lines, "Risks", list(normalized.get("risks") or []), empty="risk 없음")
+    _append_markdown_list(lines, "Artifacts", list(normalized.get("artifacts") or []), empty="artifact 없음")
+    if include_confirmation:
+        lines.extend(["", "## Confirmation Prompt", "", str(normalized.get("confirmation_prompt") or "").strip()])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def confirmed_initial_plan(sprint_state: dict[str, Any]) -> dict[str, Any]:
+    confirmation = (
+        dict(sprint_state.get("initial_plan_confirmation") or {})
+        if isinstance(sprint_state.get("initial_plan_confirmation"), dict)
+        else {}
+    )
+    if str(confirmation.get("status") or "").strip().lower() != "confirmed":
+        return {}
+    draft = dict(confirmation.get("draft_proposal") or {}) if isinstance(confirmation.get("draft_proposal"), dict) else {}
+    return normalize_initial_implementation_plan(
+        draft,
+        sprint_state=sprint_state,
+        revision=int(confirmation.get("revision") or draft.get("revision") or 0),
+        plan_artifact=str(confirmation.get("plan_artifact") or "").strip(),
+    )
+
+
+def initial_plan_action_records(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
+    plan = confirmed_initial_plan(sprint_state)
+    return [dict(item) for item in (plan.get("plan_actions") or []) if isinstance(item, dict)]
+
+
+def non_supporting_initial_plan_action_ids(sprint_state: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for action in initial_plan_action_records(sprint_state):
+        action_id = str(action.get("plan_action_id") or "").strip().upper()
+        if action_id and not plan_action_is_supporting(action) and action_id not in ids:
+            ids.append(action_id)
+    return ids
+
+
+def missing_plan_action_backlog_coverage(
+    sprint_state: dict[str, Any],
+    relevant_items: list[dict[str, Any]],
+) -> list[str]:
+    required_ids = non_supporting_initial_plan_action_ids(sprint_state)
+    if not required_ids:
+        return []
+    covered: set[str] = set()
+    for item in relevant_items:
+        if item_is_supporting_todo(item):
+            continue
+        covered.update(plan_action_refs_for_item(item))
+    return [action_id for action_id in required_ids if action_id not in covered]
+
+
+def missing_plan_action_todo_coverage(sprint_state: dict[str, Any]) -> list[str]:
+    required_ids = non_supporting_initial_plan_action_ids(sprint_state)
+    if not required_ids:
+        return []
+    covered: set[str] = set()
+    for todo in (sprint_state.get("todos") or []):
+        if not isinstance(todo, dict) or item_is_supporting_todo(todo):
+            continue
+        covered.update(plan_action_refs_for_item(todo))
+    return [action_id for action_id in required_ids if action_id not in covered]
 
 
 def pending_requirement_candidates_for_planner(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1718,14 +2086,15 @@ def initial_phase_step_instruction(step: str) -> str:
     if normalized == INITIAL_PHASE_STEP_ARTIFACT_SYNC:
         return (
             "Update the sprint plan/spec/iteration artifacts so they reflect the latest refined milestone. "
+            "Draft proposals.initial_implementation_plan as a confirmable implementation plan with PLAN-ACT-* action records. "
             "Do not set planned_in_sprint_id, selected_in_sprint_id, or execution todos in this step."
         )
     if normalized == INITIAL_PHASE_STEP_BACKLOG_DEFINITION:
         return (
-            "Define sprint-relevant backlog from the current milestone, original_requirements REQ-* IDs, kickoff requirements, and spec before any selection. "
+            "Define sprint-relevant backlog from the current milestone, original_requirements REQ-* IDs, kickoff requirements, spec, research prepass, and confirmed implementation plan before any selection. "
             "Create or reopen backlog items when the persisted queue does not fully cover the sprint contract. "
             "Backlog zero is invalid in this step. Each backlog item must include concrete acceptance criteria plus origin trace "
-            "for milestone_ref, requirement_refs, and spec_refs. Each item must also be linkable to this sprint through "
+            "for milestone_ref, requirement_refs, spec_refs, and plan_action_refs. Each item must also be linkable to this sprint through "
             "milestone_title or origin.sprint_id; leave planned_in_sprint_id and selected_in_sprint_id unset until later steps."
         )
     if normalized == INITIAL_PHASE_STEP_BACKLOG_PRIORITIZATION:
@@ -1740,6 +2109,7 @@ def initial_phase_step_instruction(step: str) -> str:
             "Finalize the execution-ready todo set for this sprint. "
             "Persist planned_in_sprint_id for the chosen backlog items and leave the prioritized todo set ready to run "
             "in ascending priority_rank order. Every REQ-* needs at least one non-supporting requirement-slice todo; "
+            "every non-supporting PLAN-ACT-* needs at least one non-supporting todo with matching plan_action_refs; "
             "supporting todos must set supporting_todo=true and cite the REQ-* they support. "
             "If selected backlog ids or todos are not persisted, the same step will reopen."
         )
@@ -1813,6 +2183,7 @@ def build_sprint_planning_request_record(
         for item in (initial_plan_confirmation.get("change_requests") or [])
         if isinstance(item, dict) and str(item.get("status") or "pending").strip().lower() in {"pending", "revision_requested"}
     ]
+    confirmed_plan_context: dict[str, Any] = {}
     if normalized_phase == "initial":
         confirmation_status = str(initial_plan_confirmation.get("status") or "").strip().lower()
         if confirmation_status:
@@ -1832,9 +2203,44 @@ def build_sprint_planning_request_record(
                 [
                     "- policy: Before user confirmation, produce or revise the implementation plan only.",
                     "- policy: Do not create sprint backlog items, set planned_in_sprint_id, select backlog, or define execution TODOs before confirmation.",
-                    "- output_contract: proposals.initial_implementation_plan with title, summary, requirements, approach, risks, artifacts, and confirmation_prompt.",
+                    "- policy: Build proposals.initial_implementation_plan from user/kickoff requirements, original REQ-* IDs, kickoff/reference artifacts, spec.md, and research report/prepass evidence.",
+                    "- output_contract: proposals.initial_implementation_plan with title, summary, requirements, research_refs, implementation_changes, public_interfaces, plan_actions, test_plan, assumptions, risks, artifacts, and confirmation_prompt.",
+                    "- output_contract: plan_actions must be records with stable PLAN-ACT-* IDs plus title, summary, requirement_refs, research_refs, and acceptance. Mark supporting-only actions with supporting_todo=true.",
                 ]
             )
+        confirmed_plan_context = confirmed_initial_plan(sprint_state)
+        if confirmation_status == "confirmed" and confirmed_plan_context:
+            body_lines.extend(
+                [
+                    "confirmed_initial_implementation_plan:",
+                    f"- title: {confirmed_plan_context.get('title') or ''}",
+                    f"- plan_artifact: {initial_plan_confirmation.get('plan_artifact') or ''}",
+                    "- policy: Backlog items and execution TODOs must implement the confirmed PLAN-ACT-* actions, not invent a parallel execution plan.",
+                    "- policy: Every non-supporting backlog item/TODO derived from a plan action must carry plan_action_refs with the matching PLAN-ACT-* ID.",
+                ]
+            )
+            plan_actions = [
+                dict(item)
+                for item in (confirmed_plan_context.get("plan_actions") or [])
+                if isinstance(item, dict)
+            ]
+            if plan_actions:
+                body_lines.append("- plan_actions:")
+                for action in plan_actions:
+                    body_lines.append(
+                        "  - "
+                        + " | ".join(
+                            part
+                            for part in (
+                                f"id={action.get('plan_action_id') or ''}",
+                                f"title={action.get('title') or ''}",
+                                "supporting_todo=true" if plan_action_is_supporting(action) else "supporting_todo=false",
+                                f"requirement_refs={','.join(normalize_trace_list(action.get('requirement_refs')))}",
+                                f"research_refs={','.join(normalize_initial_plan_text_list(action.get('research_refs')))}",
+                            )
+                            if str(part).strip()
+                        )
+                    )
         if initial_plan_change_requests:
             body_lines.append("initial_plan_change_requests:")
             for item in initial_plan_change_requests:
@@ -1909,6 +2315,12 @@ def build_sprint_planning_request_record(
             "initial_plan_confirmation_status": str(initial_plan_confirmation.get("status") or "").strip(),
             "initial_plan_revision": int(initial_plan_confirmation.get("revision") or 0),
             "initial_plan_change_requests": [dict(item) for item in initial_plan_change_requests],
+            "confirmed_initial_implementation_plan": dict(confirmed_plan_context),
+            "confirmed_plan_actions": [
+                dict(item)
+                for item in (confirmed_plan_context.get("plan_actions") or [])
+                if isinstance(item, dict)
+            ],
             "pending_requirement_candidates": [dict(item) for item in pending_requirement_candidates],
             "requirement_reconciliation_checkpoint": bool(pending_requirement_candidates),
             "kickoff_request_text": sprint_state.get("kickoff_request_text") or "",
@@ -2103,6 +2515,18 @@ def validate_initial_phase_step_result(
                 "initial phase 실행 todo 확정 단계에서 original requirement todo coverage가 부족합니다. "
                 + ", ".join(missing_requirement_ids)
             )
+        missing_plan_backlog_ids = missing_plan_action_backlog_coverage(sprint_state, selected_items)
+        if missing_plan_backlog_ids:
+            return (
+                "initial phase 실행 todo 확정 단계에서 confirmed plan action backlog coverage가 부족합니다. "
+                + ", ".join(missing_plan_backlog_ids)
+            )
+        missing_plan_todo_ids = missing_plan_action_todo_coverage(sprint_state)
+        if missing_plan_todo_ids:
+            return (
+                "initial phase 실행 todo 확정 단계에서 confirmed plan action todo coverage가 부족합니다. "
+                + ", ".join(missing_plan_todo_ids)
+            )
         return ""
     if step != INITIAL_PHASE_STEP_BACKLOG_DEFINITION:
         return ""
@@ -2141,6 +2565,11 @@ def validate_initial_phase_step_result(
     if missing_requirement_ids:
         validation_errors.append(
             "original requirement backlog coverage missing: " + ", ".join(missing_requirement_ids)
+        )
+    missing_plan_action_ids = missing_plan_action_backlog_coverage(sprint_state, relevant_items)
+    if missing_plan_action_ids:
+        validation_errors.append(
+            "confirmed plan action backlog coverage missing: " + ", ".join(missing_plan_action_ids)
         )
     if validation_errors:
         return (
@@ -2513,6 +2942,14 @@ def sync_manual_sprint_queue(service: Any, sprint_state: dict[str, Any]) -> None
         )
         if supporting_refs:
             existing["supports_requirement_refs"] = supporting_refs
+        plan_action_refs = normalize_plan_action_refs(
+            [
+                *plan_action_refs_for_item(item),
+                *plan_action_refs_for_item(existing),
+            ]
+        )
+        if plan_action_refs:
+            existing["plan_action_refs"] = plan_action_refs
         if bool(item.get("supporting_todo")):
             existing["supporting_todo"] = True
         if bool(item.get("recovery_todo")):

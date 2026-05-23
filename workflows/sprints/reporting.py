@@ -27,6 +27,8 @@ from teams_runtime.workflows.sprints.lifecycle import (
     initial_phase_step_title,
     next_initial_phase_step,
     requirement_traceability_matrix_for_sprint,
+    plan_action_refs_for_item,
+    render_initial_implementation_plan_markdown,
     slugify_sprint_value,
     utc_now,
 )
@@ -1080,6 +1082,24 @@ def render_sprint_milestone_markdown(sprint_state: dict[str, Any]) -> str:
 
 
 def render_sprint_plan_markdown(sprint_state: dict[str, Any]) -> str:
+    initial_plan_confirmation = (
+        dict(sprint_state.get("initial_plan_confirmation") or {})
+        if isinstance(sprint_state.get("initial_plan_confirmation"), dict)
+        else {}
+    )
+    draft_proposal = (
+        dict(initial_plan_confirmation.get("draft_proposal") or {})
+        if isinstance(initial_plan_confirmation.get("draft_proposal"), dict)
+        else {}
+    )
+    if draft_proposal:
+        return render_initial_implementation_plan_markdown(
+            draft_proposal,
+            sprint_state=sprint_state,
+            revision=int(initial_plan_confirmation.get("revision") or draft_proposal.get("revision") or 0),
+            plan_artifact=str(initial_plan_confirmation.get("plan_artifact") or "").strip(),
+            include_confirmation=True,
+        )
     latest = list(sprint_state.get("planning_iterations") or [])
     latest_entry = latest[-1] if latest else {}
     lines = [
@@ -1137,6 +1157,7 @@ def render_sprint_todo_backlog_markdown(sprint_state: dict[str, Any]) -> str:
                 f"- priority_rank: {item.get('priority_rank') or 0}",
                 f"- summary: {item.get('summary') or ''}",
                 f"- requirement_refs: {requirement_refs_display(item)}",
+                f"- plan_action_refs: {', '.join(plan_action_refs_for_item(item)) or 'N/A'}",
                 f"- supporting_todo: {'yes' if item.get('supporting_todo') else 'no'}",
                 "",
             ]

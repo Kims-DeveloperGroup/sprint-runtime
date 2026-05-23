@@ -1567,12 +1567,29 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 self.assertEqual(updated["initial_phase_completed_steps"], ["milestone_refinement", "artifact_sync"])
                 self.assertEqual(updated["selected_items"], [])
                 self.assertEqual(updated["todos"], [])
+                confirmation = updated["initial_plan_confirmation"]
+                self.assertEqual(confirmation["plan_artifact"], service._workspace_artifact_hint(service._sprint_artifact_paths(updated)["plan"]))
+                self.assertEqual(
+                    confirmation["draft_proposal"]["implementation_changes"],
+                    ["확인 후 backlog_definition 시작"],
+                )
+                self.assertEqual(
+                    confirmation["draft_proposal"]["plan_actions"][0]["plan_action_id"],
+                    "PLAN-ACT-001",
+                )
+                plan_text = service._sprint_artifact_paths(updated)["plan"].read_text(encoding="utf-8")
+                self.assertIn("# Sprint Implementation Plan", plan_text)
+                self.assertIn("## Plan Actions", plan_text)
+                self.assertIn("PLAN-ACT-001", plan_text)
+                self.assertIn(confirmation["plan_artifact"], plan_text)
                 self.assertEqual(service.discord_client.sent_dms, [])
                 self.assertEqual(len(service.discord_client.sent_channels), 2)
                 confirmation_channel_id, confirmation_message = service.discord_client.sent_channels[0]
                 self.assertEqual(confirmation_channel_id, service.discord_config.relay_channel_id)
                 self.assertIn("<@user-1>", confirmation_message)
                 self.assertIn("workflow initial implementation", confirmation_message)
+                self.assertIn("PLAN-ACT-001", confirmation_message)
+                self.assertIn(confirmation["plan_artifact"], confirmation_message)
                 self.assertIn("이 계획으로 진행할까요?", confirmation_message)
                 self.assertIn("planner initial implementation plan confirmation", service.discord_client.sent_channels[1][1])
 
@@ -1647,12 +1664,18 @@ class TeamsRuntimeOrchestrationCloseoutReportingTests(OrchestrationTestCase):
                 updated = service._load_sprint_state(sprint_state["sprint_id"])
                 self.assertEqual(updated["initial_plan_confirmation"]["status"], "pending")
                 self.assertEqual(updated["status"], "planning")
+                self.assertEqual(
+                    updated["initial_plan_confirmation"]["draft_proposal"]["plan_actions"][0]["plan_action_id"],
+                    "PLAN-ACT-001",
+                )
+                self.assertTrue(service._sprint_artifact_paths(updated)["plan"].exists())
                 self.assertEqual(service.discord_client.sent_dms, [])
                 self.assertEqual(len(service.discord_client.sent_channels), 2)
                 confirmation_channel_id, confirmation_message = service.discord_client.sent_channels[0]
                 self.assertEqual(confirmation_channel_id, service.discord_config.relay_channel_id)
                 self.assertIn("<@user-1>", confirmation_message)
                 self.assertIn("blocked status implementation plan", confirmation_message)
+                self.assertIn("PLAN-ACT-001", confirmation_message)
                 self.assertIn("이 계획으로 진행할까요?", confirmation_message)
                 request_files = list(service.paths.requests_dir.glob("*.json"))
                 routed_requests = [

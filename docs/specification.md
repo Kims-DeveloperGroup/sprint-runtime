@@ -167,10 +167,11 @@ Normal change and enhancement requests are backlog-first.
 - when a sprint starts, the first initial-phase delegation must be `research` at workflow step `research_initial`, before planner milestone refinement
 - the research prepass must evaluate every closeout-required `REQ-*` from structured `original_requirements` in a `requirement_traceability_matrix`, then define the research subject, provide source-backed findings or local-evidence/no-subject rationale, and give planner hints/backing reasons for refining the raw milestone
 - if any RTM row lacks sufficient local evidence, research attempts Deep Research for those rows before planner runs; if Deep Research fails during sprint prepass, the prepass is still persisted as completed with `research_execution_status=failed`, failed RTM rows, empty `backing_sources`, and planner guidance to proceed with unresolved research risk visible
-- planner must then draft or revise `proposals.initial_implementation_plan` from the refined milestone, kickoff requirements, research report, and `spec.md`
-- orchestrator must post the implementation plan to the configured relay channel with the actual requester mentioned, mirror it to Discord reporting, and wait for user confirmation before backlog/TODO definition
+- planner must then draft or revise Codex-plan-mode style `proposals.initial_implementation_plan` from the refined milestone, kickoff requirements, original `REQ-*`, reference artifacts, research report/prepass, and `spec.md`
+- `proposals.initial_implementation_plan` must include `title`, `summary`, `requirements`, `research_refs`, `implementation_changes`, `public_interfaces`, `plan_actions`, `test_plan`, `assumptions`, `risks`, `artifacts`, and `confirmation_prompt`; each `plan_actions` entry uses a stable `PLAN-ACT-*` ID with title, summary, requirement refs, research refs, and acceptance
+- orchestrator must normalize and persist the implementation plan under `initial_plan_confirmation.draft_proposal`, render the same content to sprint `plan.md`, post it to the configured relay channel with the actual requester mentioned, mirror it to Discord reporting, and wait for user confirmation before backlog/TODO definition
 - while confirmation is pending, parser/orchestrator must distinguish `plan_confirm` from `plan_change_request`; confirmation resumes startup, and change requests are stored in `initial_plan_confirmation.change_requests` for planner revision
-- planner must derive sprint-relevant backlog from the refined milestone, kickoff requirements, research report, `spec.md`, and confirmed implementation plan only after `initial_plan_confirmation.status == "confirmed"`
+- planner must derive sprint-relevant backlog and TODOs from the refined milestone, kickoff requirements, research report, `spec.md`, and confirmed implementation plan only after `initial_plan_confirmation.status == "confirmed"`; non-supporting backlog/TODO records must include matching `plan_action_refs` for the `PLAN-ACT-*` actions they execute
 - sprint start cannot proceed with `backlog 0건`; if sprint-relevant backlog is empty, the runtime blocks with `planning_incomplete`
 - the scheduler later selects pending backlog items only after that initial-phase backlog-definition gate passes
 - selected items become sprint todos and are executed through internal `request_id` records with a standard workflow contract
@@ -192,7 +193,7 @@ Workflow rules:
 - planning advisory is capped at 2 shared passes total
 - sprint initial planning follows `research_initial -> planner_draft`, where planner covers `milestone_refinement -> artifact_sync`, then waits for implementation-plan confirmation before `backlog_definition -> backlog_prioritization -> todo_finalization`
 - `backlog_definition` is mandatory and must persist sprint-relevant backlog before prioritization
-- before confirmation, planner output is limited to plan/spec artifacts and `proposals.initial_implementation_plan`; it must not create backlog items, set `planned_in_sprint_id`, select backlog, or define execution TODOs
+- before confirmation, planner output is limited to plan/spec artifacts and the confirmable `proposals.initial_implementation_plan`; it must not create backlog items, set `planned_in_sprint_id`, select backlog, or define execution TODOs
 - mid-sprint user requirement candidates are exposed only during `ongoing_review` checkpoints after a TODO is completed or committed, where planner may return `proposals.sprint_requirement_reconciliation`
 - planning-only clarification on planner-owned surfaces such as `current_sprint.md`, `todo_backlog.md`, and `iteration_log.md` closes in planning instead of opening implementation
 - planner가 planner-owned artifact만 보고하더라도 `workflow_transition.target_phase=implementation`을 명시하면 orchestrator는 planning close 대신 다음 implementation step을 열어야 함
@@ -349,7 +350,7 @@ Normalization rules:
 - sprint state preserves both a refined `milestone_title` and immutable kickoff source fields such as `kickoff_brief`, `kickoff_requirements`, `kickoff_request_text`, `kickoff_source_request_id`, and `kickoff_reference_artifacts`
 - inbound Discord attachments are stored under the resolved sprint folder so sprint-start reference docs live with the sprint artifacts
 - `kickoff.md` stores the original sprint-start brief/requirements/source request, while `milestone.md` stores derived milestone framing
-- `initial_plan_confirmation` stores startup implementation-plan confirmation state, including `status`, `revision`, `draft_request_id`, `draft_proposal`, requester route, and `PLAN-CHANGE-*` feedback entries
+- `initial_plan_confirmation` stores startup implementation-plan confirmation state, including `status`, `revision`, `draft_request_id`, normalized `draft_proposal`, `plan_artifact`, requester route, and `PLAN-CHANGE-*` feedback entries
 - `pending_requirement_candidates` stores sprint-local `REQ-CAND-*` inputs until planner reconciles them, while `requirement_candidate_archive` stores unresolved candidates that expire at closeout as non-authoritative history
 - sprint-start attachments, generated todo artifacts, and linked code paths referenced by sprint reports are resolved relative to the sprint folder or workspace and should be preserved in linked-artifact views
 - planner receives those saved attachment paths through `request.artifacts` and should use them as planning references before declaring missing context
@@ -535,7 +536,7 @@ Sprint-state status mutations include:
 - blocker fields such as `blocked_reason`, `blocked_by_role`, `required_inputs`, and `recommended_next_step`
 - todo lifecycle state such as `queued`, `running`, `completed`, `blocked`, and `failed`
 - sprint lifecycle state such as `planning`, `running`, `wrap_up`, `completed`, `failed`, and `blocked`
-- initial plan confirmation fields under `initial_plan_confirmation`
+- initial plan confirmation fields under `initial_plan_confirmation`, including persisted `plan_artifact` and `PLAN-ACT-*` action refs
 - sprint-local requirement candidate fields under `pending_requirement_candidates` and `requirement_candidate_archive`
 
 ## Testing Surface

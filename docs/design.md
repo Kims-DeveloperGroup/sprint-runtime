@@ -173,15 +173,15 @@ Tradeoff:
 
 Decision:
 
-- initial sprint planning pauses after planner drafts `proposals.initial_implementation_plan`
+- initial sprint planning pauses after planner drafts Codex-plan-mode style `proposals.initial_implementation_plan` with stable `PLAN-ACT-*` action records
 - orchestrator routes confirmation or change feedback between the user and planner until the plan is confirmed
-- backlog and execution TODO definition starts only after confirmation
+- backlog and execution TODO definition starts only after confirmation and cites the confirmed actions through `plan_action_refs`
 
 Why:
 
 - lets the user shape the plan before sprint work becomes executable
 - keeps mid-startup feedback in the planner lane instead of interrupting downstream roles
-- makes the accepted plan visible in sprint state through `initial_plan_confirmation`
+- makes the accepted plan visible in sprint state through `initial_plan_confirmation` and sprint `plan.md`
 
 Tradeoff:
 

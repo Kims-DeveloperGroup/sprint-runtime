@@ -464,8 +464,9 @@ At sprint start:
 - planner runs the pre-confirmation initial phase:
   - `milestone_refinement`
   - `artifact_sync`
-- after `artifact_sync`, planner returns `proposals.initial_implementation_plan` with `title`, `summary`, `requirements`, `approach`, `risks`, `artifacts`, and `confirmation_prompt`
-- orchestrator stores `initial_plan_confirmation` with `status: pending`, posts the plan to the configured relay channel with the actual requester mentioned, mirrors a progress report to the configured Discord report channel, and pauses before backlog/TODO definition
+- after `artifact_sync`, planner returns Codex-plan-mode style `proposals.initial_implementation_plan` with `title`, `summary`, `requirements`, `research_refs`, `implementation_changes`, `public_interfaces`, `plan_actions`, `test_plan`, `assumptions`, `risks`, `artifacts`, and `confirmation_prompt`
+- each `plan_actions` entry uses a stable `PLAN-ACT-*` ID with title, summary, requirement refs, research refs, and acceptance; supporting-only actions are marked `supporting_todo: true`
+- orchestrator stores the normalized plan in `initial_plan_confirmation.draft_proposal`, records `initial_plan_confirmation.plan_artifact`, renders the same content to sprint `plan.md`, posts the plan to the configured relay channel with the actual requester mentioned, mirrors a progress report to the configured Discord report channel, and pauses before backlog/TODO definition
 - if the user confirms the plan, orchestrator marks `initial_plan_confirmation.status` as `confirmed` and resumes the active sprint
 - if the user sends a change request, orchestrator appends a `PLAN-CHANGE-*` entry under `initial_plan_confirmation.change_requests`, clears the completed `artifact_sync` checkpoint, and routes planner back through the revision loop
 - only after confirmation does planner continue with:
@@ -473,6 +474,7 @@ At sprint start:
   - `backlog_prioritization`
   - `todo_finalization`
 - `backlog_definition` must create or reopen sprint-relevant backlog from `milestone + kickoff requirements + research report + spec + confirmed implementation plan`
+- confirmed plan actions are passed into later planner requests; non-supporting backlog items and TODOs must carry matching `plan_action_refs`, and startup validation blocks if any non-supporting `PLAN-ACT-*` lacks persisted backlog or TODO coverage
 - `backlog 0건` is invalid during sprint start; orchestrator blocks with `planning_incomplete` instead of continuing
 - selected backlog items are marked `selected` only during `todo_finalization`
 - todos are derived from the selected backlog items after `todo_finalization`
