@@ -169,6 +169,17 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 parsed_report: dict[str, Any] | None = None
                 failure_stage = "run_deep_research"
                 try:
+                    effective_reasoning = effective_config.reasoning_level or (self.runtime_config.reasoning if self.runtime_config else None)
+                    reasoning_level = None
+                    if effective_reasoning:
+                        raw_reasoning = str(effective_reasoning).strip()
+                        if raw_reasoning.lower() in ("extended", "xhigh", "high"):
+                            reasoning_level = "Extended"
+                        elif raw_reasoning.lower() in ("standard", "medium", "low"):
+                            reasoning_level = "Standard"
+                        else:
+                            reasoning_level = raw_reasoning
+
                     deep_research_result = run_deep_research_sync(
                         prompt,
                         app_name=effective_config.app,
@@ -179,6 +190,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                         completion_timeout=effective_config.completion_timeout,
                         callback_timeout=effective_config.callback_timeout,
                         cleanup=effective_config.cleanup,
+                        reasoning_level=reasoning_level,
                     )
                     if not bool(getattr(deep_research_result, "completed", False)):
                         failure_stage = "await_final_report"
@@ -345,6 +357,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
             completion_timeout=choose_timeout("completion_timeout", base.completion_timeout),
             callback_timeout=choose_timeout("callback_timeout", base.callback_timeout),
             cleanup=bool(override.get("cleanup")) if "cleanup" in override else base.cleanup,
+            reasoning_level=choose_text("reasoning_level", base.reasoning_level),
         )
 
     def _request_reference_text(self, envelope: MessageEnvelope, request_record: RequestRecord) -> str:

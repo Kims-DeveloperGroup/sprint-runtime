@@ -271,6 +271,7 @@ class RoleAgentRuntime:
             self.sprint_id: self.session_manager,
         }
         self.codex_runner = CodexRunner(runtime_config, role=role)
+        self.runtime_config = runtime_config
         self._run_lock = threading.Lock()
 
     def _resolve_request_sprint_id(
