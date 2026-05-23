@@ -204,7 +204,7 @@ class ResearchRuntimeConfig:
     completion_timeout: float = 600.0
     callback_timeout: float = 1200.0
     cleanup: bool = False
-    reasoning_level: str | None = None
+    reasoning_level: str | None = "Standard"
 
 
 @dataclass(slots=True, frozen=True)

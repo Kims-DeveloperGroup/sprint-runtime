@@ -128,6 +128,7 @@ def build_parser(
     research_set_parser.add_argument("--profile-path", help="Optional local browser profile path.")
     research_set_parser.add_argument("--completion-timeout", type=float, help="Deep research completion timeout in seconds.")
     research_set_parser.add_argument("--callback-timeout", type=float, help="Deep research callback timeout in seconds.")
+    research_set_parser.add_argument("--reasoning-level", help="Optional Deep Research reasoning level.")
     research_cleanup_group = research_set_parser.add_mutually_exclusive_group()
     research_cleanup_group.add_argument(
         "--cleanup",
@@ -254,6 +255,7 @@ def dispatch_main(
                 completion_timeout=getattr(args, "completion_timeout", None),
                 callback_timeout=getattr(args, "callback_timeout", None),
                 cleanup=getattr(args, "cleanup", None),
+                reasoning_level=getattr(args, "reasoning_level", None),
             )
     if args.command == "sprint":
         if args.sprint_command == "start":
@@ -425,9 +427,10 @@ def _format_role_runtime_summary(runtime_config: Any, role: str) -> str:
         research_runtime = runtime_config.research_defaults
         app = str(research_runtime.app or "").strip() or "default"
         mode = str(research_runtime.mode or "").strip() or "default"
+        reasoning_level = str(research_runtime.reasoning_level or "").strip() or "default"
         return (
             "engine=deep_research "
-            f"app={app} mode={mode} "
+            f"app={app} mode={mode} reasoning_level={reasoning_level} "
             f"completion_timeout={int(research_runtime.completion_timeout)} "
             f"callback_timeout={int(research_runtime.callback_timeout)}"
         )
@@ -628,6 +631,7 @@ def cmd_config_research_set_impl(
     completion_timeout: float | None = None,
     callback_timeout: float | None = None,
     cleanup: bool | None = None,
+    reasoning_level: str | None = None,
     update_team_runtime_research_defaults: Callable[..., Any],
     runtime_paths_cls: Any,
     printer: Printer = print,
@@ -642,6 +646,7 @@ def cmd_config_research_set_impl(
         completion_timeout=completion_timeout,
         callback_timeout=callback_timeout,
         cleanup=cleanup,
+        reasoning_level=reasoning_level,
     )
     config_path = runtime_paths_cls.from_root(workspace_root).workspace_root / "team_runtime.yaml"
     files_summary = ", ".join(updated.files) if updated.files else "[]"
@@ -655,7 +660,8 @@ def cmd_config_research_set_impl(
         f"profile_path={updated.profile_path or 'default'} "
         f"completion_timeout={updated.completion_timeout:g} "
         f"callback_timeout={updated.callback_timeout:g} "
-        f"cleanup={str(updated.cleanup).lower()}"
+        f"cleanup={str(updated.cleanup).lower()} "
+        f"reasoning_level={updated.reasoning_level or 'default'}"
     )
     printer("Restart the research role to apply changes: python -m teams_runtime restart --agent research")
     return 0

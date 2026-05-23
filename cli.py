@@ -414,6 +414,7 @@ def cmd_config_research_set(
     completion_timeout: float | None = None,
     callback_timeout: float | None = None,
     cleanup: bool | None = None,
+    reasoning_level: str | None = None,
 ) -> int:
     return cmd_config_research_set_impl(
         workspace_root,
@@ -425,6 +426,7 @@ def cmd_config_research_set(
         completion_timeout=completion_timeout,
         callback_timeout=callback_timeout,
         cleanup=cleanup,
+        reasoning_level=reasoning_level,
         update_team_runtime_research_defaults=update_team_runtime_research_defaults,
         runtime_paths_cls=RuntimePaths,
     )

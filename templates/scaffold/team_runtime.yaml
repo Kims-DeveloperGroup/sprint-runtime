@@ -48,5 +48,6 @@ research_defaults:
   completion_timeout: 600
   callback_timeout: 1200
   cleanup: false
+  reasoning_level: "Standard"
 
 actions: {}

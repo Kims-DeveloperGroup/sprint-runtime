@@ -127,6 +127,7 @@ def _normalize_research_defaults(value: Any) -> ResearchRuntimeConfig:
             default=1200.0,
         ),
         cleanup=bool(payload.get("cleanup", False)),
+        reasoning_level=_normalize_optional_text(payload.get("reasoning_level")) or "Standard",
     )
 
 
@@ -494,6 +495,7 @@ def update_team_runtime_research_defaults(
     completion_timeout: float | None = None,
     callback_timeout: float | None = None,
     cleanup: bool | None = None,
+    reasoning_level: str | None = None,
 ) -> ResearchRuntimeConfig:
     updates = {
         "app": app,
@@ -504,6 +506,7 @@ def update_team_runtime_research_defaults(
         "completion_timeout": completion_timeout,
         "callback_timeout": callback_timeout,
         "cleanup": cleanup,
+        "reasoning_level": reasoning_level,
     }
     if not any(value is not None for value in updates.values()):
         raise ValueError("At least one research setting must be provided.")
@@ -549,6 +552,11 @@ def update_team_runtime_research_defaults(
         raw_research_defaults["callback_timeout"] = float(callback_timeout)
     if cleanup is not None:
         raw_research_defaults["cleanup"] = bool(cleanup)
+    if reasoning_level is not None:
+        normalized = str(reasoning_level).strip()
+        if not normalized:
+            raise ValueError("reasoning_level must be a non-empty string when provided.")
+        raw_research_defaults["reasoning_level"] = normalized
 
     config_path.write_text(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
