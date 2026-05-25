@@ -10,13 +10,10 @@ from teams_runtime.workflows.state.backlog_store import (
     build_backlog_fingerprint,
     build_blocked_backlog_review_fingerprint,
     build_sprint_selected_backlog_item,
-    build_sourcer_candidate_trace_fingerprint,
-    build_sourcer_review_fingerprint,
     classify_backlog_kind,
     clear_backlog_blockers,
     desired_backlog_status_for_todo,
     drop_non_actionable_backlog_items,
-    fallback_backlog_candidates_from_findings,
     is_actionable_backlog_status,
     is_active_backlog_status,
     is_non_actionable_backlog_item,
@@ -25,10 +22,8 @@ from teams_runtime.workflows.state.backlog_store import (
     merge_backlog_payload,
     normalize_blocked_backlog_review_candidates,
     normalize_backlog_acceptance_criteria,
-    normalize_sourcer_review_candidates,
     render_blocked_backlog_review_markdown,
     repair_non_actionable_carry_over_backlog_items,
-    render_sourcer_review_markdown,
     save_backlog_item,
 )
 from teams_runtime.core.paths import RuntimePaths
@@ -161,31 +156,6 @@ class TeamsRuntimeBacklogStoreTests(unittest.TestCase):
         self.assertEqual(from_todo["selected_in_sprint_id"], "")
         self.assertEqual(from_todo["completed_in_sprint_id"], "")
 
-    def test_fallback_backlog_candidates_from_findings_preserves_origin_trace(self):
-        candidates = fallback_backlog_candidates_from_findings(
-            [
-                {},
-                {
-                    "title": "Runtime log error",
-                    "summary": "Investigate runtime log.",
-                    "kind_hint": "bug",
-                    "scope": "planner runtime",
-                    "acceptance_criteria": "log checked",
-                    "signal": "runtime_log_error",
-                    "origin": {"role": "planner"},
-                },
-            ]
-        )
-
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0]["title"], "Runtime log error")
-        self.assertEqual(candidates[0]["kind"], "bug")
-        self.assertEqual(candidates[0]["source"], "sourcer")
-        self.assertEqual(candidates[0]["acceptance_criteria"], ["log checked"])
-        self.assertEqual(candidates[0]["origin"]["sourcing_agent"], "fallback")
-        self.assertEqual(candidates[0]["origin"]["signal"], "runtime_log_error")
-        self.assertEqual(candidates[0]["origin"]["role"], "planner")
-
     def test_non_actionable_backlog_item_detects_discovery_followups_and_internal_requests(self):
         self.assertTrue(
             is_non_actionable_backlog_item(
@@ -215,55 +185,6 @@ class TeamsRuntimeBacklogStoreTests(unittest.TestCase):
                 request_loader=lambda _request_id: {"params": {"_teams_kind": "sprint_internal"}},
             )
         )
-
-    def test_sourcer_candidate_trace_fingerprint_filters_stable_origin_keys(self):
-        fingerprint = build_sourcer_candidate_trace_fingerprint(
-            {
-                "origin": {
-                    "request_id": " req-1 ",
-                    "related_request_id": "req-2",
-                    "signal": " runtime_log_error ",
-                    "sourcer_summary": "ignored",
-                    "irrelevant": "ignored",
-                    "operation_id": [" op-2 ", "op-1", ""],
-                }
-            }
-        )
-
-        self.assertEqual(
-            fingerprint,
-            "operation_id=op-1,op-2|related_request_id=req-2|request_id=req-1|signal=runtime_log_error",
-        )
-
-    def test_sourcer_review_candidates_normalize_and_fingerprint_stably(self):
-        normalized = normalize_sourcer_review_candidates(
-            [
-                {},
-                {
-                    "title": " Runtime routing ",
-                    "scope": " Runtime routing ",
-                    "summary": " Clarify route ownership ",
-                    "kind": "Chore",
-                    "acceptance_criteria": "documented",
-                    "priority_rank": "2",
-                    "origin": {"request_id": "req-1", "sourcer_summary": "ignored"},
-                },
-                {"title": "missing scope", "scope": ""},
-            ]
-        )
-
-        self.assertEqual(len(normalized), 2)
-        self.assertEqual(normalized[0]["title"], "Runtime routing")
-        self.assertEqual(normalized[0]["kind"], "chore")
-        self.assertEqual(normalized[0]["acceptance_criteria"], ["documented"])
-        self.assertEqual(normalized[1]["scope"], "missing scope")
-
-        reversed_fingerprint = build_sourcer_review_fingerprint(list(reversed(normalized)))
-        self.assertEqual(build_sourcer_review_fingerprint(normalized), reversed_fingerprint)
-
-        changed_trace = [dict(item) for item in normalized]
-        changed_trace[0]["origin"] = {"request_id": "req-2"}
-        self.assertNotEqual(build_sourcer_review_fingerprint(normalized), build_sourcer_review_fingerprint(changed_trace))
 
     def test_blocked_backlog_review_candidates_normalize_sort_and_fingerprint_stably(self):
         normalized = normalize_blocked_backlog_review_candidates(
@@ -320,26 +241,7 @@ class TeamsRuntimeBacklogStoreTests(unittest.TestCase):
             build_blocked_backlog_review_fingerprint(changed_identity),
         )
 
-    def test_review_markdown_renderers_include_candidate_context(self):
-        sourcer_markdown = render_sourcer_review_markdown(
-            request_id="req-1",
-            candidates=[
-                {
-                    "title": "Runtime routing",
-                    "kind": "chore",
-                    "scope": "routing",
-                    "summary": "Clarify route ownership.",
-                    "acceptance_criteria": ["documented"],
-                    "origin": {"request_id": "source-1"},
-                }
-            ],
-            sourcing_activity={"summary": "New candidate found.", "mode": "internal_sourcer"},
-        )
-
-        self.assertIn("# Sourcer Backlog Review", sourcer_markdown)
-        self.assertIn("- sourcer_summary: New candidate found.", sourcer_markdown)
-        self.assertIn("- origin: request_id=source-1", sourcer_markdown)
-
+    def test_blocked_review_markdown_renderer_includes_candidate_context(self):
         blocked_markdown = render_blocked_backlog_review_markdown(
             request_id="req-2",
             candidates=[

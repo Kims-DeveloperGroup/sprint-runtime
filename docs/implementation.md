@@ -44,7 +44,7 @@ teams_runtime/
     designer_role.py
     identities.py
     internal/
-      backlog_sourcing.py
+      goal_sourcing.py
       intent_parser.py
     orchestrator_role.py
     planner_role.py
@@ -84,7 +84,7 @@ Current ownership notes:
 - `teams_runtime/workflows/*`
   - landed target-package surfaces for orchestration/state/role/sprint implementation while import migration continues
 - `teams_runtime/workflows/state/*.py`
-  - canonical home of backlog/request/sprint persistence, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, backlog/review fingerprinting, sourcer and blocked-backlog review candidate normalization/rendering, fallback sourcer candidates, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, and backlog status-report context helpers, with `core/*_store.py` kept as compatibility facades
+  - canonical home of backlog/request/sprint/goal persistence, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, blocked-backlog review candidate normalization/rendering, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, goal lifecycle reports, and backlog status-report context helpers, with `core/*_store.py` kept as compatibility facades
 - `teams_runtime/workflows/orchestration/ingress.py`
   - canonical home of command/envelope parsing, freeform-shape detection, requester-route extraction/construction/merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augment glue, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, initial implementation-plan feedback intake, sprint-local requirement-candidate intake, reply-route recovery, manual sprint ingress request detection, kickoff text section parsing, milestone extraction, kickoff payload assembly, initial user-intake delegation mutation, duplicate requester-reply payload rendering, status/cancel/action/forward command handlers, and planning-verification artifact selection / blocked-request matching helpers; `core/parsing.py` and `core/request_reply.py` remain compatibility aliases
 - `teams_runtime/workflows/orchestration/relay.py`
@@ -96,7 +96,7 @@ Current ownership notes:
 - `teams_runtime/workflows/roles/__init__.py`
   - canonical home of the role prompt registry, version-controller extra response fields, and agent utilization capability metadata used by orchestration scoring; `core/agent_capabilities.py` remains compatibility-only
 - `teams_runtime/workflows/orchestration/notifications.py`
-  - canonical home of Discord notification delivery, low-level chunking, runtime signature tagging, cross-process send locking, startup/fallback report delivery, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, requester-summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, Discord relay-envelope sending, generic Discord content send delegation, and startup notification send/fallback state glue; `core/notifications.py` remains a compatibility alias
+  - canonical home of Discord notification delivery, low-level chunking, runtime signature tagging, cross-process send locking, startup/fallback report delivery, requester-summary simplification, requester status-message assembly, requester reply-route recovery / dispatch glue, channel reply delegation, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, Discord relay-envelope sending, generic Discord content send delegation, and startup notification send/fallback state glue; `core/notifications.py` remains a compatibility alias
 - `teams_runtime/workflows/sprints/lifecycle.py`
   - canonical home of sprint ID, scheduler slot, artifact-folder naming, sprint folder/attachment filename policy, todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, initial implementation-plan confirmation context, sprint-relevant backlog selection, requirement-candidate checkpoint exposure/reconciliation, initial-phase validation policy, sprint planning request record assembly, planning-iteration bookkeeping, phase-ready policy, autonomous sprint execution, active-sprint resume, continue/finalize flow, internal sprint request creation, internal request chain delegation, todo execution, restart-checkpoint preparation, and task-commit enforcement
 - `teams_runtime/adapters/discord/*`
@@ -223,7 +223,7 @@ Current ownership notes:
 - `workflows/orchestration/notifications.py`
   - target-package notification seam that now owns low-level Discord notification delivery plus requester-facing notification orchestration glue
 - `workflows/state/*.py`
-  - canonical backlog/request/sprint persistence, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, backlog/review fingerprinting, sourcer and blocked-backlog review candidate normalization/rendering, fallback sourcer candidates, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, and backlog status-report context helpers
+  - canonical backlog/request/sprint/goal persistence, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, blocked-backlog review candidate normalization/rendering, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, goal lifecycle reports, and backlog status-report context helpers
 - `workflows/sprints/lifecycle.py`
   - target-package sprint lifecycle seam that now owns sprint ID, scheduler slot, artifact-folder naming, sprint folder/attachment filename policy, todo construction/ranking/sorting/status derivation, recovered-todo construction/merge/reconciliation policy, manual sprint flow detection, manual sprint names, idle current-sprint markdown, manual cutoff policy, manual sprint state assembly, initial planning phase step metadata/helpers, initial implementation-plan confirmation context, sprint-relevant backlog selection, requirement-candidate checkpoint exposure/reconciliation, initial-phase validation policy, sprint planning request record assembly, planning-iteration bookkeeping, phase-ready policy, autonomous sprint execution, active-sprint resume, continue/finalize flow, internal sprint request creation, internal request chain delegation, todo execution, restart-checkpoint preparation, and task-commit enforcement
 - `workflows/sprints/reporting.py`
@@ -277,11 +277,11 @@ Current ownership notes:
 - Canonical runtime and Discord config loading/updating belongs in `shared/config.py`; `core/config.py` remains compatibility-only.
 - Canonical workspace/runtime path helpers belong in `shared/paths.py`; `core/paths.py` remains compatibility-only.
 - Canonical shared JSON/JSONL persistence, ID/fingerprint generation, and KST timestamp helpers belong in `shared/persistence.py`; `core/persistence.py` remains compatibility-only.
-- Canonical request/backlog/sprint file IO, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, backlog/review fingerprinting, sourcer and blocked-backlog review candidate normalization/rendering, fallback sourcer candidates, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, and backlog status-report context helpers belong in `workflows/state/request_store.py`, `workflows/state/backlog_store.py`, and `workflows/state/sprint_store.py`; `core/*_store.py` remains compatibility-only.
+- Canonical request/backlog/sprint/goal file IO, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, blocked-backlog review candidate normalization/rendering, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, goal lifecycle reports, and backlog status-report context helpers belong in `workflows/state/request_store.py`, `workflows/state/backlog_store.py`, `workflows/state/sprint_store.py`, and `workflows/state/goal_store.py`; `core/*_store.py` remains compatibility-only.
 - Canonical pure workflow-state helpers belong in `workflows/orchestration/engine.py`; `core/workflow_state.py` remains compatibility-only.
 - Canonical pure workflow routing-policy decisions and governed routing-selection scoring belong in `workflows/orchestration/engine.py`; `core/workflow_engine.py` remains compatibility-only.
 - Canonical role capability metadata and agent utilization policy loading belong in `workflows/roles/__init__.py`; `core/agent_capabilities.py` remains compatibility-only.
-- Canonical startup report rendering, boxed-report excerpt summarization, sourcer report client selection, sourcer activity report rendering, sourcer report state/failure-log policy, low-level Discord chunking, runtime signature tagging, cross-process send locking, startup fallback recovery, requester-status message formatting, requester reply delivery, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, and Discord relay-envelope sending belong in `workflows/orchestration/notifications.py`; `core/notifications.py` remains compatibility-only.
+- Canonical startup report rendering, boxed-report excerpt summarization, low-level Discord chunking, runtime signature tagging, cross-process send locking, startup fallback recovery, requester-status message formatting, requester reply delivery, immediate receipts, sprint completion user-summary delivery, sprint progress report delivery, internal relay summary delivery, and Discord relay-envelope sending belong in `workflows/orchestration/notifications.py`; `core/notifications.py` remains compatibility-only.
 - Canonical command/envelope parsing, freeform-shape detection, requester-route extraction, construction, merge, request-ingress record/seed/fingerprint assembly, duplicate-request fingerprint helpers, blocked-duplicate retry/augmentation mutation, request-resume mutation, planning-envelope explicit-source detection, inferred verification enrichment, forwarded-request requester metadata packaging, request-identity matching, relay-intake milestone gating, initial implementation-plan feedback intake, sprint-local requirement-candidate intake, reply-route recovery, and status/cancel/action/forward command handlers belong in `workflows/orchestration/ingress.py`; `core/parsing.py` and `core/request_reply.py` remain compatibility-only.
 - Canonical sprint report headline, overview, timeline, delivered-change title/behavior/artifact/why assembly, sprint report snapshot assembly, planner closeout context/artifact/request/envelope assembly, closeout request-id/path utility policy, terminal state update plus closeout-result state/payload assembly, report path text, artifact preview/status-label/line-limit helpers, planner initial-phase activity report key/section/body assembly, report-body field parsing/derived closeout refresh, history-archive refresh gating, history archive markdown/index/path preparation and write/refresh side effects, history index parsing/rendering, sprint artifact path mapping plus index/kickoff/milestone/plan/spec/todo-backlog/iteration-log rendering, kickoff preview/body rendering, role-report contract/validation-trace rendering, Spec/TODO report section/body formatting, history archive report_path update decision, report archive report_body/report_path state update, and terminal sprint report title/judgment/commit/artifact assembly, change-summary behavior/meaning/how rendering, agent-contribution, issue, achievement, and artifact helper rendering plus machine summary, sprint/backlog status rendering, progress summary, full report-body, sprint report delivery body/artifact/progress-report/context assembly, terminal report section composition, and user-facing/live sprint report markdown assembly belongs in `workflows/sprints/reporting.py`; `core/sprint_reporting.py` and `core/sprints.py` remain compatibility-only for those helpers.
 - Canonical relay-send status mutation, relay failure-payload shaping, internal relay file-transport helpers, inbox scanning/loading, synthetic relay-message stubs, pure action resolution utilities, relay-summary fragment wrapping, relay-section grouping, and section-message rendering belong in `workflows/orchestration/relay.py`; `core/internal_relay.py`, `core/relay_delivery.py`, and `core/relay_summary.py` remain compatibility-only.
@@ -298,7 +298,7 @@ Current ownership notes:
 - Shared role runtime execution and payload normalization belong in `runtime/base_runtime.py`.
 - Runtime subprocess execution and JSON output recovery belong in `runtime/codex_runner.py`.
 - Internal parser runtime, status-intent normalization, plan confirmation/change classification, and sprint-local requirement-candidate classification belong in `runtime/internal/intent_parser.py`.
-- Internal backlog sourcing runtime and backlog candidate normalization belong in `runtime/internal/backlog_sourcing.py`.
+- Internal goal sourcing runtime and goal-sourcer payload normalization belong in `runtime/internal/goal_sourcing.py`.
 - Runtime session lifecycle and workspace seeding belong in `runtime/session_manager.py`.
 - Version-controller prompt shaping belongs in `workflows/roles/version_controller.py`.
 - `cli.py` now delegates parser/dispatch and command implementation plumbing to `adapters/cli/commands.py` while preserving the legacy import surface used by existing tests and callers.
@@ -328,7 +328,7 @@ Generated workspace root:
 ```
 
 `internal/` contains generated internal workspaces for `parser`, `sourcer`, and `version_controller`.
-The scaffolded `discord_agents_config.yaml` `internal_agents.sourcer` entry is a Discord presence/reporting sample for the sourcer reporter; it is separate from the internal workspace layout.
+The scaffolded `discord_agents_config.yaml` `internal_agents.sourcer` entry documents the non-public goal-sourcing identity; final goal reports publish through `report_channel_id`.
 
 Role-session workspace roots are seeded with coordination files and links back to the real runtime workspace:
 
@@ -411,7 +411,7 @@ For normal change work:
 - when an active sprint is waiting on initial implementation-plan confirmation, orchestrator interprets user text through `runtime/internal/intent_parser.py` as either `plan_confirm`, `plan_change_request`, or ordinary route/status/control text; only high-confidence plan confirmation/change feedback is applied to the startup gate
 - orchestrator applies a workflow contract before capability scoring, then uses its local `agent_utilization` skill and sibling `policy.yaml` as a bounded tie-breaker inside the allowed workflow roles
 - capability boundaries are also enforced directly: `should_not_handle` phrases exclude a candidate before scoring, so ownership limits are hard routing boundaries rather than advisory metadata
-- capability routing is bounded by planner ownership and workflow policy; it does not bypass normal planner-first intake, research-first sprint initial policy, bounded advisory passes, the mandatory architect/developer review chain, sourcer-review-to-planner, blocked planning resume, or version-controller-only flows
+- capability routing is bounded by planner ownership and workflow policy; it does not bypass normal planner-first intake, research-first sprint initial policy, bounded advisory passes, the mandatory architect/developer review chain, goal-sourcer lifecycle boundaries, blocked planning resume, or version-controller-only flows
 - planner owns backlog-management decisions such as add/update/dedupe/reprioritize and persists those backlog changes directly into runtime backlog state
 - planner backlog persistence uses the canonical backlog helper boundary with `backlog_items` / `backlog_item` payloads, and planner returns `proposals.backlog_writes` receipts after those writes succeed
 - backlog/todo definition is research-informed and `spec-first`: sprint backlog must be derived from the current milestone, kickoff requirements, research report, `spec.md`, and the confirmed implementation plan, not only from pre-existing queue state
@@ -435,8 +435,8 @@ Asynchronous work may still use a two-step user-facing flow, but the first messa
 Natural-language status and sprint-control requests do not have to match a fixed alias table exactly.
 The orchestrator agent decides whether they should be answered directly, turned into sprint lifecycle commands, or routed onward.
 
-Autonomous backlog sourcing is also planner-gated.
-The internal sourcer produces backlog candidates, and orchestrator queues them as planner review requests before any backlog record is created or updated.
+Goal sourcing is operator-gated.
+The internal sourcer runs only for an active CLI-created goal, derives a missing stop condition, evaluates linked sprint history plus bounded `shared_workspace/**/*.md` context, and proposes at most one sprint-ready milestone when no sprint is active. The milestone completion condition is carried as a kickoff requirement.
 
 ### 3. Scheduler loop
 
@@ -447,7 +447,9 @@ On each poll:
 - load scheduler state
 - compute next slot if missing
 - detect whether a sprint is active
+- if no sprint is active and an active goal exists, run the internal sourcer before idle backlog or schedule-driven sprint selection
 - start a sprint when:
+  - goal sourcing returns a sprint-ready milestone,
   - backlog is ready in `hybrid` mode, or
   - the scheduled slot has arrived
 
@@ -543,19 +545,30 @@ At sprint end:
 - history index is updated
 - `current_sprint.md` is reset to idle
 
-## Discovery Inputs
+## Goal Sourcing Inputs
 
-Current backlog discovery can scan:
+Current goal sourcing reads:
 
-- non-terminal user/requester-facing request records
-- request records whose latest role result indicates a failed role outcome
-- git dirty paths
-- role runtime logs for `Traceback` / `ERROR`
-- optional configured `discovery_actions`
+- the active `.teams_runtime/goals/<goal_id>/goal.json` state
+- `stop_condition`, deriving and persisting it when omitted at goal creation
+- recent linked sprint outcomes recorded on the goal
+- current scheduler state, especially whether a sprint is already active
+- bounded Markdown excerpts from `shared_workspace/**/*.md`, excluding attachments
 
 Role `insights` are not promoted into backlog candidates automatically.
-They are preserved in role `journal.md`, `history.md`, and the canonical request record for later human or orchestrator reference.
-Internal sprint requests are also excluded from backlog rediscovery to avoid feedback loops.
+They are preserved in role `journal.md`, `history.md`, and the canonical request record for later human or planner reference.
+The internal sourcer does not create backlog records or planner review requests. It returns the next milestone title, summary, kickoff requirements, and a sprint completion condition that is normalized into those requirements.
+
+## Goal Sourcing Output Contract
+
+The sourcer is optimized for goal advancement, not discovery. For each idle pass with an active goal, it must return one of these outcomes:
+
+- a derived `stop_condition` when the goal does not already have one
+- `goal_completed=true` with completion evidence when the stop condition is satisfied
+- `next_milestone` with title, summary, requirements, reference artifacts, and `completion_condition`
+- `no_action_reason` or failure detail when it cannot safely source work
+
+The scheduler persists derived stop conditions and milestone history on the goal. When a milestone is sourced, the sprint starts through the normal lifecycle with `trigger="goal_sourcer"` and goal metadata. `completion_condition` is appended to the sprint kickoff requirements, which means the research prepass, planner implementation plan, backlog definition, and TODO finalization all treat it as part of the sprint contract.
 
 Planner-style backlog drafting requests may return `proposals.backlog_item` or `proposals.backlog_items` as rationale, but planner-owned persistence is acknowledged through `proposals.backlog_writes`.
 Planner owns the backlog-management decision and direct backlog persistence.
@@ -649,7 +662,7 @@ In addition, there is an internal non-public workspace:
   - not tied to a Discord bot identity
 - `internal/sourcer/`
   - seeded like a normal session workspace
-  - used by the orchestrator to turn runtime/workspace findings into planner review candidates
+  - used by the orchestrator to derive a missing goal stop condition, evaluate goal completion, read bounded shared workspace docs, and source one sprint-ready milestone when no active sprint exists
   - not tied to a Discord bot identity
 - `internal/version_controller/`
   - seeded like a normal session workspace
@@ -661,7 +674,7 @@ In addition, there is an internal non-public workspace:
 - `workflows/orchestration/team_service.py` remains the compatibility composition root. Status/cancel/action/forward command handlers now live in `workflows/orchestration/ingress.py`; sprint execution bodies, internal sprint request creation, request-chain delegation, restart-checkpoint flow, and task-commit enforcement now live in `workflows/sprints/lifecycle.py`; role-result application, delegated request claim/release, delegated request processing, local orchestrator request execution, role-report intake normalization, post-report routing adapter glue, handoff routing payloads, semantic result context, semantic internal-relay body summaries, request snapshots, and delegate envelopes live in `workflows/orchestration/delegation.py`.
 - Remaining workflow-policy cutover work is concentrated around legacy compatibility wrappers that still need request/backlog context from `TeamService` before calling pure `engine.py` helpers.
 - Legacy patch/import surfaces such as `teams_runtime.core.orchestration.build_active_sprint_id`, `capture_git_baseline`, and `inspect_sprint_closeout` remain honored through `TeamService` adapter methods while the extracted lifecycle helpers own the execution flow.
-- sourcer fallback discovery is still heuristic when the internal sourcer cannot run
+- goal sourcing supports one active/resumable goal at a time
 - sprint selection currently pulls from all pending backlog items instead of a bounded WIP budget
 - no parallel multi-role fanout yet
 - sprint commit generation depends on git availability and a clean-enough baseline snapshot

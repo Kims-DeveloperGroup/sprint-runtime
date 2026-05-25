@@ -16,7 +16,11 @@ from teams_runtime.runtime.base_runtime import RoleAgentRuntime, normalize_role_
 from teams_runtime.runtime.session_manager import RoleSessionManager
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
 from teams_runtime.shared.models import TEAM_ROLES
-from teams_runtime.runtime.internal.backlog_sourcing import BacklogSourcingRuntime
+from teams_runtime.runtime.internal.goal_sourcing import (
+    GoalSourcingRuntime,
+    collect_shared_workspace_doc_context,
+    normalize_goal_sourcing_payload,
+)
 from teams_runtime.runtime.identities import local_identity
 from teams_runtime.runtime.identities import local_runtime_identity
 from teams_runtime.runtime.identities import sanitize_identity
@@ -1616,32 +1620,104 @@ Keep provider assumptions soft.
             self.assertIn("compatibility-only fallback", prompt)
             self.assertIn("./.agents/skills/status_reporting/SKILL.md", prompt)
 
-    def test_backlog_sourcer_prompt_prefers_active_sprint_milestone_relevance(self):
+    def test_goal_sourcer_prompt_sources_one_milestone_for_active_goal(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
             paths = RuntimePaths.from_root(tmpdir)
-            runtime = BacklogSourcingRuntime(
+            paths.shared_planning_file.write_text(
+                "# Shared Planning\n\nReport workflow needs archive delivery.",
+                encoding="utf-8",
+            )
+            attachment_dir = paths.shared_attachments_root / "upload-1"
+            attachment_dir.mkdir(parents=True, exist_ok=True)
+            (attachment_dir / "ignored.md").write_text("attachment context", encoding="utf-8")
+            runtime = GoalSourcingRuntime(
                 paths=paths,
                 sprint_id="configured-scope",
                 runtime_config=RoleRuntimeConfig(),
             )
 
             prompt = runtime._build_prompt(
-                findings=[{"title": "alert routing", "summary": "routing issue", "scope": "alert routing"}],
+                goal_state={
+                    "goal_id": "goal-1",
+                    "objective": "Deliver the reporting workflow",
+                    "stop_condition": "",
+                    "status": "active",
+                    "sourced_milestones": [],
+                    "sprint_outcomes": [],
+                },
                 scheduler_state={"active_sprint_id": "260331-Sprint-14:00"},
-                active_sprint={
+                current_sprint={
                     "sprint_id": "260331-Sprint-14:00",
                     "milestone_title": "workflow initial",
                     "status": "running",
                     "phase": "ongoing",
                 },
-                backlog_counts={"pending": 1, "selected": 0, "blocked": 0, "done": 0, "total": 1},
-                existing_backlog=[],
+                recent_sprint_history=[],
             )
 
-            self.assertIn("focus only on backlog items that clearly advance that milestone", prompt)
-            self.assertIn("prefer returning no backlog items over returning unrelated work", prompt)
-            self.assertIn("set `milestone_title` to that active sprint milestone on every returned item", prompt)
+            self.assertIn("advance exactly one operator-created goal", prompt)
+            self.assertIn("derive a concrete stop condition first", prompt)
+            self.assertIn("Source only one milestone", prompt)
+            self.assertIn("completion_condition", prompt)
+            self.assertIn("Shared workspace docs", prompt)
+            self.assertIn("Report workflow needs archive delivery.", prompt)
+            self.assertNotIn("attachment context", prompt)
+            self.assertIn("Deliver the reporting workflow", prompt)
+
+    def test_goal_sourcer_payload_turns_completion_condition_into_requirement(self):
+        payload = normalize_goal_sourcing_payload(
+            {
+                "status": "sourced",
+                "next_milestone": {
+                    "title": "Report archive milestone",
+                    "summary": "Archive and publish final report.",
+                    "requirements": ["archive final report", "archive final report"],
+                    "completion_condition": "Final report is posted to the report channel.",
+                    "doc_refs": ["shared_workspace/planning.md"],
+                },
+            }
+        )
+
+        milestone = payload["next_milestone"]
+        self.assertEqual(milestone["title"], "Report archive milestone")
+        self.assertEqual(
+            milestone["requirements"],
+            [
+                "archive final report",
+                "Completion condition: Final report is posted to the report channel.",
+            ],
+        )
+        self.assertEqual(milestone["artifacts"], ["shared_workspace/planning.md"])
+
+    def test_goal_sourcer_shared_workspace_doc_context_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            paths = RuntimePaths.from_root(tmpdir)
+            paths.shared_goal_dir("goal-1").mkdir(parents=True, exist_ok=True)
+            paths.shared_goal_report_file("goal-1").write_text("goal report context", encoding="utf-8")
+            paths.shared_planning_file.write_text("planning context", encoding="utf-8")
+            extra_dir = paths.shared_workspace_root / "notes"
+            extra_dir.mkdir(parents=True, exist_ok=True)
+            (extra_dir / "a.md").write_text("A" * 100, encoding="utf-8")
+            (extra_dir / "b.txt").write_text("ignored text", encoding="utf-8")
+            attachment_dir = paths.shared_attachments_root / "upload"
+            attachment_dir.mkdir(parents=True, exist_ok=True)
+            (attachment_dir / "ignored.md").write_text("ignored attachment", encoding="utf-8")
+
+            docs = collect_shared_workspace_doc_context(
+                paths,
+                {"goal_id": "goal-1"},
+                max_files=2,
+                max_chars_per_file=12,
+                max_total_chars=24,
+            )
+
+            self.assertEqual(len(docs), 2)
+            self.assertEqual(docs[0]["path"], "./shared_workspace/goals/goal-1/final_report.md")
+            self.assertEqual(docs[0]["excerpt"], "goal report")
+            self.assertTrue(all("attachments" not in item["path"] for item in docs))
+            self.assertTrue(all(not item["path"].endswith(".txt") for item in docs))
 
     def test_codex_runner_resume_ignores_stale_output_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -87,16 +87,12 @@ def is_internal_sprint_request(request_record: dict[str, Any]) -> bool:
     return _request_kind(request_record) == "sprint_internal"
 
 
-def is_sourcer_review_request(request_record: dict[str, Any]) -> bool:
-    return _request_kind(request_record) == "sourcer_review"
-
-
 def is_blocked_backlog_review_request(request_record: dict[str, Any]) -> bool:
     return _request_kind(request_record) == "blocked_backlog_review"
 
 
 def is_planner_backlog_review_request(request_record: dict[str, Any]) -> bool:
-    return is_sourcer_review_request(request_record) or is_blocked_backlog_review_request(request_record)
+    return is_blocked_backlog_review_request(request_record)
 
 
 def find_open_request_by_fingerprint(
@@ -118,14 +114,6 @@ def find_open_request_by_fingerprint(
             continue
         return request_record
     return {}
-
-
-def find_open_sourcer_review_request(paths: RuntimePaths, fingerprint: str) -> dict[str, Any]:
-    return find_open_request_by_fingerprint(
-        paths,
-        fingerprint=fingerprint,
-        predicate=is_sourcer_review_request,
-    )
 
 
 def find_open_blocked_backlog_review_request(paths: RuntimePaths, fingerprint: str) -> dict[str, Any]:
@@ -224,55 +212,6 @@ def iter_sprint_task_request_records(paths: RuntimePaths, sprint_id: str) -> lis
         records.append(record)
     records.sort(key=lambda record: (str(record.get("created_at") or ""), str(record.get("request_id") or "")))
     return records
-
-
-def build_sourcer_review_request_record(
-    *,
-    request_id: str,
-    candidates: list[dict[str, Any]],
-    sourcing_activity: dict[str, Any],
-    artifact_hint: str,
-    sprint_id: str,
-    fingerprint: str,
-) -> dict[str, Any]:
-    record = {
-        "request_id": request_id,
-        "status": "queued",
-        "intent": "plan",
-        "urgency": "normal",
-        "scope": "autonomous backlog sourcing review",
-        "body": (
-            "Internal sourcer produced backlog candidates. "
-            "Planner owns backlog management strictly, so review these candidates, "
-            "make add/update/dedupe/prioritization decisions, and persist any accepted backlog changes directly. "
-            "Do not route directly to implementation roles from this request."
-        ),
-        "artifacts": [artifact_hint],
-        "params": {
-            "_teams_kind": "sourcer_review",
-            "sourcing_mode": str(sourcing_activity.get("mode") or "").strip() or "internal_sourcer",
-            "sourcing_summary": str(sourcing_activity.get("summary") or "").strip(),
-            "candidate_count": len(candidates),
-            "sourced_backlog_candidates": candidates,
-        },
-        "current_role": "orchestrator",
-        "next_role": "planner",
-        "owner_role": "orchestrator",
-        "sprint_id": str(sprint_id or "").strip(),
-        "created_at": utc_now_iso(),
-        "updated_at": utc_now_iso(),
-        "fingerprint": str(fingerprint or "").strip(),
-        "reply_route": {},
-        "events": [],
-        "result": {},
-    }
-    append_request_event(
-        record,
-        event_type="created",
-        actor="orchestrator",
-        summary="internal sourcer 후보에 대한 planner backlog review 요청을 생성했습니다.",
-    )
-    return record
 
 
 def build_blocked_backlog_review_request_record(

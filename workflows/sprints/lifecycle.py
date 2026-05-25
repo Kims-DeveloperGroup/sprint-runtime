@@ -3139,12 +3139,6 @@ def sync_planner_backlog_review_from_role_report(
         scheduler_state["last_blocked_review_status"] = status or "completed"
         scheduler_state["last_blocked_review_fingerprint"] = str(request_record.get("fingerprint") or "").strip()
         service._save_scheduler_state(scheduler_state)
-    if service._is_sourcer_review_request(request_record):
-        scheduler_state = service._load_scheduler_state()
-        scheduler_state["last_sourcing_fingerprint"] = str(request_record.get("fingerprint") or "").strip()
-        scheduler_state["last_sourcing_review_status"] = status or "completed"
-        scheduler_state["last_sourcing_review_request_id"] = str(request_record.get("request_id") or "")
-        service._save_scheduler_state(scheduler_state)
     return sync_summary
 
 
@@ -3413,9 +3407,9 @@ def sprint_uses_manual_flow(
         return True
     state = dict(sprint_state or {})
     execution_mode = str(state.get("execution_mode") or "").strip().lower()
-    if execution_mode == "manual":
+    if execution_mode in {"manual", "goal_sourced"}:
         return True
-    return str(state.get("trigger") or "").strip().lower() == "manual_start"
+    return str(state.get("trigger") or "").strip().lower() in {"manual_start", "goal_sourcer"}
 
 
 def build_manual_sprint_names(*, sprint_id: str, milestone_title: str) -> tuple[str, str]:

@@ -35,7 +35,7 @@ Do not use this skill to do the role-specific work itself.
    If `Current request.params.workflow` exists, respect its current phase and step before considering general capability scoring.
 2. Load the routing policy.
    Treat sibling `policy.yaml` as the machine-readable routing and scoring authority, and treat this `SKILL.md` as the human operating guide for that policy.
-   Read the policy guardrails first: `user_intake`, `sourcer_review`, `planning_resume`, `sprint_initial_default`, `planner_reentry_requires_explicit_signal`, `verification_result_terminal`, and `ignore_non_planner_backlog_proposals_for_routing`.
+   Read the policy guardrails first: `user_intake`, `backlog_review`, `planning_resume`, `sprint_initial_default`, `planner_reentry_requires_explicit_signal`, `verification_result_terminal`, and `ignore_non_planner_backlog_proposals_for_routing`.
 3. Match the need to the best role.
    Use ownership boundaries, preferred skills, strongest domains, behavior traits, sprint phase fit, and request-state fit.
 4. Score only the allowed candidates.

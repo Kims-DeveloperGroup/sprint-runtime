@@ -51,12 +51,39 @@ python -m teams_runtime sprint restart
 
 `python -m teams_runtime status --sprint` remains available as a compatibility alias.
 
+Operate goal sourcing explicitly:
+
+```bash
+python -m teams_runtime goal start --objective "배송 리포트 워크플로 완성" --stop-condition "최종 리포트가 생성되고 report 채널에 게시된다"
+python -m teams_runtime goal start --objective "배송 리포트 워크플로 완성"
+python -m teams_runtime goal status
+python -m teams_runtime goal stop
+python -m teams_runtime goal resume
+python -m teams_runtime goal cancel
+```
+
+`goal terminate` is an alias for `goal cancel`. A paused goal does not source new sprints. Cancel is permanent: it clears the active-goal pointer, asks any linked active sprint to wrap up, archives a final goal report, and posts that report to `report_channel_id`.
+
 ## Sprint Resume Behavior
 
 - Automatic resume is gated only by `.teams_runtime/sprint_scheduler.json` `active_sprint_id`. If it is set, orchestrator startup and the scheduler loop both call the active sprint resume path.
 - `python -m teams_runtime sprint restart` is the explicit recovery path. It can restart the latest sprint when that sprint is not `completed`; for blocked sprints the runtime only allows restart when `closeout_status` is `planning_incomplete` or `restart_required`, with a legacy fallback for old initial-phase blocked reports.
 - `python -m teams_runtime sprint stop` requests wrap-up for an active sprint. If the sprint is already terminal (`failed` or `blocked`), stop simply clears the active slot instead of reopening execution.
 - Manual initial-phase planning failures that end with `planning_incomplete` now clear the active slot immediately, so they do not auto-resume on the next scheduler poll or orchestrator restart unless an operator explicitly runs `sprint restart`.
+
+## Goal Sourcing Behavior
+
+- A goal is stored under `.teams_runtime/goals/<goal_id>/goal.json`, with the active pointer in `.teams_runtime/goal_scheduler.json`.
+- Goal statuses are `active`, `paused`, `completed`, `cancelled`, and `failed`. V1 supports one active or resumable goal at a time.
+- The internal sourcer runs only when an active goal exists and no sprint is active.
+- If the goal lacks a stop condition, the sourcer derives and persists one before sourcing a milestone.
+- Sourcer reads the goal state, stop condition, linked sprint history, scheduler state, and bounded Markdown context from `shared_workspace/**/*.md` as read-only input. Attachment Markdown is excluded.
+- Sourcer does not create backlog records, planner review requests, discovery candidates, or activity reports.
+- Sourcer output is either a completion decision, a no-action/failure reason, or one sprint-ready milestone with title, summary, kickoff requirements, and a sprint completion condition.
+- Each sourced milestone starts a normal sprint with `trigger="goal_sourcer"`, goal metadata, kickoff requirements, and the sprint completion condition represented as a kickoff requirement; the research and planner initial phases remain unchanged.
+- `goal stop` pauses future goal sourcing and requests wrap-up for any linked active sprint. `goal resume` only reactivates a paused goal. `goal cancel` and `goal terminate` are permanent.
+- Terminal closeout records linked sprint outcomes on the goal. The next idle scheduler pass re-evaluates the goal against its stop condition.
+- Completed and cancelled goals render `shared_workspace/goals/<goal_id>/final_report.md`, archive the same report under `.teams_runtime/goals/<goal_id>/`, publish it to `report_channel_id`, and clear the active pointer.
 
 ## Planner Backlog Contract
 
@@ -386,6 +413,7 @@ Key files:
 
 - `shared_workspace/backlog.md`
 - `shared_workspace/current_sprint.md`
+- `shared_workspace/goals/<goal_id>/final_report.md`
 - `shared_workspace/sprints/<sprint_folder_name>/`
 - `shared_workspace/sprint_history/index.md`
 - `shared_workspace/sprint_history/<sprint_id>.md`
@@ -425,6 +453,12 @@ Useful runtime directories:
 
 - `.teams_runtime/requests/`
   - per-request JSON state
+- `.teams_runtime/sprints/`
+  - per-sprint JSON state
+- `.teams_runtime/goals/`
+  - per-goal JSON state, JSONL goal events, and archived final reports
+- `.teams_runtime/goal_scheduler.json`
+  - active goal pointer used by the scheduler
 - `.teams_runtime/role_sessions/`
   - active session metadata per runtime identity
 - `.teams_runtime/archive/`

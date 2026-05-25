@@ -58,6 +58,10 @@ class RuntimePaths:
         return self.runtime_root / "sprints"
 
     @property
+    def goals_dir(self) -> Path:
+        return self.runtime_root / "goals"
+
+    @property
     def operations_dir(self) -> Path:
         return self.runtime_root / "operations"
 
@@ -99,9 +103,25 @@ class RuntimePaths:
     def sprint_events_file(self, sprint_id: str) -> Path:
         return self.sprints_dir / f"{sprint_id}.events.jsonl"
 
+    def goal_dir(self, goal_id: str) -> Path:
+        return self.goals_dir / str(goal_id or "").strip()
+
+    def goal_file(self, goal_id: str) -> Path:
+        return self.goal_dir(goal_id) / "goal.json"
+
+    def goal_events_file(self, goal_id: str) -> Path:
+        return self.goal_dir(goal_id) / "events.jsonl"
+
+    def goal_archive_report_file(self, goal_id: str) -> Path:
+        return self.goal_dir(goal_id) / "final_report.md"
+
     @property
     def sprint_scheduler_file(self) -> Path:
         return self.runtime_root / "sprint_scheduler.json"
+
+    @property
+    def goal_scheduler_file(self) -> Path:
+        return self.runtime_root / "goal_scheduler.json"
 
     def session_state_file(self, role: str, *, runtime_identity: str | None = None) -> Path:
         identity = sanitize_runtime_identity(str(runtime_identity or role))
@@ -193,6 +213,16 @@ class RuntimePaths:
         return self.shared_workspace_root / "sprints"
 
     @property
+    def shared_goals_root(self) -> Path:
+        return self.shared_workspace_root / "goals"
+
+    def shared_goal_dir(self, goal_id: str) -> Path:
+        return self.shared_goals_root / str(goal_id or "").strip()
+
+    def shared_goal_report_file(self, goal_id: str) -> Path:
+        return self.shared_goal_dir(goal_id) / "final_report.md"
+
+    @property
     def sprint_history_root(self) -> Path:
         return self.shared_workspace_root / "sprint_history"
 
@@ -232,12 +262,14 @@ class RuntimePaths:
             self.requests_dir,
             self.backlog_dir,
             self.sprints_dir,
+            self.goals_dir,
             self.operations_dir,
             self.role_sessions_dir,
             self.archive_dir,
             self.shared_workspace_root,
             self.shared_attachments_root,
             self.sprint_artifacts_root,
+            self.shared_goals_root,
             self.sprint_history_root,
             self.internal_root,
         ):

@@ -202,6 +202,18 @@ python -m teams_runtime sprint restart
 
 `python -m teams_runtime status --sprint` still works as a compatibility alias.
 
+Goal-based sourcing is CLI controlled. The sourcer advances one active goal at a time and only starts a goal-sourced sprint when no sprint is active:
+
+```bash
+python -m teams_runtime goal start --objective "배송 리포트 워크플로 완성" --stop-condition "최종 리포트가 생성되고 report 채널에 게시된다"
+python -m teams_runtime goal status
+python -m teams_runtime goal stop
+python -m teams_runtime goal resume
+python -m teams_runtime goal cancel
+```
+
+If `--stop-condition` is omitted, the sourcer derives and persists one before sourcing the next milestone. On an idle scheduler pass, it reads the active goal, recent goal-linked sprint outcomes, and bounded Markdown context from `shared_workspace/` excluding attachments. It then starts at most one normal sprint with `trigger="goal_sourcer"`, kickoff requirements, and a sprint completion condition represented as one of those requirements. `goal stop` pauses future goal-sourced sprints, `goal resume` reactivates a paused goal, and `goal terminate` is an alias for permanent cancel.
+
 Foreground mode is also available:
 
 ```bash
@@ -258,6 +270,8 @@ The runtime writes state under:
 - `teams_generated/.teams_runtime/requests/`
 - `teams_generated/.teams_runtime/backlog/`
 - `teams_generated/.teams_runtime/sprints/`
+- `teams_generated/.teams_runtime/goals/`
+- `teams_generated/.teams_runtime/goal_scheduler.json`
 - `teams_generated/.teams_runtime/role_sessions/`
   - one active metadata file per runtime identity
 - `teams_generated/.teams_runtime/agents/`
@@ -275,6 +289,7 @@ Human-readable sprint tracking files live under:
 - `teams_generated/shared_workspace/backlog.md`
 - `teams_generated/shared_workspace/completed_backlog.md`
 - `teams_generated/shared_workspace/current_sprint.md`
+- `teams_generated/shared_workspace/goals/`
 - `teams_generated/shared_workspace/sprint_history/`
 
 ## Next Reading

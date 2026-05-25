@@ -1901,11 +1901,6 @@ def derive_routing_decision_after_report(
     )
     if workflow_decision is not None:
         return workflow_decision
-    if service._is_sourcer_review_request(request_record):
-        return {
-            "next_role": "",
-            "routing_context": {},
-        }
     if current_role == "orchestrator" and not service._request_workflow_state(request_record):
         request_params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
         user_requested_role = str(request_params.get("user_requested_role") or "").strip().lower()

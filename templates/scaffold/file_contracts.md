@@ -16,5 +16,5 @@
 - <role>/sources/: role-private reference files plus runtime-written request snapshots like `sources/<request_id>.request.md`
 - <role>/workspace_manifest.json: agent profile and permissions
 - internal/parser/: internal semantic intent-classification workspace used by orchestrator
-- internal/sourcer/: internal backlog sourcing workspace used by orchestrator
+- internal/sourcer/: internal goal sourcing workspace used by orchestrator
 - internal/version_controller/: internal commit-management workspace used by orchestrator

@@ -22,7 +22,6 @@
 - `research_subject_definition`이 있으면 `planning_decision`, `knowledge_gap`, `external_boundary`, `planner_impact`, `source_requirements`, `rejected_subjects`를 먼저 읽고 planner가 무엇을 해결해야 하는지 framing한다
 - `research_prepass.requirement_traceability_matrix`가 있으면 그 RTM row의 `req_id`, sufficiency, `research_status`, missing evidence, source/failure refs를 출발점으로 삼고 backlog/todo/acceptance/closeout evidence까지 matrix를 확장한다
 - user가 준 milestone은 구체 요구사항이 아니라 문제 해결의 entry point로 취급한다. planner는 이를 그대로 채택하지 말고 research와 kickoff context를 이용해 더 구체적인 refined milestone, problem framing, spec boundary를 작성한다
-- `Current request.params._teams_kind == "sourcer_review"`이면 backlog management 결정만 수행하고 planner 결과로 종료한다
 - `Current request.params._teams_kind == "blocked_backlog_review"`이면 blocked backlog를 검토해 항목별로 `blocked 유지` 또는 `pending 재개`를 명시적으로 결정하고, 재개 시 blocker 필드를 비운 뒤 planner 결과로 종료한다
 - backlog management 요청이면 planner가 직접 `.teams_runtime/backlog/*.json`과 `shared_workspace/backlog.md`/`completed_backlog.md`를 갱신한다
 - `Current request.params.workflow`가 있으면 planner는 planning owner로서 `proposals.workflow_transition`을 반드시 남기고, advisory specialist 요청은 `target_step=designer_advisory|architect_advisory`로만 표현한다

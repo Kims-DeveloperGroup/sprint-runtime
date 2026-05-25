@@ -23,13 +23,10 @@ from teams_runtime.workflows.state.backlog_store import (
     apply_backlog_state_from_todo,
     build_backlog_fingerprint,
     build_blocked_backlog_review_fingerprint,
-    build_sourcer_candidate_trace_fingerprint,
-    build_sourcer_review_fingerprint,
     classify_backlog_kind,
     clear_backlog_blockers,
     desired_backlog_status_for_todo,
     drop_non_actionable_backlog_items,
-    fallback_backlog_candidates_from_findings,
     iter_backlog_items,
     is_actionable_backlog_status,
     is_active_backlog_status,
@@ -38,12 +35,29 @@ from teams_runtime.workflows.state.backlog_store import (
     load_backlog_item,
     normalize_blocked_backlog_review_candidates,
     normalize_backlog_acceptance_criteria,
-    normalize_sourcer_review_candidates,
     refresh_backlog_markdown,
     render_blocked_backlog_review_markdown,
     repair_non_actionable_carry_over_backlog_items,
-    render_sourcer_review_markdown,
     save_backlog_item,
+)
+from teams_runtime.workflows.state.goal_store import (
+    append_goal_event,
+    archive_goal_final_report,
+    cancel_goal as cancel_goal_state,
+    complete_goal as complete_goal_state,
+    create_goal as create_goal_state,
+    fail_goal as fail_goal_state,
+    iter_goal_events,
+    iter_goal_states,
+    load_active_goal,
+    load_current_goal,
+    load_goal,
+    pause_goal as pause_goal_state,
+    record_goal_sprint_outcome,
+    record_sourced_milestone,
+    resume_goal as resume_goal_state,
+    save_goal,
+    update_goal_stop_condition,
 )
 from teams_runtime.shared.config import load_discord_agents_config, load_team_runtime_config
 from teams_runtime.runtime.role_result_contract import is_restart_repairable_invalid_contract_payload
@@ -95,15 +109,7 @@ from teams_runtime.workflows.orchestration.artifacts import (
     workspace_artifact_hint as workspace_artifact_hint_helper,
 )
 from teams_runtime.workflows.orchestration.scheduler import (
-    backlog_sourcing_interval_seconds as backlog_sourcing_interval_seconds_helper,
-    backlog_sourcing_loop as backlog_sourcing_loop_helper,
-    build_backlog_sourcing_findings as build_backlog_sourcing_findings_helper,
-    build_sourcer_existing_backlog_context as build_sourcer_existing_backlog_context_helper,
-    collect_backlog_linked_request_ids as collect_backlog_linked_request_ids_helper,
-    discover_backlog_candidates as discover_backlog_candidates_helper,
     maybe_queue_blocked_backlog_review_for_autonomous_start as maybe_queue_blocked_backlog_review_for_autonomous_start_helper,
-    perform_backlog_sourcing as perform_backlog_sourcing_helper,
-    poll_backlog_sourcing_once as poll_backlog_sourcing_once_helper,
     poll_scheduler_once as poll_scheduler_once_helper,
     scheduler_loop as scheduler_loop_helper,
     select_backlog_items_for_sprint as select_backlog_items_for_sprint_helper,
@@ -219,15 +225,12 @@ from teams_runtime.workflows.orchestration.relay import (
 from teams_runtime.workflows.state.request_store import (
     append_request_event,
     build_blocked_backlog_review_request_record as build_blocked_backlog_review_request_record_helper,
-    build_sourcer_review_request_record as build_sourcer_review_request_record_helper,
     find_recent_terminal_blocked_backlog_review_request as find_recent_terminal_blocked_backlog_review_request_helper,
     find_open_blocked_backlog_review_requests as find_open_blocked_backlog_review_requests_helper,
     find_open_blocked_backlog_review_request as find_open_blocked_backlog_review_request_helper,
-    find_open_sourcer_review_request as find_open_sourcer_review_request_helper,
     is_blocked_backlog_review_request as is_blocked_backlog_review_request_helper,
     is_internal_sprint_request as is_internal_sprint_request_helper,
     is_planner_backlog_review_request as is_planner_backlog_review_request_helper,
-    is_sourcer_review_request as is_sourcer_review_request_helper,
     is_terminal_internal_request_status as is_terminal_internal_request_status_helper,
     is_terminal_request,
     iter_request_records,
@@ -362,14 +365,11 @@ from teams_runtime.workflows.orchestration.notifications import (
     append_role_journal as append_role_journal_helper,
     append_shared_workspace_entry as append_shared_workspace_entry_helper,
     build_requester_status_message as build_requester_status_message_helper,
-    build_sourcer_report_state_update as build_sourcer_report_state_update_helper,
     ensure_markdown_file as ensure_markdown_file_helper,
-    get_sourcer_report_client_for_service as get_sourcer_report_client_for_service_helper,
     normalize_insights as normalize_insights_helper,
     normalize_markdown_body as normalize_markdown_body_helper,
     record_shared_role_result as record_shared_role_result_helper,
     refresh_role_todos as refresh_role_todos_helper,
-    report_sourcer_activity_sync as report_sourcer_activity_sync_helper,
     reply_to_requester as reply_to_requester_helper,
     send_channel_reply as send_channel_reply_helper,
     send_discord_content as send_discord_content_helper,
@@ -482,7 +482,7 @@ from teams_runtime.discord.client import (
 )
 from teams_runtime.shared.models import MessageEnvelope, RequestRecord, RoleResult, TEAM_ROLES, WorkflowState
 from teams_runtime.runtime.base_runtime import RoleAgentRuntime, normalize_role_payload
-from teams_runtime.runtime.internal.backlog_sourcing import BacklogSourcingRuntime
+from teams_runtime.runtime.internal.goal_sourcing import GoalSourcingRuntime, normalize_goal_sourcing_payload
 from teams_runtime.runtime.internal.intent_parser import IntentParserRuntime, normalize_intent_payload
 from teams_runtime.runtime.research_runtime import ResearchAgentRuntime
 from teams_runtime.runtime.identities import local_runtime_identity, service_runtime_identity
@@ -975,7 +975,7 @@ class TeamService:
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             session_identity=self._local_runtime_session_identity("parser"),
         )
-        self.backlog_sourcer = BacklogSourcingRuntime(
+        self.goal_sourcer = GoalSourcingRuntime(
             paths=self.paths,
             sprint_id=self.runtime_config.sprint_id,
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
@@ -989,8 +989,6 @@ class TeamService:
             agent_root=self.paths.internal_agent_root("version_controller"),
             session_identity=self._local_runtime_session_identity("version_controller"),
         )
-        self._sourcer_report_config = self.discord_config.internal_agents.get("sourcer")
-        self._sourcer_report_client: DiscordClient | None = None
         self._purge_request_scoped_role_output_files()
         self._role_runtime_cache: dict[tuple[str, str, str], RoleAgentRuntime] = {
             (role, self.runtime_config.sprint_id, service_runtime_identity(role)): self.role_runtime
@@ -1002,15 +1000,9 @@ class TeamService:
         self._pending_role_request_resume_task: asyncio.Task[None] | None = None
         self._internal_relay_consumer_task: asyncio.Task[None] | None = None
         self._sprint_issue_publish_tasks: set[asyncio.Task[None]] = set()
-        self._backlog_sourcing_lock = threading.Lock()
-        self._last_backlog_sourcing_activity: dict[str, Any] = {}
+        self._goal_sourcing_lock = threading.Lock()
+        self._last_goal_sourcing_activity: dict[str, Any] = {}
         self._malformed_relay_log_times: dict[str, float] = {}
-        self._last_sourcer_report_client_label = ""
-        self._last_sourcer_report_reason = ""
-        self._last_sourcer_report_category = ""
-        self._last_sourcer_report_recovery_action = ""
-        self._last_sourcer_report_failure_signature = ""
-        self._last_sourcer_report_failure_logged_at = 0.0
         if enable_discord_client:
             self.discord_client = DiscordClient(
                 token_env=self.role_config.token_env,
@@ -1198,10 +1190,6 @@ class TeamService:
 
     def _initial_phase_step_instruction(self, step: str) -> str:
         return initial_phase_step_instruction_helper(step)
-
-    @staticmethod
-    def _is_sourcer_review_request(request_record: dict[str, Any]) -> bool:
-        return is_sourcer_review_request_helper(request_record)
 
     @staticmethod
     def _is_blocked_backlog_review_request(request_record: dict[str, Any]) -> bool:
@@ -2563,16 +2551,12 @@ class TeamService:
                         await self._internal_relay_consumer_task
             return
         scheduler_task = asyncio.create_task(self._scheduler_loop())
-        sourcing_task = asyncio.create_task(self._backlog_sourcing_loop())
         try:
             await self._listen_forever()
         finally:
             scheduler_task.cancel()
-            sourcing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await scheduler_task
-            with contextlib.suppress(asyncio.CancelledError):
-                await sourcing_task
             if self._internal_relay_consumer_task is not None:
                 self._internal_relay_consumer_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -2726,37 +2710,6 @@ class TeamService:
             state["listener_connected_at"] = utc_now_iso()
         else:
             state["listener_last_failure_at"] = utc_now_iso()
-        write_json(self.paths.agent_state_file(self.role), state)
-
-    def _record_sourcer_report_state(
-        self,
-        *,
-        status: str,
-        client_label: str,
-        reason: str,
-        category: str,
-        recovery_action: str,
-        error: str,
-        attempts: int,
-        channel_id: str,
-    ) -> None:
-        normalized, state, reset_failure_suppression = build_sourcer_report_state_update_helper(
-            agent_state=self._load_agent_state(),
-            status=status,
-            client_label=client_label,
-            reason=reason,
-            category=category,
-            recovery_action=recovery_action,
-            error=error,
-            attempts=attempts,
-            channel_id=channel_id,
-            updated_at=utc_now_iso(),
-        )
-        if reset_failure_suppression:
-            self._last_sourcer_report_failure_signature = ""
-            self._last_sourcer_report_failure_logged_at = 0.0
-        if isinstance(self._last_backlog_sourcing_activity, dict):
-            self._last_backlog_sourcing_activity.update(normalized)
         write_json(self.paths.agent_state_file(self.role), state)
 
     def _version_controller_sources_dir(self) -> Path:
@@ -3020,10 +2973,6 @@ class TeamService:
     def _build_backlog_fingerprint(*, title: str, scope: str, kind: str) -> str:
         return build_backlog_fingerprint(title=title, scope=scope, kind=kind)
 
-    @staticmethod
-    def _build_sourcer_candidate_trace_fingerprint(candidate: dict[str, Any]) -> str:
-        return build_sourcer_candidate_trace_fingerprint(candidate)
-
     def _load_scheduler_state(self) -> dict[str, Any]:
         state = read_json(self.paths.sprint_scheduler_file)
         return {
@@ -3032,12 +2981,6 @@ class TeamService:
             "last_completed_at": str(state.get("last_completed_at") or "").strip(),
             "last_skipped_at": str(state.get("last_skipped_at") or "").strip(),
             "last_skip_reason": str(state.get("last_skip_reason") or "").strip(),
-            "last_sourced_at": str(state.get("last_sourced_at") or "").strip(),
-            "last_sourcing_status": str(state.get("last_sourcing_status") or "").strip(),
-            "last_sourcing_request_id": str(state.get("last_sourcing_request_id") or "").strip(),
-            "last_sourcing_fingerprint": str(state.get("last_sourcing_fingerprint") or "").strip(),
-            "last_sourcing_review_status": str(state.get("last_sourcing_review_status") or "").strip(),
-            "last_sourcing_review_request_id": str(state.get("last_sourcing_review_request_id") or "").strip(),
             "next_slot_at": str(state.get("next_slot_at") or "").strip(),
             "deferred_slot_at": str(state.get("deferred_slot_at") or "").strip(),
             "last_trigger": str(state.get("last_trigger") or "").strip(),
@@ -3100,18 +3043,6 @@ class TeamService:
         state["milestone_request_reason"] = str(reason or "").strip()
         self._save_scheduler_state(state)
         return True
-
-    def _build_sourcer_existing_backlog_context(self) -> list[dict[str, Any]]:
-        return build_sourcer_existing_backlog_context_helper(self)
-
-    def _collect_backlog_linked_request_ids(self) -> set[str]:
-        return collect_backlog_linked_request_ids_helper(self)
-
-    def _build_backlog_sourcing_findings(self) -> list[dict[str, Any]]:
-        return build_backlog_sourcing_findings_helper(self)
-
-    def _fallback_backlog_candidates_from_findings(self, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return fallback_backlog_candidates_from_findings(findings)
 
     def _iter_backlog_items(self) -> list[dict[str, Any]]:
         return iter_backlog_items(self.paths)
@@ -3915,9 +3846,6 @@ class TeamService:
     def _select_backlog_items_for_sprint(self) -> list[dict[str, Any]]:
         return select_backlog_items_for_sprint_helper(self)
 
-    def _perform_backlog_sourcing(self) -> tuple[int, int, list[dict[str, Any]]]:
-        return perform_backlog_sourcing_helper(self)
-
     def _prepare_actionable_backlog_for_sprint(self) -> list[dict[str, Any]]:
         return self._select_backlog_items_for_sprint()
 
@@ -3927,23 +3855,320 @@ class TeamService:
     ) -> bool:
         return await maybe_queue_blocked_backlog_review_for_autonomous_start_helper(self, state)
 
-    def _backlog_sourcing_interval_seconds(self) -> float:
-        return backlog_sourcing_interval_seconds_helper(self, minimum_interval_seconds=BACKLOG_SOURCING_POLL_SECONDS)
-
-    async def _backlog_sourcing_loop(self) -> None:
-        await backlog_sourcing_loop_helper(self, poll_seconds=BACKLOG_SOURCING_POLL_SECONDS)
-
-    async def _poll_backlog_sourcing_once(self) -> None:
-        await poll_backlog_sourcing_once_helper(self)
-
-    def _discover_backlog_candidates(self) -> list[dict[str, Any]]:
-        return discover_backlog_candidates_helper(self)
-
     async def _scheduler_loop(self) -> None:
         await scheduler_loop_helper(self, poll_seconds=SCHEDULER_POLL_SECONDS)
 
     async def _poll_scheduler_once(self) -> None:
         await poll_scheduler_once_helper(self)
+
+    def _load_current_goal(self) -> dict[str, Any]:
+        return load_current_goal(self.paths)
+
+    def _load_active_goal(self) -> dict[str, Any]:
+        return load_active_goal(self.paths)
+
+    def _load_goal(self, goal_id: str) -> dict[str, Any]:
+        return load_goal(self.paths, goal_id)
+
+    def _save_goal(self, goal_state: dict[str, Any]) -> None:
+        save_goal(self.paths, goal_state)
+
+    def _iter_goal_states(self) -> list[dict[str, Any]]:
+        return iter_goal_states(self.paths)
+
+    def _recent_goal_sprint_history(self, goal_state: dict[str, Any], *, limit: int = 10) -> list[dict[str, Any]]:
+        outcomes = [dict(item) for item in goal_state.get("sprint_outcomes") or [] if isinstance(item, dict)]
+        return outcomes[-limit:]
+
+    async def _publish_goal_report(self, goal_state: dict[str, Any], report: str) -> bool:
+        channel_id = str(self.discord_config.report_channel_id or "").strip()
+        if not channel_id:
+            return False
+        try:
+            await self._send_discord_content(
+                content=report,
+                send=lambda chunk: self.discord_client.send_channel_message(channel_id, chunk),
+                target_description=f"goal-report:{channel_id}:{goal_state.get('goal_id') or ''}",
+                swallow_exceptions=False,
+                log_traceback=False,
+            )
+            return True
+        except Exception as exc:
+            LOGGER.warning(
+                "Failed to publish goal report goal_id=%s to report:%s: %s",
+                goal_state.get("goal_id") or "unknown",
+                channel_id,
+                exc,
+            )
+            return False
+
+    async def _archive_and_publish_goal_report(self, goal_state: dict[str, Any], *, terminal_reason: str) -> bool:
+        report = archive_goal_final_report(self.paths, goal_state, terminal_reason=terminal_reason)
+        return await self._publish_goal_report(goal_state, report)
+
+    def _request_goal_sprint_wrap_up(self, goal_state: dict[str, Any]) -> str:
+        goal_id = str(goal_state.get("goal_id") or "").strip()
+        scheduler_state = self._load_scheduler_state()
+        sprint_id = str(scheduler_state.get("active_sprint_id") or "").strip()
+        if not goal_id or not sprint_id:
+            return ""
+        sprint_state = self._load_sprint_state(sprint_id)
+        if not sprint_state or str(sprint_state.get("goal_id") or "").strip() != goal_id:
+            return ""
+        status = str(sprint_state.get("status") or "").strip().lower()
+        if status in {"completed", "failed", "blocked", "cancelled"}:
+            return sprint_id
+        if not str(sprint_state.get("wrap_up_requested_at") or "").strip():
+            sprint_state["wrap_up_requested_at"] = utc_now_iso()
+            self._append_sprint_event(
+                sprint_id,
+                event_type="wrap_up_requested",
+                summary="Linked goal lifecycle requested sprint wrap-up.",
+                payload={"goal_id": goal_id},
+            )
+            self._save_sprint_state(sprint_state)
+        return sprint_id
+
+    async def start_goal_lifecycle(self, *, objective: str, stop_condition: str = "") -> str:
+        try:
+            goal_state = create_goal_state(
+                self.paths,
+                objective=objective,
+                stop_condition=stop_condition,
+            )
+        except ValueError as exc:
+            return str(exc)
+        return (
+            "goal started\n"
+            f"goal_id={goal_state.get('goal_id') or ''}\n"
+            f"objective={goal_state.get('objective') or ''}\n"
+            f"stop_condition={goal_state.get('stop_condition') or 'pending sourcer derivation'}"
+        )
+
+    def goal_status_text(self) -> str:
+        goal_state = self._load_current_goal()
+        if not goal_state:
+            goals = self._iter_goal_states()
+            if not goals:
+                return "No goal found."
+            goal_state = goals[-1]
+            view = "latest"
+        else:
+            view = "current"
+        events = iter_goal_events(self.paths, str(goal_state.get("goal_id") or ""))[-5:]
+        return "\n".join(
+            [
+                "## Goal Summary",
+                f"- view: {view}",
+                f"- goal_id: {goal_state.get('goal_id') or ''}",
+                f"- status: {goal_state.get('status') or ''}",
+                f"- objective: {goal_state.get('objective') or ''}",
+                f"- stop_condition: {goal_state.get('stop_condition') or 'N/A'}",
+                f"- sourced_milestones: {len(goal_state.get('sourced_milestones') or [])}",
+                f"- linked_sprints: {len(goal_state.get('linked_sprint_ids') or [])}",
+                f"- sprint_outcomes: {len(goal_state.get('sprint_outcomes') or [])}",
+                f"- final_report_path: {goal_state.get('final_report_path') or 'N/A'}",
+                f"- recent_events: {', '.join(str(item.get('type') or '') for item in events) or 'N/A'}",
+            ]
+        )
+
+    async def stop_goal_lifecycle(self, *, resume_mode: str = "background") -> str:
+        goal_state = self._load_current_goal()
+        if not goal_state:
+            return "No active or paused goal exists."
+        previous_status = str(goal_state.get("status") or "").strip()
+        goal_state = pause_goal_state(self.paths, goal_state, actor="cli", reason="Goal paused by CLI stop.")
+        wrapped_sprint_id = self._request_goal_sprint_wrap_up(goal_state)
+        if wrapped_sprint_id and resume_mode == "background":
+            asyncio.create_task(self._resume_active_sprint(wrapped_sprint_id))
+        elif wrapped_sprint_id and resume_mode == "await":
+            await self._resume_active_sprint(wrapped_sprint_id)
+        return (
+            "goal paused\n"
+            f"goal_id={goal_state.get('goal_id') or ''}\n"
+            f"previous_status={previous_status or 'N/A'}\n"
+            f"wrapped_sprint_id={wrapped_sprint_id or 'N/A'}"
+        )
+
+    async def resume_goal_lifecycle(self) -> str:
+        goal_state = self._load_current_goal()
+        if not goal_state:
+            return "No paused goal exists."
+        previous_status = str(goal_state.get("status") or "").strip()
+        goal_state = resume_goal_state(self.paths, goal_state, actor="cli")
+        return (
+            "goal resumed\n"
+            f"goal_id={goal_state.get('goal_id') or ''}\n"
+            f"previous_status={previous_status or 'N/A'}\n"
+            f"status={goal_state.get('status') or ''}"
+        )
+
+    async def cancel_goal_lifecycle(self, *, resume_mode: str = "background") -> str:
+        goal_state = self._load_current_goal()
+        if not goal_state:
+            return "No active or paused goal exists."
+        wrapped_sprint_id = self._request_goal_sprint_wrap_up(goal_state)
+        goal_state = cancel_goal_state(
+            self.paths,
+            goal_state,
+            evidence={"reason": "cancelled by CLI", "wrapped_sprint_id": wrapped_sprint_id},
+            actor="cli",
+        )
+        published = await self._archive_and_publish_goal_report(
+            goal_state,
+            terminal_reason="cancelled by CLI",
+        )
+        if wrapped_sprint_id and resume_mode == "background":
+            asyncio.create_task(self._resume_active_sprint(wrapped_sprint_id))
+        elif wrapped_sprint_id and resume_mode == "await":
+            await self._resume_active_sprint(wrapped_sprint_id)
+        return (
+            "goal cancelled\n"
+            f"goal_id={goal_state.get('goal_id') or ''}\n"
+            f"wrapped_sprint_id={wrapped_sprint_id or 'N/A'}\n"
+            f"final_report_path={goal_state.get('final_report_path') or 'N/A'}\n"
+            f"published={str(published).lower()}"
+        )
+
+    async def _start_goal_sourced_sprint(
+        self,
+        goal_state: dict[str, Any],
+        milestone: dict[str, Any],
+        sourcing_result: dict[str, Any],
+    ) -> str:
+        milestone_title = str(milestone.get("title") or "").strip()
+        if not milestone_title:
+            return ""
+        kickoff_brief = str(milestone.get("summary") or sourcing_result.get("summary") or "").strip()
+        kickoff_request_text = "\n".join(
+            line
+            for line in [
+                "goal sourced sprint",
+                f"goal_id: {goal_state.get('goal_id') or ''}",
+                f"objective: {goal_state.get('objective') or ''}",
+                f"stop_condition: {goal_state.get('stop_condition') or ''}",
+                f"milestone: {milestone_title}",
+                f"summary: {kickoff_brief}",
+            ]
+            if str(line).strip()
+        )
+        await self.start_sprint_lifecycle(
+            milestone_title,
+            trigger="goal_sourcer",
+            resume_mode="background",
+            kickoff_brief=kickoff_brief,
+            kickoff_requirements=list(milestone.get("requirements") or []),
+            kickoff_request_text=kickoff_request_text,
+            kickoff_source_request_id=str(goal_state.get("goal_id") or ""),
+            kickoff_reference_artifacts=list(milestone.get("artifacts") or []),
+            goal_metadata={
+                "goal_id": str(goal_state.get("goal_id") or ""),
+                "goal_objective": str(goal_state.get("objective") or ""),
+                "goal_stop_condition": str(goal_state.get("stop_condition") or ""),
+                "goal_sourcing_summary": str(sourcing_result.get("summary") or ""),
+            },
+        )
+        sprint_id = str(self._load_scheduler_state().get("active_sprint_id") or "").strip()
+        record_sourced_milestone(
+            self.paths,
+            goal_state,
+            milestone_title=milestone_title,
+            summary=kickoff_brief,
+            sprint_id=sprint_id,
+            requirements=list(milestone.get("requirements") or []),
+            artifacts=list(milestone.get("artifacts") or []),
+        )
+        return sprint_id
+
+    async def _handle_goal_sourcing_result(self, goal_state: dict[str, Any], result: dict[str, Any]) -> bool:
+        result = normalize_goal_sourcing_payload(result)
+        self._last_goal_sourcing_activity = dict(result)
+        if str(result.get("derived_stop_condition") or "").strip() and not str(goal_state.get("stop_condition") or "").strip():
+            goal_state = update_goal_stop_condition(
+                self.paths,
+                goal_state,
+                str(result.get("derived_stop_condition") or ""),
+            )
+        status = str(result.get("status") or "").strip().lower()
+        raw_completion_decision = result.get("completion_decision")
+        completion_decision = dict(raw_completion_decision) if isinstance(raw_completion_decision, dict) else {}
+        if status == "completed" or bool(completion_decision.get("completed")):
+            evidence = {
+                "summary": str(result.get("summary") or "").strip(),
+                "reason": str(completion_decision.get("reason") or "").strip(),
+                "evidence": list(completion_decision.get("evidence") or []),
+            }
+            goal_state = complete_goal_state(self.paths, goal_state, evidence=evidence, actor="sourcer")
+            await self._archive_and_publish_goal_report(goal_state, terminal_reason=evidence["reason"] or "completed")
+            return True
+        if status == "failed":
+            fail_goal_state(
+                self.paths,
+                goal_state,
+                evidence={
+                    "summary": str(result.get("summary") or "").strip(),
+                    "error": str(result.get("error") or "").strip(),
+                },
+                actor="sourcer",
+            )
+            return True
+        milestone = dict(result.get("next_milestone") or {}) if isinstance(result.get("next_milestone"), dict) else {}
+        if str(milestone.get("title") or "").strip():
+            await self._start_goal_sourced_sprint(goal_state, milestone, result)
+            return True
+        append_goal_event(
+            self.paths,
+            str(goal_state.get("goal_id") or ""),
+            event_type="sourcing_no_action",
+            actor="sourcer",
+            summary=str(result.get("no_action_reason") or result.get("summary") or "Goal sourcer returned no action.").strip(),
+            payload={"result": result},
+        )
+        return True
+
+    async def _poll_goal_sourcing_once(self, state: dict[str, Any] | None = None) -> bool:
+        goal_state = self._load_active_goal()
+        if not goal_state:
+            return False
+        scheduler_state = dict(state or self._load_scheduler_state())
+        if str(scheduler_state.get("active_sprint_id") or "").strip():
+            return True
+        if not self._goal_sourcing_lock.acquire(blocking=False):
+            return True
+        try:
+            try:
+                result = await asyncio.to_thread(
+                    self.goal_sourcer.source,
+                    goal_state=goal_state,
+                    scheduler_state=scheduler_state,
+                    current_sprint={},
+                    recent_sprint_history=self._recent_goal_sprint_history(goal_state),
+                )
+            except Exception as exc:
+                LOGGER.exception("Goal sourcing failed for goal_id=%s", goal_state.get("goal_id") or "unknown")
+                fail_goal_state(
+                    self.paths,
+                    goal_state,
+                    evidence={"error": str(exc)},
+                    actor="sourcer",
+                )
+                return True
+            return await self._handle_goal_sourcing_result(goal_state, result)
+        finally:
+            self._goal_sourcing_lock.release()
+
+    def _record_goal_sprint_outcome(
+        self,
+        sprint_state: dict[str, Any],
+        closeout_result: dict[str, Any] | None = None,
+    ) -> None:
+        goal_id = str(sprint_state.get("goal_id") or "").strip()
+        if not goal_id:
+            return
+        goal_state = self._load_goal(goal_id)
+        if not goal_state:
+            return
+        record_goal_sprint_outcome(self.paths, goal_state, sprint_state, closeout_result)
 
     def _build_active_sprint_id(self) -> str:
         return build_active_sprint_id()
@@ -4269,7 +4494,7 @@ class TeamService:
         params = dict(request_record.get("params") or {})
         request_kind = str(params.get("_teams_kind") or "").strip()
         sprint_id = str(params.get("sprint_id") or request_record.get("sprint_id") or "").strip()
-        if not sprint_id and request_kind not in {"sourcer_review", "blocked_backlog_review"}:
+        if not sprint_id and request_kind != "blocked_backlog_review":
             return summary
 
         proposal_candidates = self._collect_backlog_candidates_from_payload(result.get("proposals") or {})
@@ -4352,9 +4577,6 @@ class TeamService:
     def _is_attachment_only_save_failure(message: DiscordMessage) -> bool:
         return is_attachment_only_save_failure_helper(message)
 
-    def _normalize_sourcer_review_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return normalize_sourcer_review_candidates(candidates)
-
     def _normalize_blocked_backlog_review_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return normalize_blocked_backlog_review_candidates(candidates)
 
@@ -4367,14 +4589,8 @@ class TeamService:
             ]
         )
 
-    def _build_sourcer_review_fingerprint(self, candidates: list[dict[str, Any]]) -> str:
-        return build_sourcer_review_fingerprint(candidates)
-
     def _build_blocked_backlog_review_fingerprint(self, candidates: list[dict[str, Any]]) -> str:
         return build_blocked_backlog_review_fingerprint(candidates)
-
-    def _find_open_sourcer_review_request(self, fingerprint: str) -> dict[str, Any]:
-        return find_open_sourcer_review_request_helper(self.paths, fingerprint)
 
     def _find_open_blocked_backlog_review_request(self, fingerprint: str) -> dict[str, Any]:
         return find_open_blocked_backlog_review_request_helper(self.paths, fingerprint)
@@ -4423,19 +4639,6 @@ class TeamService:
                 latest_updated_at = updated_at
         return latest_request
 
-    def _render_sourcer_review_markdown(
-        self,
-        *,
-        request_id: str,
-        candidates: list[dict[str, Any]],
-        sourcing_activity: dict[str, Any],
-    ) -> str:
-        return render_sourcer_review_markdown(
-            request_id=request_id,
-            candidates=candidates,
-            sourcing_activity=sourcing_activity,
-        )
-
     def _render_blocked_backlog_review_markdown(
         self,
         *,
@@ -4446,36 +4649,6 @@ class TeamService:
             request_id=request_id,
             candidates=candidates,
         )
-
-    def _build_sourcer_review_request_record(
-        self,
-        candidates: list[dict[str, Any]],
-        *,
-        sourcing_activity: dict[str, Any],
-    ) -> dict[str, Any]:
-        request_id = new_request_id()
-        normalized_candidates = self._normalize_sourcer_review_candidates(candidates)
-        review_dir = self.paths.shared_workspace_root / "sourcer_reviews"
-        review_dir.mkdir(parents=True, exist_ok=True)
-        review_file = review_dir / f"{request_id}.md"
-        review_file.write_text(
-            self._render_sourcer_review_markdown(
-                request_id=request_id,
-                candidates=normalized_candidates,
-                sourcing_activity=sourcing_activity,
-            ),
-            encoding="utf-8",
-        )
-        record = build_sourcer_review_request_record_helper(
-            request_id=request_id,
-            candidates=normalized_candidates,
-            sourcing_activity=sourcing_activity,
-            artifact_hint=self._workspace_artifact_hint(review_file),
-            sprint_id=self.runtime_config.sprint_id,
-            fingerprint=self._build_sourcer_review_fingerprint(normalized_candidates),
-        )
-        self._save_request(record)
-        return record
 
     def _build_blocked_backlog_review_request_record(
         self,
@@ -4501,102 +4674,6 @@ class TeamService:
         )
         self._save_request(record)
         return record
-
-    async def _queue_sourcer_candidates_for_planner_review(
-        self,
-        candidates: list[dict[str, Any]],
-        *,
-        sourcing_activity: dict[str, Any],
-    ) -> dict[str, Any]:
-        normalized_candidates = self._normalize_sourcer_review_candidates(candidates)
-        if not normalized_candidates:
-            return {"request_id": "", "created": False, "reused": False, "relay_sent": False, "fingerprint": ""}
-        fingerprint = self._build_sourcer_review_fingerprint(normalized_candidates)
-        existing = self._find_open_sourcer_review_request(fingerprint)
-        if existing:
-            request_id = str(existing.get("request_id") or "").strip()
-            self._last_backlog_sourcing_activity["planner_review_request_id"] = request_id
-            self._last_backlog_sourcing_activity["planner_review_status"] = "reused"
-            self._last_backlog_sourcing_activity["planner_review_candidate_count"] = len(normalized_candidates)
-            return {
-                "request_id": request_id,
-                "created": False,
-                "reused": True,
-                "relay_sent": True,
-                "fingerprint": fingerprint,
-            }
-        request_record = self._build_sourcer_review_request_record(
-            normalized_candidates,
-            sourcing_activity=sourcing_activity,
-        )
-        request_record["status"] = "delegated"
-        request_record["current_role"] = "planner"
-        request_record["next_role"] = "planner"
-        selection = self._build_governed_routing_selection(
-            request_record,
-            {},
-            current_role="orchestrator",
-            preferred_role="planner",
-            selection_source="sourcer_review",
-        )
-        request_record["routing_context"] = self._build_routing_context(
-            "planner",
-            reason="Selected planner because sourcer candidates require planner-owned backlog review and persistence.",
-            preferred_role=str(selection.get("preferred_role") or ""),
-            selection_source="sourcer_review",
-            matched_signals=[
-                str(item).strip()
-                for item in (selection.get("matched_signals") or [])
-                if str(item).strip()
-            ],
-            override_reason=str(selection.get("override_reason") or ""),
-            matched_strongest_domains=[
-                str(item).strip()
-                for item in (selection.get("matched_strongest_domains") or [])
-                if str(item).strip()
-            ],
-            matched_preferred_skills=[
-                str(item).strip()
-                for item in (selection.get("matched_preferred_skills") or [])
-                if str(item).strip()
-            ],
-            matched_behavior_traits=[
-                str(item).strip()
-                for item in (selection.get("matched_behavior_traits") or [])
-                if str(item).strip()
-            ],
-            policy_source=str(selection.get("policy_source") or ""),
-            routing_phase=str(selection.get("routing_phase") or ""),
-            request_state_class=str(selection.get("request_state_class") or ""),
-            score_total=int(selection.get("score_total") or 0),
-            score_breakdown=dict(selection.get("score_breakdown") or {}),
-            candidate_summary=list(selection.get("candidate_summary") or []),
-        )
-        append_request_event(
-            request_record,
-            event_type="delegated",
-            actor="orchestrator",
-            summary="internal sourcer 후보를 planner backlog review로 전달했습니다.",
-            payload={"routing_context": dict(request_record.get("routing_context") or {})},
-        )
-        self._save_request(request_record)
-        self._append_role_history(
-            "orchestrator",
-            request_record,
-            event_type="delegated",
-            summary="internal sourcer 후보를 planner backlog review로 전달했습니다.",
-        )
-        relay_sent = await self._delegate_request(request_record, "planner")
-        self._last_backlog_sourcing_activity["planner_review_request_id"] = str(request_record.get("request_id") or "")
-        self._last_backlog_sourcing_activity["planner_review_status"] = "delegated" if relay_sent else "relay_failed"
-        self._last_backlog_sourcing_activity["planner_review_candidate_count"] = len(normalized_candidates)
-        return {
-            "request_id": str(request_record.get("request_id") or ""),
-            "created": True,
-            "reused": False,
-            "relay_sent": relay_sent,
-            "fingerprint": fingerprint,
-        }
 
     async def _queue_blocked_backlog_for_planner_review(
         self,
@@ -5591,30 +5668,6 @@ class TeamService:
         request_record["planner_initial_phase_report_keys"] = keys[-12:]
         self._persist_request_result(request_record)
 
-    def _get_sourcer_report_client(self) -> DiscordClient | None:
-        return get_sourcer_report_client_for_service_helper(
-            self,
-            discord_client_factory=DiscordClient,
-            logger=LOGGER,
-        )
-
-    def _report_sourcer_activity_sync(
-        self,
-        *,
-        sourcing_activity: dict[str, Any],
-        added: int,
-        updated: int,
-        candidates: list[dict[str, Any]],
-    ) -> None:
-        report_sourcer_activity_sync_helper(
-            self,
-            sourcing_activity=sourcing_activity,
-            added=added,
-            updated=updated,
-            candidates=candidates,
-            logger=LOGGER,
-        )
-
     async def _resume_uncommitted_sprint_todo(
         self,
         *,
@@ -5874,6 +5927,7 @@ class TeamService:
         archive_pending_requirement_candidates_helper(sprint_state, reason=closeout_status or "sprint_closeout")
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
+        self._record_goal_sprint_outcome(sprint_state, closeout_result)
         await self._publish_sprint_issue_before_terminal_reports(sprint_state)
         await self._send_terminal_sprint_reports(
             title=terminal_title,
@@ -5903,6 +5957,7 @@ class TeamService:
         )
         await self._prepare_and_archive_sprint_report(sprint_state, closeout_result)
         self._save_sprint_state(sprint_state)
+        self._record_goal_sprint_outcome(sprint_state, closeout_result)
         await self._publish_sprint_issue_before_terminal_reports(sprint_state)
         await self._send_terminal_sprint_reports(
             title=terminal_title,
@@ -6607,6 +6662,7 @@ class TeamService:
         kickoff_source_request_id: str = "",
         kickoff_reference_artifacts: list[str] | None = None,
         kickoff_requester_route: dict[str, Any] | None = None,
+        goal_metadata: dict[str, Any] | None = None,
     ) -> str:
         active_sprint = self._load_active_sprint_state()
         if active_sprint:
@@ -6630,6 +6686,14 @@ class TeamService:
             kickoff_reference_artifacts=kickoff_reference_artifacts,
             kickoff_requester_route=kickoff_requester_route,
         )
+        normalized_goal_metadata = dict(goal_metadata or {})
+        goal_id = str(normalized_goal_metadata.get("goal_id") or "").strip()
+        if goal_id:
+            sprint_state["execution_mode"] = "goal_sourced"
+            sprint_state["goal_id"] = goal_id
+            sprint_state["goal_objective"] = str(normalized_goal_metadata.get("goal_objective") or "").strip()
+            sprint_state["goal_stop_condition"] = str(normalized_goal_metadata.get("goal_stop_condition") or "").strip()
+            sprint_state["goal_sourcing_summary"] = str(normalized_goal_metadata.get("goal_sourcing_summary") or "").strip()
         scheduler_state = self._load_scheduler_state()
         scheduler_state["active_sprint_id"] = str(sprint_state.get("sprint_id") or "")
         scheduler_state["last_started_at"] = str(sprint_state.get("started_at") or "")
@@ -6640,8 +6704,12 @@ class TeamService:
         self._append_sprint_event(
             str(sprint_state.get("sprint_id") or ""),
             event_type="started",
-            summary="사용자 milestone 기반 manual sprint를 시작했습니다.",
-            payload={"milestone_title": sprint_state.get("milestone_title") or ""},
+            summary=(
+                "goal sourcer milestone 기반 sprint를 시작했습니다."
+                if goal_id
+                else "사용자 milestone 기반 manual sprint를 시작했습니다."
+            ),
+            payload={"milestone_title": sprint_state.get("milestone_title") or "", "goal_id": goal_id},
         )
         sprint_id = str(sprint_state.get("sprint_id") or "")
         if resume_mode == "await":

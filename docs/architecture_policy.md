@@ -49,7 +49,7 @@ teams_runtime/
     designer_role.py
     identities.py
     internal/
-      backlog_sourcing.py
+      goal_sourcing.py
       intent_parser.py
     orchestrator_role.py
     planner_role.py
@@ -114,7 +114,7 @@ Current ownership:
   - canonical Codex/Gemini subprocess execution and JSON output recovery stay in `codex_runner.py`
   - developer-specific implementation-step and revision-step prompt rules stay in `developer_role.py`
   - internal parser runtime, status-intent normalization, plan confirmation/change classification, and sprint-local requirement-candidate classification stay in `internal/intent_parser.py`
-  - internal backlog sourcing runtime plus backlog candidate normalization stay in `internal/backlog_sourcing.py`
+  - internal goal sourcing runtime plus goal-sourcing payload normalization stay in `internal/goal_sourcing.py`
   - research runtime orchestration and external deep-research execution stay in `research_runtime.py`
   - `*_role.py` and `role_registry.py` remain compatibility facades for `workflows/roles/*`
   - runtime session lifecycle and workspace seeding stay in `session_manager.py`
@@ -149,7 +149,7 @@ teams_runtime/
     base_runtime.py
     internal/
       intent_parser.py
-      backlog_sourcing.py
+      goal_sourcing.py
   workflows/
     orchestration/
       team_service.py
@@ -190,7 +190,7 @@ Layer ownership rules:
 - `runtime/`
   - runtime identity, session persistence, workspace seeding, subprocess execution, and runtime wrappers
 - `workflows/state/`
-  - canonical backlog/request/sprint persistence, event APIs, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, backlog/review fingerprinting, sourcer and blocked-backlog review candidate normalization/rendering, fallback sourcer candidates, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, and backlog status-report context helpers
+  - canonical backlog/request/sprint/goal persistence, event APIs, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, blocked-backlog review candidate normalization/rendering, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, goal lifecycle reports, and backlog status-report context helpers
 - `workflows/roles/`
   - role-specific prompt assembly, payload normalization, validation, role registry, and role capability metadata
   - capability metadata describes role strengths and signals, but routing decisions remain outside role modules

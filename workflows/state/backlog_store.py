@@ -58,67 +58,6 @@ def build_backlog_fingerprint(*, title: str, scope: str, kind: str) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
 
 
-def build_sourcer_candidate_trace_fingerprint(candidate: dict[str, Any]) -> str:
-    origin = dict(candidate.get("origin") or {})
-    trace_parts: list[str] = []
-    for key in sorted(origin):
-        normalized_key = str(key or "").strip().lower()
-        if not normalized_key or normalized_key == "sourcer_summary":
-            continue
-        if (
-            normalized_key != "request_id"
-            and not normalized_key.endswith("_request_id")
-            and normalized_key not in {"action_name", "log_file", "operation_id", "role", "signal", "status"}
-        ):
-            continue
-        value = origin.get(key)
-        if isinstance(value, list):
-            normalized_values = sorted(
-                {
-                    " ".join(str(item or "").strip().split())
-                    for item in value
-                    if str(item or "").strip()
-                }
-            )
-            if normalized_values:
-                trace_parts.append(f"{normalized_key}={','.join(normalized_values)}")
-            continue
-        normalized_value = " ".join(str(value or "").strip().split())
-        if normalized_value:
-            trace_parts.append(f"{normalized_key}={normalized_value}")
-    return "|".join(trace_parts)
-
-
-def normalize_sourcer_review_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        title = str(candidate.get("title") or "").strip()
-        scope = str(candidate.get("scope") or title).strip()
-        summary = str(candidate.get("summary") or scope or title).strip()
-        kind = str(candidate.get("kind") or "enhancement").strip().lower() or "enhancement"
-        if not title or not scope:
-            continue
-        normalized.append(
-            {
-                "title": title,
-                "scope": scope,
-                "summary": summary,
-                "kind": kind,
-                "acceptance_criteria": normalize_backlog_acceptance_criteria(
-                    candidate.get("acceptance_criteria")
-                ),
-                "milestone_title": str(candidate.get("milestone_title") or "").strip(),
-                "priority_rank": int(candidate.get("priority_rank") or 0),
-                "planned_in_sprint_id": str(candidate.get("planned_in_sprint_id") or "").strip(),
-                "added_during_active_sprint": bool(candidate.get("added_during_active_sprint")),
-                "origin": dict(candidate.get("origin") or {}),
-            }
-        )
-    return normalized
-
-
 def normalize_blocked_backlog_review_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -163,30 +102,6 @@ def normalize_blocked_backlog_review_candidates(candidates: list[dict[str, Any]]
     return normalized
 
 
-def build_sourcer_review_fingerprint(candidates: list[dict[str, Any]]) -> str:
-    parts = [
-        "::".join(
-            [
-                build_backlog_fingerprint(
-                    title=str(candidate.get("title") or ""),
-                    scope=str(candidate.get("scope") or ""),
-                    kind=str(candidate.get("kind") or ""),
-                ),
-                build_sourcer_candidate_trace_fingerprint(candidate),
-            ]
-        )
-        for candidate in candidates
-        if str(candidate.get("title") or "").strip()
-    ]
-    digest = hashlib.sha1("|".join(sorted(parts)).encode("utf-8")).hexdigest()
-    return build_request_fingerprint(
-        author_id="internal-sourcer",
-        channel_id="backlog-sourcing-review",
-        intent="plan",
-        scope=f"sourcer-review:{digest}",
-    )
-
-
 def build_blocked_backlog_review_fingerprint(candidates: list[dict[str, Any]]) -> str:
     parts = sorted(
         {
@@ -202,49 +117,6 @@ def build_blocked_backlog_review_fingerprint(candidates: list[dict[str, Any]]) -
         intent="plan",
         scope=f"blocked-backlog-review:{digest}",
     )
-
-
-def render_sourcer_review_markdown(
-    *,
-    request_id: str,
-    candidates: list[dict[str, Any]],
-    sourcing_activity: dict[str, Any],
-) -> str:
-    lines = [
-        "# Sourcer Backlog Review",
-        "",
-        f"- request_id: {request_id}",
-        f"- candidate_count: {len(candidates)}",
-        f"- sourcer_summary: {str(sourcing_activity.get('summary') or '').strip() or '없음'}",
-        f"- sourcer_mode: {str(sourcing_activity.get('mode') or '').strip() or 'unknown'}",
-        "",
-        "## Candidates",
-        "",
-    ]
-    for index, candidate in enumerate(candidates, start=1):
-        lines.extend(
-            [
-                f"### {index}. {candidate.get('title') or ''}",
-                f"- kind: {candidate.get('kind') or ''}",
-                f"- scope: {candidate.get('scope') or ''}",
-                f"- summary: {candidate.get('summary') or ''}",
-            ]
-        )
-        acceptance = [
-            str(item).strip()
-            for item in (candidate.get("acceptance_criteria") or [])
-            if str(item).strip()
-        ]
-        if acceptance:
-            lines.append("- acceptance_criteria:")
-            lines.extend([f"  - {item}" for item in acceptance])
-        origin = dict(candidate.get("origin") or {})
-        if origin:
-            origin_parts = [f"{key}={value}" for key, value in origin.items() if str(value).strip()]
-            if origin_parts:
-                lines.append(f"- origin: {', '.join(origin_parts)}")
-        lines.append("")
-    return "\n".join(lines).strip() + "\n"
 
 
 def render_blocked_backlog_review_markdown(
@@ -312,32 +184,6 @@ def normalize_backlog_acceptance_criteria(values: Any) -> list[str]:
         normalized = str(values).strip()
         return [normalized] if normalized else []
     return []
-
-
-def fallback_backlog_candidates_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for finding in findings:
-        title = str(finding.get("title") or "").strip()
-        if not title:
-            continue
-        candidates.append(
-            build_backlog_item(
-                title=title,
-                summary=str(finding.get("summary") or title).strip(),
-                kind=str(finding.get("kind_hint") or "enhancement").strip().lower() or "enhancement",
-                source="sourcer",
-                scope=str(finding.get("scope") or title).strip(),
-                acceptance_criteria=normalize_backlog_acceptance_criteria(
-                    finding.get("acceptance_criteria")
-                ),
-                origin={
-                    "sourcing_agent": "fallback",
-                    "signal": str(finding.get("signal") or "").strip(),
-                    **dict(finding.get("origin") or {}),
-                },
-            )
-        )
-    return candidates
 
 
 def is_non_actionable_backlog_item(

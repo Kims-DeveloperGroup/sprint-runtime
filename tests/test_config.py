@@ -475,7 +475,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("user_intake", orchestrator_agent_utilization_skill)
             self.assertIn("weights:", orchestrator_agent_utilization_policy)
             self.assertIn("user_intake: planner", orchestrator_agent_utilization_policy)
-            self.assertIn("sourcer_review: planner", orchestrator_agent_utilization_policy)
+            self.assertIn("backlog_review: planner", orchestrator_agent_utilization_policy)
             self.assertIn("planning_resume: planner", orchestrator_agent_utilization_policy)
             self.assertIn("sprint_initial_default: research", orchestrator_agent_utilization_policy)
             self.assertIn("planner_reentry_requires_explicit_signal: true", orchestrator_agent_utilization_policy)
@@ -525,7 +525,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertIn("./.agents/skills/", version_controller_prompt)
             self.assertIn("사용 가능한 skill", version_controller_prompt)
             self.assertIn(
-                "active sprint milestone이 있으면 그 milestone을 직접 진전시키는 backlog 후보에 집중한다",
+                "CLI로 생성된 goal state, stop condition, sprint history, shared workspace 문서를 읽고 다음 sprint-ready milestone 하나를 정한다",
                 (Path(tmpdir) / "internal" / "sourcer" / "AGENTS.md").read_text(encoding="utf-8"),
             )
             self.assertIn("name: documentation", planner_skill)
@@ -661,7 +661,7 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(policy.policy_source, "default_fallback")
             self.assertIn("Missing skill policy file", policy.load_error)
             self.assertEqual(policy.user_intake_role, "planner")
-            self.assertEqual(policy.sourcer_review_role, "planner")
+            self.assertEqual(policy.backlog_review_role, "planner")
             self.assertEqual(policy.planning_resume_role, "planner")
             self.assertEqual(policy.sprint_initial_default_role, "research")
             self.assertTrue(policy.planner_reentry_requires_explicit_signal)
@@ -870,7 +870,7 @@ internal_agents:
   sourcer:
     name: CS_ADMIN
     role: sourcer
-    description: sourcer reporter
+    description: goal sourcing presence
     token_env: AGENT_DISCORD_TOKEN_CS_ADMIN
     bot_id: "123456789012345687"
 """,

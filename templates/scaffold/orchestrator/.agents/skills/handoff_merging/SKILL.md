@@ -47,7 +47,7 @@ Do not use this skill for the role-specific work itself.
 
 - Do not let relay text override the stored request record.
 - Do not persist planner backlog proposals on behalf of planner. Verify `proposals.backlog_writes` and reload backlog state instead.
-- Do not turn sourcer candidates into backlog records without planner review.
+- Do not use the internal sourcer for backlog records; sourcer is reserved for active goal milestone sourcing.
 - Do not mark a task complete before required side effects are done.
 - Do not send work directly role-to-role without coming back through orchestrator.
 - Do not leave routing reasons or skill expectations implicit when delegating.

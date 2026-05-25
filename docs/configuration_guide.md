@@ -130,9 +130,9 @@ Meaning:
 - `ingress_mode`
   - `backlog_first` means normal change requests become backlog items first
 - `discovery_scope`
-  - controls how broadly the orchestrator scans for backlog candidates
+  - legacy compatibility setting; autonomous backlog candidate sourcing is disabled
 - `discovery_actions`
-  - optional registered foreground actions run during discovery
+  - legacy compatibility setting; goal-driven sourcer operation ignores discovery actions and only runs from an active CLI goal
 
 ## Important Sections
 

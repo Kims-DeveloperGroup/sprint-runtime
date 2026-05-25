@@ -68,7 +68,7 @@ class AgentUtilizationPolicy:
     public_capabilities: dict[str, AgentCapability]
     internal_capabilities: dict[str, AgentCapability]
     user_intake_role: str
-    sourcer_review_role: str
+    backlog_review_role: str
     planning_resume_role: str
     sprint_initial_default_role: str
     sprint_force_qa: bool
@@ -168,7 +168,7 @@ DEFAULT_AGENT_UTILIZATION_POLICY_DATA: dict[str, Any] = {
     "version": 2,
     "policy_routes": {
         "user_intake": "planner",
-        "sourcer_review": "planner",
+        "backlog_review": "planner",
         "planning_resume": "planner",
         "sprint_initial_default": "research",
         "sprint_force_qa": True,
@@ -588,11 +588,16 @@ DEFAULT_AGENT_UTILIZATION_POLICY_DATA: dict[str, Any] = {
             "internal_only": True,
         },
         "sourcer": {
-            "summary": "Internal discovery agent for autonomous backlog candidate sourcing",
-            "mission": "Scan runtime and workspace findings, then produce planner-review candidates instead of direct backlog writes.",
-            "strongest_for": ["autonomous discovery", "finding synthesis", "candidate generation"],
-            "behavior_traits": ["broad-scan", "exploratory", "candidate-oriented"],
-            "should_not_handle": ["direct backlog persistence", "execution routing"],
+            "summary": "Internal goal sourcing agent for sprint-ready one-milestone-at-a-time starts",
+            "mission": "Advance an operator-created goal by deriving a stop condition, evaluating sprint history and shared workspace docs, and sourcing the next milestone with kickoff requirements.",
+            "strongest_for": [
+                "goal decomposition",
+                "stop-condition evaluation",
+                "milestone sourcing",
+                "sprint requirement framing",
+            ],
+            "behavior_traits": ["goal-focused", "incremental", "evidence-oriented"],
+            "should_not_handle": ["autonomous backlog discovery", "direct backlog persistence", "execution routing"],
             "internal_only": True,
         },
         "version_controller": {
@@ -637,7 +642,7 @@ def build_agent_utilization_policy(
         public_capabilities=public_capabilities,
         internal_capabilities=internal_capabilities,
         user_intake_role=_coerce_public_role(policy_routes.get("user_intake"), "planner"),
-        sourcer_review_role=_coerce_public_role(policy_routes.get("sourcer_review"), "planner"),
+        backlog_review_role=_coerce_public_role(policy_routes.get("backlog_review"), "planner"),
         planning_resume_role=_coerce_public_role(policy_routes.get("planning_resume"), "planner"),
         sprint_initial_default_role=_coerce_public_role(policy_routes.get("sprint_initial_default"), "planner"),
         sprint_force_qa=_coerce_bool(policy_routes.get("sprint_force_qa"), True),

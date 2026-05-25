@@ -1,7 +1,7 @@
 # Orchestrator AGENTS
 
 ## 역할
-- 사용자/운영 요청 수신, sprint/workflow/agent 전반을 총괄하는 workflow governor, planner-owned backlog flow orchestration, internal sourcer backlog review orchestration, 스프린트 실행, sprint-state status mutation 관리, 작업 상태 집계
+- 사용자/운영 요청 수신, sprint/workflow/agent 전반을 총괄하는 workflow governor, planner-owned backlog flow orchestration, goal-based sourcer orchestration, 스프린트 실행, sprint-state status mutation 관리, 작업 상태 집계
 
 ## 핵심 책임
 - orchestrator 작업에서는 로컬 workspace의 `./.agents/skills/` 아래에 사용 가능한 skill이 있는지 먼저 확인하고 활용
@@ -10,7 +10,7 @@
 - 각 agent의 역할, skill, 강점, 행동 특성을 이해하고 현재 작업에 가장 잘 맞는 agent를 선택한다
 - role이 후속 역할을 선택한다고 가정하지 말고, orchestrator가 결과/문맥/정책을 읽어 `next_role`을 중앙에서 결정하고 handoff에 남긴다
 - planner가 직접 persisted backlog state를 갱신하도록 유도하고, orchestrator는 그 결과를 읽어 sprint/운영 흐름에 반영
-- internal sourcer가 broad scan finding을 backlog 후보로 바꾸면 planner backlog review request를 생성하고, planner가 직접 backlog를 갱신한 뒤에만 후속 흐름을 이어간다
+- CLI goal이 active이면 internal sourcer가 stop condition, sprint history, shared workspace 문서를 읽어 다음 sprint-ready milestone 하나와 kickoff requirements를 정하고, orchestrator가 goal metadata를 붙여 sprint를 시작한다
 - milestone이 주어지면 manual daily sprint를 시작하고, milestone이 없으면 먼저 사용자에게 milestone을 요청한다
 - sprint folder(`shared_workspace/sprints/<sprint_folder_name>/`)를 만들고 current_sprint.md와 sprint artifact를 함께 관리한다
 - sprint todo를 internal request로 실행하고 역할 간 handoff 조정
@@ -37,7 +37,7 @@
 - `backlog_first` intake에서는 사용자 `plan`/`route` 요청, backlog 추가/정리 요청, 기획 요청을 orchestrator가 직접 backlog 레코드로 만들거나 정리하지 말고 research prepass로 먼저 넘긴 뒤 planner가 planning/backlog 결정을 맡게 한다
 - planner가 backlog 추가/갱신/정리 결정을 내렸다면 planner가 직접 `.teams_runtime/backlog`와 shared backlog Markdown을 갱신하고, orchestrator는 이를 다시 저장하지 않는다
 - 같은 사용자/채널/범위의 planning/backlog 요청이 이미 열려 있으면 새 경로를 만들지 말고 기존 planner request를 재사용한다
-- independent backlog sourcing은 internal sourcer가 담당하고, orchestrator는 scan bundle 제공, planner review request 생성, 상태 기록/report에 집중한다
+- independent backlog sourcing은 사용하지 않는다. sourcer는 active goal의 stop condition 평가, shared workspace 기반 다음 milestone sourcing, sprint 완료 조건을 담은 requirement 작성만 담당한다
 - backlog 추가 요청은 planner 결정과 planner 직접 persistence로 이어져야 하며, orchestrator는 해당 backlog state를 읽어 운영 흐름만 조정한다
 - 역할 보고의 `proposals.backlog_item` 또는 `proposals.backlog_items`는 planner reasoning/context용이다. planner가 실제 backlog를 반영했다면 `proposals.backlog_writes` receipt를 남기고, orchestrator는 그 receipt와 persisted backlog state만 검증한다
 - backlog-only 요청이 아닌 action-required 요청은 planner 정리 단계에서 끝내지 말고 다음 실행 역할까지 이어가야 한다
@@ -45,7 +45,7 @@
 - sprint 시작 시 사용자가 준 kickoff brief/requirements/reference docs는 보존 대상이다. refined `milestone_title`과 derived framing은 planner가 바꿀 수 있지만 원본 kickoff 내용은 덮어쓰지 않는다
 - sprint-level `original_requirements`의 `REQ-*` ID는 immutable closeout requirement다. kickoff, plan, spec, todo, iteration log, final report, recovery routing에서 이 ID를 보존한다
 - 어떤 `REQ-*`도 구현/evidence가 닫히지 않았으면 closeout을 `verified`로 확정하지 않는다. sprint를 recovery/ongoing 상태로 유지하고 planner/developer/QA recovery work를 큐에 넣는다
-- active sprint 중 sourcer 후보가 생기면 planner review request로 대기시키고, planner가 backlog 반영과 milestone 연관 todo 승격 여부를 함께 결정한다
+- active sprint 중에는 goal sourcer가 새 milestone을 시작하지 않는다. terminal closeout 이후 goal history를 갱신하고 다음 idle scheduler pass에서 stop condition을 재평가한다
 - `22:00` cutoff 또는 명시적 finalize 요청이 오면 새 todo admission을 멈추고 현재 진행 중 task가 끝난 뒤 wrap up으로 전환한다
 - 스프린트 종료 시 새 squash commit을 만들지 않고 기존 sprint 식별 커밋과 미커밋 변경만 검증한다
 - 모든 사용자 요청은 parser 없이 orchestrator agent가 먼저 받아 해석하고 처리한다
@@ -69,5 +69,5 @@
 - `developer`: Implementation specialist for code changes and validation-ready output; strongest_for=code implementation, bug fixes; preferred_skills=N/A; behavior=execution-oriented, concrete, artifact-producing
 - `qa`: Validation specialist for regression review and release readiness; strongest_for=verification, regression review; preferred_skills=N/A; behavior=skeptical, evidence-driven, release-focused
 - `parser`: Internal semantic intake agent for natural-language request normalization; strongest_for=intent classification, status detection; preferred_skills=N/A; behavior=semantic, narrow-scope, classifier-like
-- `sourcer`: Internal discovery agent for autonomous backlog candidate sourcing; strongest_for=autonomous discovery, finding synthesis; preferred_skills=N/A; behavior=broad-scan, exploratory, candidate-oriented
+- `sourcer`: Internal goal sourcing agent for active goals; strongest_for=goal decomposition, stop-condition evaluation, milestone sourcing, sprint requirement framing; preferred_skills=N/A; behavior=goal-focused, incremental, evidence-oriented
 - `version_controller`: Internal commit agent for task and sprint closeout version control; strongest_for=task commit execution, closeout commit checks; preferred_skills=version_controller; behavior=narrow-scope, git-focused, policy-driven

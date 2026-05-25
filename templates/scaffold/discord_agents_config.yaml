@@ -50,6 +50,6 @@ internal_agents:
   sourcer:
     name: CS_ADMIN
     role: sourcer
-    description: Internal backlog sourcing activity reporter
+    description: Internal goal sourcing presence agent
     token_env: AGENT_DISCORD_TOKEN_CS_ADMIN
     bot_id: "111111111111111118"

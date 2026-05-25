@@ -18,11 +18,17 @@ TIMESTAMP_FIELD_NAMES = {
     "last_used_at",
     "started_at",
     "ended_at",
+    "completed_at",
     "last_started_at",
     "last_completed_at",
     "last_skipped_at",
     "next_slot_at",
     "deferred_slot_at",
+    "paused_at",
+    "resumed_at",
+    "cancelled_at",
+    "failed_at",
+    "sourced_at",
 }
 
 

@@ -8,13 +8,10 @@ from teams_runtime.core.template import scaffold_workspace
 from teams_runtime.workflows.state.request_store import (
     append_request_event,
     build_blocked_backlog_review_request_record,
-    build_sourcer_review_request_record,
     find_open_blocked_backlog_review_request,
-    find_open_sourcer_review_request,
     is_blocked_backlog_review_request,
     is_internal_sprint_request,
     is_planner_backlog_review_request,
-    is_sourcer_review_request,
     is_terminal_internal_request_status,
     is_terminal_request,
     iter_request_records,
@@ -79,15 +76,12 @@ class TeamsRuntimeRequestStoreTests(unittest.TestCase):
         self.assertFalse(is_terminal_request({"status": "queued"}))
 
     def test_planner_review_request_predicates_match_request_kind(self):
-        sourcer_review = {"params": {"_teams_kind": "sourcer_review"}}
         blocked_review = {"params": {"_teams_kind": "blocked_backlog_review"}}
         sprint_internal = {"params": {"_teams_kind": "sprint_internal"}}
         other = {"params": {"_teams_kind": "sprint_internal"}}
 
-        self.assertTrue(is_sourcer_review_request(sourcer_review))
         self.assertTrue(is_blocked_backlog_review_request(blocked_review))
         self.assertTrue(is_internal_sprint_request(sprint_internal))
-        self.assertTrue(is_planner_backlog_review_request(sourcer_review))
         self.assertTrue(is_planner_backlog_review_request(blocked_review))
         self.assertFalse(is_planner_backlog_review_request(other))
         self.assertTrue(is_terminal_internal_request_status("blocked"))
@@ -100,10 +94,10 @@ class TeamsRuntimeRequestStoreTests(unittest.TestCase):
             save_request(
                 paths,
                 {
-                    "request_id": "sourcer-open",
+                    "request_id": "other-open",
                     "status": "queued",
-                    "fingerprint": "fp-sourcer",
-                    "params": {"_teams_kind": "sourcer_review"},
+                    "fingerprint": "fp-other",
+                    "params": {"_teams_kind": "goal_control"},
                 },
             )
             save_request(
@@ -118,22 +112,18 @@ class TeamsRuntimeRequestStoreTests(unittest.TestCase):
             save_request(
                 paths,
                 {
-                    "request_id": "sourcer-terminal",
+                    "request_id": "blocked-terminal",
                     "status": "blocked",
                     "fingerprint": "fp-terminal",
-                    "params": {"_teams_kind": "sourcer_review"},
+                    "params": {"_teams_kind": "blocked_backlog_review"},
                 },
             )
 
             self.assertEqual(
-                find_open_sourcer_review_request(paths, "fp-sourcer")["request_id"],
-                "sourcer-open",
-            )
-            self.assertEqual(
                 find_open_blocked_backlog_review_request(paths, "fp-blocked")["request_id"],
                 "blocked-open",
             )
-            self.assertEqual(find_open_sourcer_review_request(paths, "fp-terminal"), {})
+            self.assertEqual(find_open_blocked_backlog_review_request(paths, "fp-terminal"), {})
 
     def test_iter_sprint_task_request_records_filters_internal_sprint_tasks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -179,31 +169,13 @@ class TeamsRuntimeRequestStoreTests(unittest.TestCase):
                     "sprint_id": "sprint-1",
                     "backlog_id": "backlog-3",
                     "created_at": "2026-04-21T04:00:00Z",
-                    "params": {"_teams_kind": "sourcer_review"},
+                    "params": {"_teams_kind": "blocked_backlog_review"},
                 },
             )
 
             records = iter_sprint_task_request_records(paths, "sprint-1")
 
             self.assertEqual([record["request_id"] for record in records], ["req-1", "req-2"])
-
-    def test_build_sourcer_review_request_record_sets_planner_review_contract(self):
-        record = build_sourcer_review_request_record(
-            request_id="req-sourcer",
-            candidates=[{"title": "candidate"}],
-            sourcing_activity={"mode": "internal_sourcer", "summary": "found one"},
-            artifact_hint="shared_workspace/sourcer_reviews/req-sourcer.md",
-            sprint_id="260421-Sprint-12:00",
-            fingerprint="fp-sourcer",
-        )
-
-        self.assertEqual(record["request_id"], "req-sourcer")
-        self.assertEqual(record["params"]["_teams_kind"], "sourcer_review")
-        self.assertEqual(record["params"]["candidate_count"], 1)
-        self.assertEqual(record["artifacts"], ["shared_workspace/sourcer_reviews/req-sourcer.md"])
-        self.assertEqual(record["sprint_id"], "260421-Sprint-12:00")
-        self.assertEqual(record["fingerprint"], "fp-sourcer")
-        self.assertEqual(record["events"][0]["type"], "created")
 
     def test_build_blocked_backlog_review_request_record_sets_planner_review_contract(self):
         record = build_blocked_backlog_review_request_record(

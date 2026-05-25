@@ -28,7 +28,7 @@ Preferred format:
 Good examples:
 
 ```text
-[260326-Sprint-14:04] todo-140422-51a086 orchestration.py: record sourcer report failure diagnostics
+[260326-Sprint-14:04] todo-140422-51a086 orchestration.py: record Discord report failure diagnostics
 [260326-Sprint-10:32] backlog-20260326-26904a13 fetch_candle.py: support ranged 5-minute candle queries
 ```
 

@@ -32,7 +32,7 @@ Think of it as a compact production crew for software projects. Instead of relyi
 - `architect`: gives implementation guidance and reviews developer output.
 - `developer`: implements and revises sprint work.
 - `qa`: validates behavior, regressions, and readiness.
-- Internal agents: `parser`, `sourcer`, and `version_controller` support intent parsing, backlog discovery, and git closeout.
+- Internal agents: `parser`, `sourcer`, and `version_controller` support intent parsing, goal-based milestone sourcing, and git closeout.
 
 ## Standard Workflow
 
@@ -126,7 +126,7 @@ agents:
   qa: {name: qa, role: qa, description: Quality assurance, token_env: AGENT_DISCORD_TOKEN_QA, bot_id: "123456789012345687"}
 
 internal_agents:
-  sourcer: {name: CS_ADMIN, role: sourcer, description: Internal backlog sourcing reporter, token_env: AGENT_DISCORD_TOKEN_CS_ADMIN, bot_id: "123456789012345688"}
+  sourcer: {name: CS_ADMIN, role: sourcer, description: Internal goal sourcing presence agent, token_env: AGENT_DISCORD_TOKEN_CS_ADMIN, bot_id: "123456789012345688"}
 ```
 
 `relay_channel_id` is required. `startup_channel_id` defaults to the relay channel when omitted, and `report_channel_id` defaults to the startup channel.
@@ -217,7 +217,21 @@ python -m teams_runtime sprint restart
 
 Manual and scheduled sprint kickoff both begin with `research` before planner milestone refinement.
 
-### 7. Send a request
+### 7. Start or control a goal
+
+```bash
+python -m teams_runtime goal start --objective "Deliver the reporting workflow" --stop-condition "Final report is archived and posted to the report channel"
+python -m teams_runtime goal status
+python -m teams_runtime goal stop
+python -m teams_runtime goal resume
+python -m teams_runtime goal cancel
+```
+
+Goal-driven sourcing is the internal sourcer's active role. If `--stop-condition` is omitted, the sourcer derives and persists one before it sources work. On an idle scheduler pass, the sourcer reads the active goal, linked sprint history, and bounded Markdown context from `shared_workspace/` excluding attachments. It then either marks the goal complete or proposes one sprint-ready milestone with a title, summary, kickoff requirements, and a sprint completion condition. That completion condition is normalized into the sprint kickoff requirements so research and planner see it as part of the sprint contract.
+
+Only one goal can be active or resumable at a time. `goal stop` pauses goal sourcing and asks any linked active sprint to wrap up; `goal resume` reactivates a paused goal. `goal cancel` and `goal terminate` permanently cancel the goal, clear the active pointer, request wrap-up for any linked active sprint, and archive a cancellation report. Completed and cancelled goals archive a final report under `shared_workspace/goals/<goal_id>/` and publish it to `report_channel_id`.
+
+### 8. Send a request
 
 DM or mention the `orchestrator` bot:
 

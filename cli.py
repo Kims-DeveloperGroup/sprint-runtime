@@ -10,6 +10,11 @@ from pathlib import Path
 from teams_runtime.adapters.cli.commands import build_parser as build_cli_parser
 from teams_runtime.adapters.cli.commands import cmd_config_research_set_impl
 from teams_runtime.adapters.cli.commands import cmd_config_role_set_impl
+from teams_runtime.adapters.cli.commands import cmd_goal_cancel_impl
+from teams_runtime.adapters.cli.commands import cmd_goal_resume_impl
+from teams_runtime.adapters.cli.commands import cmd_goal_start_impl
+from teams_runtime.adapters.cli.commands import cmd_goal_status_impl
+from teams_runtime.adapters.cli.commands import cmd_goal_stop_impl
 from teams_runtime.adapters.cli.commands import cmd_init_impl
 from teams_runtime.adapters.cli.commands import cmd_list_impl
 from teams_runtime.adapters.cli.commands import cmd_restart_impl
@@ -473,6 +478,43 @@ def cmd_sprint_status(workspace_root: Path) -> int:
     )
 
 
+def cmd_goal_start(workspace_root: Path, *, objective: str, stop_condition: str = "") -> int:
+    return cmd_goal_start_impl(
+        workspace_root,
+        objective=objective,
+        stop_condition=stop_condition,
+        team_service_cls=TeamService,
+    )
+
+
+def cmd_goal_status(workspace_root: Path) -> int:
+    return cmd_goal_status_impl(
+        workspace_root,
+        team_service_cls=TeamService,
+    )
+
+
+def cmd_goal_stop(workspace_root: Path) -> int:
+    return cmd_goal_stop_impl(
+        workspace_root,
+        team_service_cls=TeamService,
+    )
+
+
+def cmd_goal_resume(workspace_root: Path) -> int:
+    return cmd_goal_resume_impl(
+        workspace_root,
+        team_service_cls=TeamService,
+    )
+
+
+def cmd_goal_cancel(workspace_root: Path) -> int:
+    return cmd_goal_cancel_impl(
+        workspace_root,
+        team_service_cls=TeamService,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -494,6 +536,11 @@ def main(argv: list[str] | None = None) -> int:
         cmd_sprint_stop=cmd_sprint_stop,
         cmd_sprint_restart=cmd_sprint_restart,
         cmd_sprint_status=cmd_sprint_status,
+        cmd_goal_start=cmd_goal_start,
+        cmd_goal_status=cmd_goal_status,
+        cmd_goal_stop=cmd_goal_stop,
+        cmd_goal_resume=cmd_goal_resume,
+        cmd_goal_cancel=cmd_goal_cancel,
         default_relay_transport=DEFAULT_RELAY_TRANSPORT,
     )
 

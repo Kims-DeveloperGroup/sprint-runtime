@@ -174,6 +174,28 @@ def build_parser(
                 help="Optional originating request_id for runtime-driven sprint starts.",
             )
 
+    goal_parser = subparsers.add_parser("goal")
+    goal_subparsers = goal_parser.add_subparsers(dest="goal_command", required=True)
+    goal_start_parser = goal_subparsers.add_parser("start")
+    goal_start_parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help=workspace_root_help_text,
+    )
+    goal_start_parser.add_argument("--objective", required=True, help="Goal objective for the internal sourcer.")
+    goal_start_parser.add_argument(
+        "--stop-condition",
+        default="",
+        help="Optional explicit stop condition. If omitted, the sourcer derives one.",
+    )
+    for goal_command in ("status", "stop", "resume", "cancel", "terminate"):
+        goal_command_parser = goal_subparsers.add_parser(goal_command)
+        goal_command_parser.add_argument(
+            "--workspace-root",
+            default=None,
+            help=workspace_root_help_text,
+        )
+
     return parser
 
 
@@ -195,6 +217,11 @@ def dispatch_main(
     cmd_sprint_stop: DispatchSyncCallback,
     cmd_sprint_restart: DispatchSyncCallback,
     cmd_sprint_status: DispatchSyncCallback,
+    cmd_goal_start: DispatchSyncCallback,
+    cmd_goal_status: DispatchSyncCallback,
+    cmd_goal_stop: DispatchSyncCallback,
+    cmd_goal_resume: DispatchSyncCallback,
+    cmd_goal_cancel: DispatchSyncCallback,
     default_relay_transport: str,
 ) -> int:
     if args.command == "init":
@@ -273,6 +300,21 @@ def dispatch_main(
             return cmd_sprint_restart(workspace_root)
         if args.sprint_command == "status":
             return cmd_sprint_status(workspace_root)
+    if args.command == "goal":
+        if args.goal_command == "start":
+            return cmd_goal_start(
+                workspace_root,
+                objective=str(getattr(args, "objective", "") or ""),
+                stop_condition=str(getattr(args, "stop_condition", "") or ""),
+            )
+        if args.goal_command == "status":
+            return cmd_goal_status(workspace_root)
+        if args.goal_command == "stop":
+            return cmd_goal_stop(workspace_root)
+        if args.goal_command == "resume":
+            return cmd_goal_resume(workspace_root)
+        if args.goal_command in {"cancel", "terminate"}:
+            return cmd_goal_cancel(workspace_root)
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
@@ -741,10 +783,78 @@ def cmd_sprint_status_impl(
     return status_command(workspace_root, None, sprint=True)
 
 
+def cmd_goal_start_impl(
+    workspace_root: Path,
+    *,
+    objective: str,
+    stop_condition: str = "",
+    team_service_cls: Any,
+    printer: Printer = print,
+) -> int:
+    service = team_service_cls(workspace_root, "orchestrator", enable_discord_client=False)
+    message = asyncio.run(
+        service.start_goal_lifecycle(
+            objective=str(objective or "").strip(),
+            stop_condition=str(stop_condition or "").strip(),
+        )
+    )
+    printer(message)
+    return 1 if "objective must" in message or "already exists" in message else 0
+
+
+def cmd_goal_status_impl(
+    workspace_root: Path,
+    *,
+    team_service_cls: Any,
+    printer: Printer = print,
+) -> int:
+    service = team_service_cls(workspace_root, "orchestrator", enable_discord_client=False)
+    printer(service.goal_status_text())
+    return 0
+
+
+def cmd_goal_stop_impl(
+    workspace_root: Path,
+    *,
+    team_service_cls: Any,
+    printer: Printer = print,
+) -> int:
+    service = team_service_cls(workspace_root, "orchestrator", enable_discord_client=False)
+    printer(asyncio.run(service.stop_goal_lifecycle(resume_mode="await")))
+    return 0
+
+
+def cmd_goal_resume_impl(
+    workspace_root: Path,
+    *,
+    team_service_cls: Any,
+    printer: Printer = print,
+) -> int:
+    service = team_service_cls(workspace_root, "orchestrator", enable_discord_client=False)
+    printer(asyncio.run(service.resume_goal_lifecycle()))
+    return 0
+
+
+def cmd_goal_cancel_impl(
+    workspace_root: Path,
+    *,
+    team_service_cls: Any,
+    printer: Printer = print,
+) -> int:
+    service = team_service_cls(workspace_root, "orchestrator", enable_discord_client=False)
+    printer(asyncio.run(service.cancel_goal_lifecycle(resume_mode="await")))
+    return 0
+
+
 __all__ = [
     "build_parser",
     "cmd_config_research_set_impl",
     "cmd_config_role_set_impl",
+    "cmd_goal_cancel_impl",
+    "cmd_goal_resume_impl",
+    "cmd_goal_start_impl",
+    "cmd_goal_status_impl",
+    "cmd_goal_stop_impl",
     "cmd_init_impl",
     "cmd_list_impl",
     "cmd_restart_impl",

@@ -1745,7 +1745,7 @@ def derive_routing_phase(
 ) -> str:
     if selection_source == "planning_resume":
         return "resume"
-    if selection_source in {"user_intake", "sourcer_review", "blocked_backlog_review"}:
+    if selection_source in {"user_intake", "blocked_backlog_review"}:
         return "planning"
     if request_state_class == "blocked_resume":
         return "resume"
@@ -1880,10 +1880,10 @@ def build_governed_routing_selection(
             ),
             **base_selection,
         }
-    if selection_source in {"sourcer_review", "blocked_backlog_review", "planning_resume"}:
+    if selection_source in {"blocked_backlog_review", "planning_resume"}:
         selected_role = (
-            policy.sourcer_review_role
-            if selection_source in {"sourcer_review", "blocked_backlog_review"}
+            policy.backlog_review_role
+            if selection_source == "blocked_backlog_review"
             else policy.planning_resume_role
         )
         return {

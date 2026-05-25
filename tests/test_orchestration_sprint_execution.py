@@ -2070,7 +2070,6 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                     )
 
                 with (
-                    patch.object(service, "_discover_backlog_candidates", return_value=[]),
                     patch.object(service, "_delegate_request", side_effect=fake_delegate),
                     patch.object(
                         service.version_controller_runtime,
@@ -3416,7 +3415,6 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                     )
 
                 with (
-                    patch.object(service, "_discover_backlog_candidates", return_value=[]),
                     patch.object(service, "_delegate_request", side_effect=fake_delegate),
                     patch.object(
                         service.version_controller_runtime,

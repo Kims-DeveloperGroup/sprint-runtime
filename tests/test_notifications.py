@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import tempfile
 import unittest
-from types import SimpleNamespace
 
 from teams_runtime.core.config import load_discord_agents_config, load_team_runtime_config
 from teams_runtime.core.notifications import (
     DiscordNotificationService,
-    build_sourcer_activity_report,
-    build_sourcer_report_state_update,
-    resolve_sourcer_report_client,
-    should_suppress_sourcer_report_failure_log,
     summarize_boxed_report_excerpt,
 )
 from teams_runtime.core.paths import RuntimePaths
@@ -116,133 +110,6 @@ class TeamsRuntimeNotificationsTests(unittest.TestCase):
             self.assertIn("- TL;DR: summary", report)
             self.assertIn("attempts=2", report)
             self.assertIn("report:333333333333333333", report)
-
-    def test_build_sourcer_activity_report_includes_metrics_and_milestone_filter(self):
-        report = build_sourcer_activity_report(
-            sourcing_activity={
-                "status": "completed",
-                "summary": "runtime findings were converted into backlog candidates.",
-                "findings_count": 3,
-                "candidate_count": 1,
-                "elapsed_ms": 245,
-                "raw_backlog_items_count": 4,
-                "filtered_candidate_count": 1,
-                "active_sprint_milestone": "workflow initial",
-                "milestone_filtered_out_count": 3,
-            },
-            added=1,
-            updated=0,
-            candidates=[{"title": "developer log failure handling"}],
-        )
-
-        self.assertIn("[작업 보고]", report)
-        self.assertIn("Backlog Sourcing", report)
-        self.assertIn("finding 3건, raw 4건, 후보 1건, 신규 1건, 갱신 0건, 245ms", report)
-        self.assertIn("workflow initial", report)
-        self.assertIn("developer log failure handling", report)
-
-    def test_build_sourcer_report_state_update_tracks_failure_and_success(self):
-        failed_normalized, failed_state, reset = build_sourcer_report_state_update(
-            agent_state={},
-            status="failed",
-            client_label="internal_sourcer",
-            reason="timeout",
-            category="discord_timeout",
-            recovery_action="retry later",
-            error="TimeoutError",
-            attempts=3,
-            channel_id="123",
-            updated_at="2026-04-21T01:00:00Z",
-        )
-
-        self.assertFalse(reset)
-        self.assertEqual(failed_normalized["report_last_failure_at"], "2026-04-21T01:00:00Z")
-        self.assertEqual(failed_state["sourcer_report_status"], "failed")
-        self.assertEqual(failed_state["sourcer_report_attempts"], 3)
-
-        sent_normalized, sent_state, reset = build_sourcer_report_state_update(
-            agent_state=failed_state,
-            status="sent",
-            client_label="orchestrator_fallback",
-            reason="internal reporter init failed",
-            category="discord_connection_failed",
-            recovery_action="fallback used",
-            error="",
-            attempts=1,
-            channel_id="123",
-            updated_at="2026-04-21T01:05:00Z",
-        )
-
-        self.assertTrue(reset)
-        self.assertEqual(sent_normalized["report_last_failure_at"], "2026-04-21T01:00:00Z")
-        self.assertEqual(sent_normalized["report_last_success_at"], "2026-04-21T01:05:00Z")
-        self.assertEqual(sent_state["sourcer_report_status"], "sent")
-
-    def test_should_suppress_sourcer_report_failure_log_repeats_within_window(self):
-        suppressed, signature, logged_at = should_suppress_sourcer_report_failure_log(
-            client_label="internal_sourcer",
-            category="discord_dns_failed",
-            channel_id="123",
-            error_text="dns",
-            last_signature="",
-            last_logged_at=0.0,
-            now=10.0,
-        )
-        self.assertFalse(suppressed)
-        self.assertEqual(logged_at, 10.0)
-
-        repeated, repeated_signature, repeated_logged_at = should_suppress_sourcer_report_failure_log(
-            client_label="internal_sourcer",
-            category="discord_dns_failed",
-            channel_id="123",
-            error_text="dns",
-            last_signature=signature,
-            last_logged_at=logged_at,
-            now=20.0,
-        )
-        self.assertTrue(repeated)
-        self.assertEqual(repeated_signature, signature)
-        self.assertEqual(repeated_logged_at, 20.0)
-
-    def test_resolve_sourcer_report_client_creates_internal_client(self):
-        created_clients: list[dict[str, object]] = []
-
-        def factory(**kwargs):
-            created_clients.append(kwargs)
-            return {"client": "sourcer"}
-
-        client, cached_client, status = resolve_sourcer_report_client(
-            existing_client=None,
-            sourcer_report_config=SimpleNamespace(token_env="TOKEN", bot_id="bot-1"),
-            fallback_client={"client": "orchestrator"},
-            discord_client_factory=factory,
-            transcript_log_file="sourcer.jsonl",
-            attachment_dir="attachments",
-            logger=logging.getLogger("test.notifications"),
-        )
-
-        self.assertEqual(client, {"client": "sourcer"})
-        self.assertEqual(cached_client, {"client": "sourcer"})
-        self.assertEqual(status["client_label"], "internal_sourcer")
-        self.assertEqual(created_clients[0]["token_env"], "TOKEN")
-        self.assertEqual(created_clients[0]["client_name"], "sourcer")
-
-    def test_resolve_sourcer_report_client_falls_back_when_unconfigured(self):
-        fallback_client = {"client": "orchestrator"}
-        client, cached_client, status = resolve_sourcer_report_client(
-            existing_client=None,
-            sourcer_report_config=None,
-            fallback_client=fallback_client,
-            discord_client_factory=lambda **_kwargs: {"client": "unused"},
-            transcript_log_file="sourcer.jsonl",
-            attachment_dir="attachments",
-            logger=logging.getLogger("test.notifications"),
-        )
-
-        self.assertIs(client, fallback_client)
-        self.assertIsNone(cached_client)
-        self.assertEqual(status["client_label"], "orchestrator_fallback")
-        self.assertEqual(status["category"], "reporter_not_configured")
 
     def test_send_internal_relay_summary_swallows_delivery_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:

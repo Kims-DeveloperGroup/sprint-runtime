@@ -117,6 +117,36 @@ class SprintState(TypedDict, total=False):
     completed_at: str
 
 
+class GoalEvent(TypedDict, total=False):
+    timestamp: str
+    type: str
+    actor: str
+    summary: str
+    payload: dict[str, Any]
+
+
+class GoalState(TypedDict, total=False):
+    goal_id: str
+    objective: str
+    stop_condition: str
+    status: str
+    sourced_milestones: list[dict[str, Any]]
+    linked_sprint_ids: list[str]
+    sprint_outcomes: list[dict[str, Any]]
+    completion_evidence: dict[str, Any]
+    cancellation_evidence: dict[str, Any]
+    failure_evidence: dict[str, Any]
+    final_report_path: str
+    final_report_archive_path: str
+    created_at: str
+    updated_at: str
+    paused_at: str
+    resumed_at: str
+    completed_at: str
+    cancelled_at: str
+    failed_at: str
+
+
 class RoleResult(TypedDict, total=False):
     request_id: str
     role: str
@@ -295,6 +325,8 @@ __all__ = [
     "ActionConfig",
     "BacklogItem",
     "DiscordAgentsConfig",
+    "GoalEvent",
+    "GoalState",
     "INTERNAL_TEAM_AGENTS",
     "MessageEnvelope",
     "ReplyRoute",
