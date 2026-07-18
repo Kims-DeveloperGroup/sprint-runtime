@@ -10,6 +10,8 @@ Package-local documentation for the standalone `teams_runtime` module lives here
   - explains `discord_agents_config.yaml`, `team_runtime.yaml`, bot IDs, sprint IDs, and actions
 - `operations_guide.md`
   - day-to-day commands, request flow, sprint rollover, and troubleshooting
+- `telemetry.md`
+  - model cost, token, latency, retry, privacy, storage, CLI, and analysis guidance
 
 ## Maintainer Reference
 
