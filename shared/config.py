@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -12,11 +13,13 @@ import yaml
 from teams_runtime.shared.models import (
     ActionConfig,
     DiscordAgentsConfig,
+    ModelRateCard,
     ResearchRuntimeConfig,
     RoleAgentConfig,
     RoleRuntimeConfig,
     TEAM_ROLES,
     TeamRuntimeConfig,
+    TelemetryRuntimeConfig,
 )
 
 
@@ -129,6 +132,80 @@ def _normalize_research_defaults(value: Any) -> ResearchRuntimeConfig:
         cleanup=bool(payload.get("cleanup", False)),
         reasoning_level=_normalize_optional_text(payload.get("reasoning_level")) or "Standard",
     )
+
+
+def _normalize_non_negative_rate(value: Any, *, field_name: str) -> float:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a non-negative finite number.") from exc
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ValueError(f"{field_name} must be a non-negative finite number.")
+    return normalized
+
+
+def _normalize_telemetry_config(value: Any) -> TelemetryRuntimeConfig:
+    if value in (None, {}):
+        return TelemetryRuntimeConfig()
+    if not isinstance(value, dict):
+        raise ValueError("team_runtime.yaml telemetry must be a mapping.")
+    enabled = value.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("team_runtime.yaml telemetry.enabled must be a boolean.")
+    raw_rate_cards = value.get("rate_cards") or {}
+    if not isinstance(raw_rate_cards, dict):
+        raise ValueError("team_runtime.yaml telemetry.rate_cards must be a mapping.")
+
+    rate_cards: dict[str, ModelRateCard] = {}
+    for raw_key, raw_card in raw_rate_cards.items():
+        key = str(raw_key or "").strip()
+        field_prefix = f"team_runtime.yaml telemetry.rate_cards.{key or '<empty>'}"
+        provider, separator, model = key.partition("/")
+        if not separator or not provider.strip() or not model.strip():
+            raise ValueError(f"{field_prefix} must use an exact provider/model key.")
+        if not isinstance(raw_card, dict):
+            raise ValueError(f"{field_prefix} must be a mapping.")
+        has_flat_rate = "per_invocation_usd" in raw_card
+        has_token_rate = any(
+            name in raw_card
+            for name in (
+                "input_per_million_usd",
+                "cached_input_per_million_usd",
+                "output_per_million_usd",
+            )
+        )
+        if has_flat_rate and has_token_rate:
+            raise ValueError(f"{field_prefix} cannot mix token and per-invocation pricing.")
+        if has_flat_rate:
+            rate_cards[key] = ModelRateCard(
+                per_invocation_usd=_normalize_non_negative_rate(
+                    raw_card.get("per_invocation_usd"),
+                    field_name=f"{field_prefix}.per_invocation_usd",
+                )
+            )
+            continue
+        if not has_token_rate:
+            raise ValueError(f"{field_prefix} must define token rates or per_invocation_usd.")
+        if "input_per_million_usd" not in raw_card or "output_per_million_usd" not in raw_card:
+            raise ValueError(f"{field_prefix} token pricing requires input and output rates.")
+        input_rate = _normalize_non_negative_rate(
+            raw_card.get("input_per_million_usd"),
+            field_name=f"{field_prefix}.input_per_million_usd",
+        )
+        cached_rate = _normalize_non_negative_rate(
+            raw_card.get("cached_input_per_million_usd", input_rate),
+            field_name=f"{field_prefix}.cached_input_per_million_usd",
+        )
+        output_rate = _normalize_non_negative_rate(
+            raw_card.get("output_per_million_usd"),
+            field_name=f"{field_prefix}.output_per_million_usd",
+        )
+        rate_cards[key] = ModelRateCard(
+            input_per_million_usd=input_rate,
+            cached_input_per_million_usd=cached_rate,
+            output_per_million_usd=output_rate,
+        )
+    return TelemetryRuntimeConfig(enabled=enabled, rate_cards=rate_cards)
 
 
 def _ensure_non_placeholder_snowflake(
@@ -379,6 +456,7 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
     if raw_research_defaults not in (None, {}) and not isinstance(raw_research_defaults, dict):
         raise ValueError("team_runtime.yaml research_defaults must be a mapping.")
     research_defaults = _normalize_research_defaults(raw_research_defaults)
+    telemetry = _normalize_telemetry_config(payload.get("telemetry"))
 
     actions: dict[str, ActionConfig] = {}
     raw_actions = payload.get("actions") or {}
@@ -430,6 +508,7 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
         allowed_guild_ids=tuple(str(item).strip() for item in allowed_guild_ids if str(item).strip()),
         role_defaults=role_defaults,
         research_defaults=research_defaults,
+        telemetry=telemetry,
         actions=actions,
     )
 

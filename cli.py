@@ -17,6 +17,7 @@ from teams_runtime.adapters.cli.commands import cmd_goal_status_impl
 from teams_runtime.adapters.cli.commands import cmd_goal_stop_impl
 from teams_runtime.adapters.cli.commands import cmd_init_impl
 from teams_runtime.adapters.cli.commands import cmd_list_impl
+from teams_runtime.adapters.cli.commands import cmd_metrics_impl
 from teams_runtime.adapters.cli.commands import cmd_restart_impl
 from teams_runtime.adapters.cli.commands import cmd_sprint_restart_impl
 from teams_runtime.adapters.cli.commands import cmd_sprint_start_impl
@@ -52,6 +53,7 @@ from teams_runtime.workflows.sprints.lifecycle import build_sprint_artifact_fold
 from teams_runtime.core.template import refresh_workspace_prompt_assets, scaffold_workspace
 from teams_runtime.shared.models import ALL_RUNTIME_AGENTS, INTERNAL_TEAM_AGENTS, TEAM_ROLES
 from teams_runtime.runtime.session_manager import RoleSessionManager
+from teams_runtime.runtime.model_telemetry import aggregate_model_invocations, render_model_metrics_summary
 
 
 logging.basicConfig(
@@ -391,6 +393,28 @@ def cmd_list(workspace_root: Path, request_id: str | None) -> int:
     )
 
 
+def cmd_metrics(
+    workspace_root: Path,
+    *,
+    hours: float = 24.0,
+    request_id: str = "",
+    sprint_id: str = "",
+    role: str = "",
+    as_json: bool = False,
+) -> int:
+    return cmd_metrics_impl(
+        workspace_root,
+        hours=hours,
+        request_id=request_id,
+        sprint_id=sprint_id,
+        role=role,
+        as_json=as_json,
+        runtime_paths_cls=RuntimePaths,
+        aggregate_model_invocations=aggregate_model_invocations,
+        render_model_metrics_summary=render_model_metrics_summary,
+    )
+
+
 def cmd_config_role_set(
     workspace_root: Path,
     role: str,
@@ -530,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_stop=cmd_stop,
         cmd_restart=cmd_restart,
         cmd_list=cmd_list,
+        cmd_metrics=cmd_metrics,
         cmd_config_role_set=cmd_config_role_set,
         cmd_config_research_set=cmd_config_research_set,
         cmd_sprint_start=cmd_sprint_start,

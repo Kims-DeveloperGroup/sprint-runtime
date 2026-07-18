@@ -50,4 +50,8 @@ research_defaults:
   cleanup: false
   reasoning_level: "Standard"
 
+telemetry:
+  enabled: true
+  rate_cards: {}
+
 actions: {}
