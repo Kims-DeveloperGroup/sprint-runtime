@@ -43,6 +43,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     next_initial_phase_step,
     prepare_requested_restart_checkpoint,
     record_sprint_planning_iteration,
+    requirement_checkpoint_review_due,
     requirement_traceability_matrix_for_sprint,
     recover_sprint_todos_from_recovered,
     render_initial_implementation_plan_markdown,
@@ -206,6 +207,12 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                     "status": "rejected",
                     "candidate_text": "Rejected text.",
                 },
+                {
+                    "candidate_id": "REQ-CAND-003",
+                    "status": "pending",
+                    "candidate_text": "Preserve mobile approval flow.",
+                    "created_at": "2026-04-21T19:40:02+09:00",
+                },
             ],
         }
 
@@ -223,6 +230,7 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
 
         self.assertIn("pending_requirement_candidates:", record["body"])
         self.assertIn("REQ-CAND-001: Add keyboard-only acceptance.", record["body"])
+        self.assertIn("REQ-CAND-003: Preserve mobile approval flow.", record["body"])
         self.assertNotIn("Rejected text.", record["body"])
         self.assertEqual(
             record["params"]["pending_requirement_candidates"],
@@ -233,7 +241,14 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
                     "raw_body": "",
                     "artifacts": ["docs/a.md"],
                     "created_at": "2026-04-21T19:40:00+09:00",
-                }
+                },
+                {
+                    "candidate_id": "REQ-CAND-003",
+                    "candidate_text": "Preserve mobile approval flow.",
+                    "raw_body": "",
+                    "artifacts": [],
+                    "created_at": "2026-04-21T19:40:02+09:00",
+                },
             ],
         )
         self.assertTrue(record["params"]["requirement_reconciliation_checkpoint"])
@@ -251,6 +266,36 @@ class TeamsRuntimeSprintLifecycleHelperTests(unittest.TestCase):
         self.assertNotIn("pending_requirement_candidates:", non_checkpoint_record["body"])
         self.assertEqual(non_checkpoint_record["params"]["pending_requirement_candidates"], [])
         self.assertFalse(non_checkpoint_record["params"]["requirement_reconciliation_checkpoint"])
+
+    def test_requirement_checkpoint_review_requires_success_and_valid_pending_candidates(self) -> None:
+        sprint_state = {
+            "pending_requirement_candidates": [
+                {
+                    "candidate_id": "REQ-CAND-001",
+                    "status": "pending",
+                    "candidate_text": "Add keyboard-only acceptance.",
+                },
+                {
+                    "candidate_id": "REQ-CAND-002",
+                    "status": "rejected",
+                    "candidate_text": "Rejected candidate.",
+                },
+                {
+                    "candidate_id": "REQ-CAND-003",
+                    "status": "pending",
+                    "candidate_text": "",
+                },
+            ]
+        }
+
+        self.assertTrue(requirement_checkpoint_review_due(sprint_state, todo_status="completed"))
+        self.assertTrue(requirement_checkpoint_review_due(sprint_state, todo_status=" COMMITTED "))
+        for status in ("queued", "running", "blocked", "failed", "uncommitted", ""):
+            with self.subTest(status=status):
+                self.assertFalse(requirement_checkpoint_review_due(sprint_state, todo_status=status))
+
+        sprint_state["pending_requirement_candidates"][0]["status"] = "registered"
+        self.assertFalse(requirement_checkpoint_review_due(sprint_state, todo_status="completed"))
 
     def test_sprint_research_prepass_body_lines_include_planning_hints(self) -> None:
         lines = sprint_research_prepass_body_lines(

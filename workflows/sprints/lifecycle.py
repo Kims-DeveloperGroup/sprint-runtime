@@ -1150,6 +1150,17 @@ def pending_requirement_candidates_for_planner(sprint_state: dict[str, Any]) -> 
     return candidates
 
 
+def requirement_checkpoint_review_due(
+    sprint_state: dict[str, Any],
+    *,
+    todo_status: str,
+) -> bool:
+    return (
+        str(todo_status or "").strip().lower() in {"completed", "committed"}
+        and bool(pending_requirement_candidates_for_planner(sprint_state))
+    )
+
+
 def format_requirement_candidate_ref(candidate: dict[str, Any]) -> str:
     candidate_id = str(candidate.get("candidate_id") or "").strip().upper()
     text = _normalize_requirement_text(candidate.get("candidate_text") or candidate.get("raw_body") or "")
@@ -3946,7 +3957,10 @@ async def continue_manual_daily_sprint(
             return
         await service._execute_sprint_todo(sprint_state, next_todo)
         service._save_sprint_state(sprint_state)
-        requirement_checkpoint_review = str(next_todo.get("status") or "").strip().lower() in {"completed", "committed"}
+        requirement_checkpoint_review = requirement_checkpoint_review_due(
+            sprint_state,
+            todo_status=str(next_todo.get("status") or ""),
+        )
         force_review = requirement_checkpoint_review
 
 
@@ -4011,7 +4025,7 @@ async def continue_sprint(
         todo_status = str(todo.get("status") or "").strip().lower()
         if todo_status == "uncommitted":
             return
-        if todo_status in {"completed", "committed"} and pending_requirement_candidates_for_planner(sprint_state):
+        if requirement_checkpoint_review_due(sprint_state, todo_status=todo_status):
             await service._run_ongoing_sprint_review(
                 sprint_state,
                 force=True,
