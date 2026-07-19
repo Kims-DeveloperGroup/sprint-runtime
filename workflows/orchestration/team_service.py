@@ -484,6 +484,7 @@ from teams_runtime.shared.models import MessageEnvelope, RequestRecord, RoleResu
 from teams_runtime.runtime.base_runtime import RoleAgentRuntime, normalize_role_payload
 from teams_runtime.runtime.internal.goal_sourcing import GoalSourcingRuntime, normalize_goal_sourcing_payload
 from teams_runtime.runtime.internal.intent_parser import IntentParserRuntime, normalize_intent_payload
+from teams_runtime.runtime.model_telemetry import run_task_with_optional_telemetry_purpose
 from teams_runtime.runtime.research_runtime import ResearchAgentRuntime
 from teams_runtime.runtime.identities import local_runtime_identity, service_runtime_identity
 
@@ -974,12 +975,14 @@ class TeamService:
             sprint_id=self.runtime_config.sprint_id,
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             session_identity=self._local_runtime_session_identity("parser"),
+            telemetry_config=self.runtime_config.telemetry,
         )
         self.goal_sourcer = GoalSourcingRuntime(
             paths=self.paths,
             sprint_id=self.runtime_config.sprint_id,
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             session_identity=self._local_runtime_session_identity("sourcer"),
+            telemetry_config=self.runtime_config.telemetry,
         )
         self.version_controller_runtime = RoleAgentRuntime(
             paths=self.paths,
@@ -988,6 +991,7 @@ class TeamService:
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             agent_root=self.paths.internal_agent_root("version_controller"),
             session_identity=self._local_runtime_session_identity("version_controller"),
+            telemetry_config=self.runtime_config.telemetry,
         )
         self._purge_request_scoped_role_output_files()
         self._role_runtime_cache: dict[tuple[str, str, str], RoleAgentRuntime] = {
@@ -2760,7 +2764,12 @@ class TeamService:
                 f"summary={summary}"
             ),
         )
-        return await asyncio.to_thread(self.version_controller_runtime.run_task, envelope, request_context)
+        return await asyncio.to_thread(
+            self.version_controller_runtime.run_task,
+            envelope,
+            request_context,
+            telemetry_purpose="version_control",
+        )
 
     async def _run_task_version_controller(
         self,
@@ -2934,6 +2943,7 @@ class TeamService:
                 runtime_config=self.runtime_config.role_defaults[role],
                 research_defaults=self.runtime_config.research_defaults,
                 session_identity=session_identity,
+                telemetry_config=self.runtime_config.telemetry,
             )
         return RoleAgentRuntime(
             paths=self.paths,
@@ -2941,6 +2951,7 @@ class TeamService:
             sprint_id=sprint_id,
             runtime_config=self.runtime_config.role_defaults[role],
             session_identity=session_identity,
+            telemetry_config=self.runtime_config.telemetry,
         )
 
     def _runtime_for_role(self, role: str, sprint_id: str) -> RoleAgentRuntime:
@@ -5852,7 +5863,13 @@ class TeamService:
         )
         try:
             runtime = self._runtime_for_role("planner", self.runtime_config.sprint_id)
-            result = await asyncio.to_thread(runtime.run_task, envelope, request_context)
+            result = await asyncio.to_thread(
+                run_task_with_optional_telemetry_purpose,
+                runtime,
+                envelope,
+                request_context,
+                telemetry_purpose="sprint_closeout_report",
+            )
         except Exception:
             LOGGER.exception(
                 "Planner closeout report drafting failed for sprint %s",

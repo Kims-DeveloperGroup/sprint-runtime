@@ -73,6 +73,14 @@ class RuntimePaths:
     def archive_dir(self) -> Path:
         return self.runtime_root / "archive"
 
+    @property
+    def metrics_dir(self) -> Path:
+        return self.runtime_root / "metrics"
+
+    @property
+    def model_invocations_dir(self) -> Path:
+        return self.metrics_dir / "model_invocations"
+
     def agent_runtime_dir(self, role: str) -> Path:
         return self.runtime_root / "agents" / role
 
@@ -266,6 +274,8 @@ class RuntimePaths:
             self.operations_dir,
             self.role_sessions_dir,
             self.archive_dir,
+            self.metrics_dir,
+            self.model_invocations_dir,
             self.shared_workspace_root,
             self.shared_attachments_root,
             self.sprint_artifacts_root,

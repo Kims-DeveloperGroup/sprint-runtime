@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -93,6 +94,18 @@ def build_parser(
         help=workspace_root_help_text,
     )
     list_parser.add_argument("--request-id", help="Optional request identifier to print.")
+
+    metrics_parser = subparsers.add_parser("metrics", help="Summarize local model cost and latency telemetry.")
+    metrics_parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help=workspace_root_help_text,
+    )
+    metrics_parser.add_argument("--hours", type=float, default=24.0, help="Positive lookback window in hours.")
+    metrics_parser.add_argument("--request-id", default="", help="Optional request identifier filter.")
+    metrics_parser.add_argument("--sprint-id", default="", help="Optional sprint identifier filter.")
+    metrics_parser.add_argument("--agent", choices=all_runtime_agents, help="Optional role filter.")
+    metrics_parser.add_argument("--json", action="store_true", help="Render stable aggregate JSON output.")
 
     config_parser = subparsers.add_parser("config")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
@@ -223,6 +236,7 @@ def dispatch_main(
     cmd_goal_resume: DispatchSyncCallback,
     cmd_goal_cancel: DispatchSyncCallback,
     default_relay_transport: str,
+    cmd_metrics: DispatchSyncCallback | None = None,
 ) -> int:
     if args.command == "init":
         return cmd_init(
@@ -263,6 +277,18 @@ def dispatch_main(
         )
     if args.command == "list":
         return cmd_list(workspace_root, args.request_id)
+    if args.command == "metrics":
+        if cmd_metrics is None:
+            parser.error("Metrics command is unavailable.")
+            return 2
+        return cmd_metrics(
+            workspace_root,
+            hours=float(getattr(args, "hours", 24.0)),
+            request_id=str(getattr(args, "request_id", "") or ""),
+            sprint_id=str(getattr(args, "sprint_id", "") or ""),
+            role=str(getattr(args, "agent", "") or ""),
+            as_json=bool(getattr(args, "json", False)),
+        )
     if args.command == "config":
         if args.config_command == "role" and args.role_command == "set":
             return cmd_config_role_set(
@@ -545,6 +571,41 @@ def cmd_status_impl(
             f"session={session_state.get('session_id') or 'N/A'} "
             f"{model_summary} {listener_summary}"
         )
+    return 0
+
+
+def cmd_metrics_impl(
+    workspace_root: Path,
+    *,
+    hours: float,
+    request_id: str,
+    sprint_id: str,
+    role: str,
+    as_json: bool,
+    runtime_paths_cls: Any,
+    aggregate_model_invocations: Callable[..., dict[str, Any]],
+    render_model_metrics_summary: Callable[[dict[str, Any]], str],
+    printer: Printer = print,
+) -> int:
+    if hours <= 0:
+        printer("metrics --hours must be a positive number.")
+        return 2
+    paths = runtime_paths_cls.from_root(workspace_root)
+    try:
+        summary = aggregate_model_invocations(
+            paths,
+            hours=hours,
+            request_id=request_id,
+            sprint_id=sprint_id,
+            role=role,
+        )
+    except ValueError as exc:
+        printer(str(exc))
+        return 2
+    if as_json:
+        printer(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        printer(render_model_metrics_summary(summary))
     return 0
 
 
@@ -857,6 +918,7 @@ __all__ = [
     "cmd_goal_stop_impl",
     "cmd_init_impl",
     "cmd_list_impl",
+    "cmd_metrics_impl",
     "cmd_restart_impl",
     "cmd_sprint_restart_impl",
     "cmd_sprint_start_impl",
