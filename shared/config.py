@@ -14,6 +14,7 @@ from teams_runtime.shared.models import (
     ActionConfig,
     DiscordAgentsConfig,
     ModelRateCard,
+    PromptContextRuntimeConfig,
     ResearchRuntimeConfig,
     RoleAgentConfig,
     RoleRuntimeConfig,
@@ -131,6 +132,43 @@ def _normalize_research_defaults(value: Any) -> ResearchRuntimeConfig:
         ),
         cleanup=bool(payload.get("cleanup", False)),
         reasoning_level=_normalize_optional_text(payload.get("reasoning_level")) or "Standard",
+    )
+
+
+def _normalize_positive_integer(value: Any, *, field_name: str, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return value
+
+
+def _normalize_prompt_context_config(value: Any) -> PromptContextRuntimeConfig:
+    if value in (None, {}):
+        return PromptContextRuntimeConfig()
+    if not isinstance(value, dict):
+        raise ValueError("team_runtime.yaml prompt_context must be a mapping.")
+    enabled = value.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("team_runtime.yaml prompt_context.enabled must be a boolean.")
+    recent_events = _normalize_positive_integer(
+        value.get("recent_events"),
+        field_name="team_runtime.yaml prompt_context.recent_events",
+        default=8,
+    )
+    max_events = _normalize_positive_integer(
+        value.get("max_events"),
+        field_name="team_runtime.yaml prompt_context.max_events",
+        default=16,
+    )
+    if max_events < recent_events:
+        raise ValueError(
+            "team_runtime.yaml prompt_context.max_events must be greater than or equal to recent_events."
+        )
+    return PromptContextRuntimeConfig(
+        enabled=enabled,
+        recent_events=recent_events,
+        max_events=max_events,
     )
 
 
@@ -456,6 +494,7 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
     if raw_research_defaults not in (None, {}) and not isinstance(raw_research_defaults, dict):
         raise ValueError("team_runtime.yaml research_defaults must be a mapping.")
     research_defaults = _normalize_research_defaults(raw_research_defaults)
+    prompt_context = _normalize_prompt_context_config(payload.get("prompt_context"))
     telemetry = _normalize_telemetry_config(payload.get("telemetry"))
 
     actions: dict[str, ActionConfig] = {}
@@ -508,6 +547,7 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
         allowed_guild_ids=tuple(str(item).strip() for item in allowed_guild_ids if str(item).strip()),
         role_defaults=role_defaults,
         research_defaults=research_defaults,
+        prompt_context=prompt_context,
         telemetry=telemetry,
         actions=actions,
     )

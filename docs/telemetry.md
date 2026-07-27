@@ -447,6 +447,20 @@ Use one representative sprint or at least 24 hours of normal traffic before chan
 
 Do not compare only total role cost. Normalize by request count, todo count, and logical-call count so a frequently used inexpensive role is not confused with an inefficient role.
 
+### Measuring Prompt Compaction
+
+Use comparable requests with long event histories before and after enabling `prompt_context`. Keep the provider, model, reasoning level, request shape, and workflow path stable. Compare:
+
+- `prompt_chars` and native input tokens per logical call
+- cached-input tokens and cached-input ratio
+- total input tokens per completed request or todo
+- contract-repair and retry counts
+- failures, QA outcomes, and p95 latency
+
+The expected result is lower prompt size and input-token usage in later workflow stages without a higher repair, retry, failure, or reopen rate. Session reuse can change cached-input behavior independently, so do not attribute every cached-token change to compaction. Telemetry stores prompt size and usage totals, not prompt content or the selected event list; use the content-free `prompt_context_compacted` runtime log for total/included/omitted counts.
+
+For a controlled rollback comparison, set `prompt_context.enabled: false`, restart the same role services, and repeat the same request shape. The canonical persisted event history is identical in either mode.
+
 ## Operational Validation
 
 After restarting role services and completing a model-backed request:
