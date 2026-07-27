@@ -18,7 +18,7 @@ from teams_runtime.benchmarking.scenario import (
 from teams_runtime.shared.prompt_context import PROMPT_EVENT_SELECTION_POLICY
 
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 
 
 def utc_now_iso() -> str:
@@ -77,6 +77,51 @@ def _pair_comparability(before: ArmResult, after: ArmResult) -> tuple[bool, list
             reasons.append(f"{label}_status_{arm.status}")
         if not arm.quality.passed:
             reasons.append(f"{label}_quality_failed")
+        attempts = dict(arm.invocation_attempts)
+        if attempts.get("journal_available") is not True:
+            reasons.append(f"{label}_call_journal_missing")
+        elif int(attempts.get("journal_schema_version") or 0) not in {1, 2}:
+            reasons.append(f"{label}_call_journal_schema_unsupported")
+        else:
+            if attempts.get("reconciled") is not True:
+                reasons.append(f"{label}_call_journal_not_reconciled")
+            if attempts.get("identity_reconciled") is not True:
+                reasons.append(
+                    f"{label}_invocation_identity_not_reconciled"
+                )
+            for field_name, reason_suffix in (
+                ("active_count", "active_attempts_present"),
+                ("unknown_state_count", "unknown_attempt_states"),
+                ("malformed_entry_count", "malformed_attempt_entries"),
+                ("unaccounted_count", "unaccounted_attempts"),
+                ("overaccounted_count", "overaccounted_attempts"),
+                ("telemetry_overage_count", "telemetry_attempt_overage"),
+                ("unobserved_attempt_count", "unobserved_attempts"),
+                ("terminated_count", "terminated_attempts"),
+                ("rejected_count", "rejected_attempts"),
+                (
+                    "journal_invocation_id_missing_count",
+                    "journal_invocation_ids_missing",
+                ),
+                (
+                    "journal_invocation_id_duplicate_count",
+                    "journal_invocation_ids_duplicated",
+                ),
+                (
+                    "telemetry_invocation_id_missing_count",
+                    "telemetry_invocation_ids_missing",
+                ),
+                (
+                    "telemetry_invocation_id_duplicate_count",
+                    "telemetry_invocation_ids_duplicated",
+                ),
+                (
+                    "telemetry_invocation_id_unmatched_count",
+                    "telemetry_invocation_ids_unmatched",
+                ),
+            ):
+                if int(attempts.get(field_name) or 0) > 0:
+                    reasons.append(f"{label}_{reason_suffix}")
         totals = dict(arm.metrics.get("totals") or {})
         if float(totals.get("token_coverage_percent") or 0.0) != 100.0:
             reasons.append(f"{label}_native_token_coverage_incomplete")
@@ -267,21 +312,32 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Runs",
         "",
-        "| Run | Variant | Status | Calls | Repairs | Input tokens | Total tokens | Wall ms | Quality |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Run | Variant | Status | Reserved | Telemetry | Completed | Failed | Timed out | Launch failed | Terminated | Active | Rejected | Repairs | Input tokens | Total tokens | Wall ms | Quality |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for run in report.get("runs") or []:
         metrics = dict(run.get("metrics") or {})
         totals = dict(metrics.get("totals") or {})
         tokens = dict(metrics.get("tokens") or {})
+        attempts = dict(run.get("invocation_attempts") or {})
         quality = dict(run.get("quality") or {})
         lines.append(
-            "| {run_id} | {variant} | {status} | {calls} | {repairs} | {input_tokens} | "
-            "{total_tokens} | {wall_ms} | {quality} |".format(
+            "| {run_id} | {variant} | {status} | {reserved} | {telemetry} | "
+            "{completed} | {failed} | {timed_out} | {launch_failed} | {terminated} | "
+            "{active} | {rejected} | {repairs} | {input_tokens} | {total_tokens} | "
+            "{wall_ms} | {quality} |".format(
                 run_id=run.get("run_id", ""),
                 variant=run.get("variant", ""),
                 status=run.get("status", ""),
-                calls=totals.get("invocation_count", 0),
+                reserved=_display(attempts.get("reserved_count")),
+                telemetry=totals.get("invocation_count", 0),
+                completed=_display(attempts.get("completed_count")),
+                failed=_display(attempts.get("failed_count")),
+                timed_out=_display(attempts.get("timeout_count")),
+                launch_failed=_display(attempts.get("launch_failed_count")),
+                terminated=_display(attempts.get("terminated_count")),
+                active=_display(attempts.get("active_count")),
+                rejected=_display(attempts.get("rejected_count")),
                 repairs=totals.get("contract_repair_count", 0),
                 input_tokens=tokens.get("input", 0),
                 total_tokens=tokens.get("total", 0),

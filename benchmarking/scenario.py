@@ -16,7 +16,7 @@ from teams_runtime.core.template import scaffold_workspace
 from teams_runtime.shared.models import TEAM_ROLES
 
 
-SCENARIO_ID = "sum-positive-full-sprint-v1"
+SCENARIO_ID = "sum-positive-full-sprint-v2"
 DEFAULT_HISTORY_SEED_COUNT = 48
 BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS = 8
 BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS = 16

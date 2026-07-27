@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +76,10 @@ BENCHMARK_PROVIDER_ENVIRONMENT_KEYS = (
     "TMP",
     "TMPDIR",
 )
+_BENCHMARK_LAUNCHER_PATH = Path(__file__).with_name(
+    "benchmark_launcher.py"
+)
+_BENCHMARK_LAUNCH_READY_BYTE = b"\x01"
 
 
 def _nested_mapping(payload: Any, *keys: str) -> dict[str, Any]:
@@ -423,33 +428,76 @@ class CodexRunner:
         env: dict[str, str],
         reservation: InvocationReservation,
     ) -> subprocess.CompletedProcess[str]:
-        process = subprocess.Popen(
-            command,
-            cwd=str(cwd),
-            stdin=subprocess.PIPE if stdin_input is not None else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            start_new_session=True,
-        )
-        process_group_id: int | None
+        if os.name != "posix":
+            raise ModelExecutionPolicyViolation(
+                "Benchmark provider launch requires POSIX file-descriptor handoff."
+            )
+        ready_read_fd, ready_write_fd = os.pipe()
         try:
-            process_group_id = os.getpgid(process.pid) if hasattr(os, "getpgid") else None
-        except ProcessLookupError:
-            process_group_id = process.pid
+            try:
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(_BENCHMARK_LAUNCHER_PATH),
+                        "--ready-fd",
+                        str(ready_read_fd),
+                        "--",
+                        *command,
+                    ],
+                    cwd=str(cwd),
+                    stdin=(
+                        subprocess.PIPE
+                        if stdin_input is not None
+                        else None
+                    ),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                    pass_fds=(ready_read_fd,),
+                )
+            finally:
+                os.close(ready_read_fd)
+        except BaseException:
+            try:
+                os.close(ready_write_fd)
+            except OSError:
+                pass
+            raise
+
+        # The launcher is the future provider process: exec preserves both its
+        # PID and its session/process-group identity.
+        process_group_id = process.pid
         try:
             reservation.mark_started(
                 pid=process.pid,
                 process_group_id=process_group_id,
             )
+            if (
+                os.write(
+                    ready_write_fd,
+                    _BENCHMARK_LAUNCH_READY_BYTE,
+                )
+                != len(_BENCHMARK_LAUNCH_READY_BYTE)
+            ):
+                raise OSError("Benchmark provider launch handoff was incomplete.")
         except BaseException:
+            try:
+                os.close(ready_write_fd)
+            except OSError:
+                pass
             self._terminate_process_group(
                 process,
                 process_group_id=process_group_id,
                 grace_seconds=float(self.execution_policy.kill_grace_seconds),
             )
             raise
+        else:
+            try:
+                os.close(ready_write_fd)
+            except OSError:
+                pass
 
         timeout_seconds = float(self.execution_policy.call_timeout_seconds or 0)
         try:

@@ -19,7 +19,13 @@ _SENSITIVE_ENVIRONMENT_NAME_PATTERN = re.compile(
     r"(?:^|_)(?:API_?KEY|AUTH|CREDENTIALS?|PASSWORD|SECRET|TOKEN)(?:$|_)",
     re.IGNORECASE,
 )
-_TERMINAL_STATES = {"completed", "failed", "timeout", "launch_failed"}
+_TERMINAL_STATES = {
+    "completed",
+    "failed",
+    "timeout",
+    "launch_failed",
+    "terminated",
+}
 
 
 def _utc_timestamp() -> str:
@@ -196,7 +202,7 @@ class InvocationBudget:
 
     def _snapshot_locked(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "max_invocations": self.max_invocations,
             "reserved_count": len(self._entries),
             "remaining": max(self.max_invocations - len(self._entries), 0),

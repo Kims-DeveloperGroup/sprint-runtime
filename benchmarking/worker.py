@@ -9,12 +9,13 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from teams_runtime.benchmarking.metrics import load_workspace_telemetry
 from teams_runtime.benchmarking.models import (
@@ -24,6 +25,8 @@ from teams_runtime.benchmarking.models import (
     SprintEvidence,
     WorkerContext,
     WorkerOutcome,
+    invocation_identity_digest,
+    sanitize_invocation_attempts,
 )
 from teams_runtime.benchmarking.scenario import (
     DEFAULT_HISTORY_SEED_COUNT,
@@ -39,7 +42,10 @@ from teams_runtime.runtime.execution_policy import (
 from teams_runtime.shared.models import TEAM_ROLES
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.workflows.orchestration.team_service import TeamService
-from teams_runtime.workflows.sprints.lifecycle import apply_initial_plan_confirmation
+from teams_runtime.workflows.sprints.lifecycle import (
+    INITIAL_PHASE_STEP_MILESTONE_REFINEMENT,
+    apply_initial_plan_confirmation,
+)
 from teams_runtime.workflows.state.sprint_store import iter_sprint_states
 
 
@@ -49,6 +55,15 @@ _COMPLETED_TODO_STATUSES = frozenset({"completed", "committed"})
 _MAX_RESUME_PASSES = 16
 _RELAY_POLL_SECONDS = 0.02
 _CHILD_TERMINATION_GRACE_SECONDS = 5.0
+_CALL_JOURNAL_STATES = (
+    "reserved",
+    "running",
+    "completed",
+    "failed",
+    "timeout",
+    "launch_failed",
+    "terminated",
+)
 _CHILD_ENVIRONMENT_KEYS = (
     "CODEX_API_KEY",
     "CODEX_HOME",
@@ -85,6 +100,12 @@ class _InitialPlanNotReady(RuntimeError):
 
 class _WorkerCleanupFailure(BenchmarkWorkerSafetyError):
     pass
+
+
+class _BenchmarkHistorySeedState:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.request_id = ""
 
 
 def _utc_now_iso() -> str:
@@ -127,27 +148,60 @@ class _BenchmarkTeamService(TeamService):
         self,
         *args: Any,
         benchmark_context: WorkerContext,
+        benchmark_history_state: _BenchmarkHistorySeedState | None = None,
         **kwargs: Any,
     ):
         self._benchmark_context = benchmark_context
+        self._benchmark_history_state = (
+            benchmark_history_state or _BenchmarkHistorySeedState()
+        )
         self._benchmark_history_seeded = False
         super().__init__(*args, **kwargs)
 
-    def _create_internal_request_record(
-        self,
-        sprint_state: dict[str, Any],
-        todo: dict[str, Any],
-        backlog_item: dict[str, Any],
-    ) -> dict[str, Any]:
-        request_record = super()._create_internal_request_record(
-            sprint_state,
-            todo,
-            backlog_item,
+    def _prepare_benchmark_history(self, request_record: dict[str, Any]) -> bool:
+        params = (
+            dict(request_record.get("params") or {})
+            if isinstance(request_record.get("params"), dict)
+            else {}
         )
-        if self._benchmark_history_seeded:
-            return request_record
+        if (
+            str(params.get("_teams_kind") or "").strip() != "sprint_internal"
+            or str(params.get("sprint_phase") or "").strip() != "initial"
+            or str(params.get("initial_phase_step") or "").strip()
+            != INITIAL_PHASE_STEP_MILESTONE_REFINEMENT
+        ):
+            return False
 
+        request_id = str(request_record.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("Benchmark history target request must have an id")
         seed = _copy_history_seed(self._benchmark_context.history_seed)
+        expected_marker = {
+            "event_count": len(seed),
+            "sha256": _history_seed_hash(seed),
+        }
+        existing_marker = params.get("_benchmark_history_seed")
+        if existing_marker is not None:
+            events = [
+                dict(event)
+                for event in (request_record.get("events") or [])
+                if isinstance(event, dict)
+            ]
+            if (
+                existing_marker != expected_marker
+                or _history_seed_hash(events[: len(seed)])
+                != expected_marker["sha256"]
+            ):
+                raise ValueError("Benchmark request contains an invalid history seed marker")
+            seeded_request_id = self._benchmark_history_state.request_id
+            if seeded_request_id and seeded_request_id != request_id:
+                raise ValueError(
+                    "Benchmark history seed marker appears on multiple requests"
+                )
+            return True
+        if self._benchmark_history_state.request_id:
+            return False
+
         request_record["events"] = [
             *seed,
             *[
@@ -156,19 +210,21 @@ class _BenchmarkTeamService(TeamService):
                 if isinstance(event, dict)
             ],
         ]
-        params = (
-            dict(request_record.get("params") or {})
-            if isinstance(request_record.get("params"), dict)
-            else {}
-        )
-        params["_benchmark_history_seed"] = {
-            "event_count": len(seed),
-            "sha256": canonical_hash(seed),
-        }
+        params["_benchmark_history_seed"] = expected_marker
         request_record["params"] = params
-        self._save_request(request_record)
-        self._benchmark_history_seeded = True
-        return request_record
+        return True
+
+    def _save_request(self, request_record: dict[str, Any]) -> None:
+        with self._benchmark_history_state.lock:
+            history_prepared = self._prepare_benchmark_history(request_record)
+            super()._save_request(request_record)
+            if history_prepared:
+                self._benchmark_history_state.request_id = str(
+                    request_record.get("request_id") or ""
+                ).strip()
+            self._benchmark_history_seeded = bool(
+                self._benchmark_history_state.request_id
+            )
 
     def _mark_github_publish_skipped(self, sprint_state: dict[str, Any]) -> None:
         sprint_state["github_issue_number"] = ""
@@ -209,6 +265,20 @@ def _copy_history_seed(
     if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
         raise ValueError("Benchmark history seed must contain JSON object events")
     return [dict(item) for item in payload]
+
+
+def _history_seed_hash(history_seed: list[dict[str, Any]]) -> str:
+    normalized: list[dict[str, Any]] = []
+    for raw_event in history_seed:
+        event = dict(raw_event)
+        created_at = str(event.get("created_at") or "").strip()
+        if created_at:
+            parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("Benchmark history timestamps must include a timezone")
+            event["created_at"] = parsed.astimezone(timezone.utc).isoformat()
+        normalized.append(event)
+    return canonical_hash(normalized)
 
 
 def _validate_context(context: WorkerContext) -> None:
@@ -272,6 +342,7 @@ def _build_services(
     *,
     policy: ModelExecutionPolicy,
 ) -> dict[str, _BenchmarkTeamService]:
+    history_state = _BenchmarkHistorySeedState()
     services = {
         role: _BenchmarkTeamService(
             context.workspace_root,
@@ -281,6 +352,7 @@ def _build_services(
             model_execution_policy=policy,
             allow_external_research=False,
             benchmark_context=context,
+            benchmark_history_state=history_state,
         )
         for role in TEAM_ROLES
     }
@@ -353,6 +425,183 @@ def _merge_active_process_entries(
     return list(merged.values())
 
 
+def _journal_non_negative_int(value: Any, *, default: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return normalized if normalized >= 0 else default
+
+
+def _summarize_call_journal(
+    snapshot: Mapping[str, Any],
+    *,
+    telemetry_records: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    raw_entries = snapshot.get("entries")
+    raw_entry_list = list(raw_entries) if isinstance(raw_entries, list) else []
+    entries = [dict(entry) for entry in raw_entry_list if isinstance(entry, dict)]
+    malformed_entry_count = len(raw_entry_list) - len(entries)
+    state_counts = {state: 0 for state in _CALL_JOURNAL_STATES}
+    unknown_count = 0
+    for entry in entries:
+        state = str(entry.get("state") or "").strip()
+        if state in state_counts:
+            state_counts[state] += 1
+        else:
+            unknown_count += 1
+
+    reserved_count = _journal_non_negative_int(snapshot.get("reserved_count"))
+    entry_count = len(raw_entry_list)
+    telemetry_record_list = tuple(telemetry_records)
+    observed_count = len(telemetry_record_list)
+    journal_invocation_ids = [
+        str(entry.get("invocation_id") or "").strip()
+        for entry in entries
+    ]
+    telemetry_invocation_ids = [
+        str(record.get("invocation_id") or "").strip()
+        for record in telemetry_record_list
+    ]
+    journal_nonempty_ids = [
+        invocation_id
+        for invocation_id in journal_invocation_ids
+        if invocation_id
+    ]
+    telemetry_nonempty_ids = [
+        invocation_id
+        for invocation_id in telemetry_invocation_ids
+        if invocation_id
+    ]
+    journal_missing_id_count = (
+        len(journal_invocation_ids) - len(journal_nonempty_ids)
+    )
+    telemetry_missing_id_count = (
+        len(telemetry_invocation_ids) - len(telemetry_nonempty_ids)
+    )
+    journal_duplicate_id_count = (
+        len(journal_nonempty_ids) - len(set(journal_nonempty_ids))
+    )
+    telemetry_duplicate_id_count = (
+        len(telemetry_nonempty_ids) - len(set(telemetry_nonempty_ids))
+    )
+    journal_id_set = set(journal_nonempty_ids)
+    telemetry_id_set = set(telemetry_nonempty_ids)
+    telemetry_unmatched_id_count = len(
+        telemetry_id_set - journal_id_set
+    )
+    journal_unobserved_id_count = len(
+        journal_id_set - telemetry_id_set
+    )
+    identity_reconciled = (
+        journal_missing_id_count == 0
+        and telemetry_missing_id_count == 0
+        and journal_duplicate_id_count == 0
+        and telemetry_duplicate_id_count == 0
+        and telemetry_unmatched_id_count == 0
+    )
+    unaccounted_count = max(reserved_count - entry_count, 0)
+    overaccounted_count = max(entry_count - reserved_count, 0)
+    return {
+        "schema_version": 1,
+        "journal_available": bool(snapshot),
+        "journal_schema_version": _journal_non_negative_int(
+            snapshot.get("schema_version")
+        ),
+        "max_invocations": _journal_non_negative_int(
+            snapshot.get("max_invocations")
+        ),
+        "reserved_count": reserved_count,
+        "entry_count": entry_count,
+        "telemetry_record_count": observed_count,
+        "unobserved_attempt_count": max(reserved_count - observed_count, 0),
+        "telemetry_overage_count": max(observed_count - reserved_count, 0),
+        "telemetry_coverage_percent": (
+            round(min(observed_count * 100 / reserved_count, 100.0), 2)
+            if reserved_count
+            else 0.0
+        ),
+        "identity_reconciled": identity_reconciled,
+        "journal_invocation_ids_sha256": invocation_identity_digest(
+            journal_invocation_ids
+        ),
+        "journal_invocation_id_missing_count": journal_missing_id_count,
+        "journal_invocation_id_duplicate_count": journal_duplicate_id_count,
+        "telemetry_invocation_id_missing_count": telemetry_missing_id_count,
+        "telemetry_invocation_id_duplicate_count": telemetry_duplicate_id_count,
+        "telemetry_invocation_id_unmatched_count": (
+            telemetry_unmatched_id_count
+        ),
+        "journal_invocation_id_unobserved_count": (
+            journal_unobserved_id_count
+        ),
+        "completed_count": state_counts["completed"],
+        "failed_count": state_counts["failed"],
+        "timeout_count": state_counts["timeout"],
+        "launch_failed_count": state_counts["launch_failed"],
+        "terminated_count": state_counts["terminated"],
+        "active_count": state_counts["reserved"] + state_counts["running"],
+        "unknown_state_count": unknown_count,
+        "malformed_entry_count": malformed_entry_count,
+        "unaccounted_count": unaccounted_count,
+        "overaccounted_count": overaccounted_count,
+        "reconciled": (
+            reserved_count == entry_count
+            and malformed_entry_count == 0
+            and unknown_count == 0
+        ),
+        "rejected_count": _journal_non_negative_int(
+            snapshot.get("rejected_count")
+        ),
+        "remaining_budget": _journal_non_negative_int(snapshot.get("remaining")),
+    }
+
+
+def _finalize_call_journal_after_cleanup(
+    journal_path: Path,
+    snapshot: Mapping[str, Any],
+    *,
+    stop_reason: str,
+) -> dict[str, Any]:
+    if not snapshot:
+        return {}
+    normalized = dict(snapshot)
+    entries: list[dict[str, Any]] = []
+    changed = False
+    completed_at = _utc_now_iso()
+    for raw_entry in (snapshot.get("entries") or []):
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = dict(raw_entry)
+        if str(entry.get("state") or "").strip() in {"reserved", "running"}:
+            entry.update(
+                {
+                    "state": "terminated",
+                    "completed_at": completed_at,
+                    "exit_code": None,
+                    "stop_reason": str(stop_reason or "worker_cleanup").strip(),
+                }
+            )
+            changed = True
+        entries.append(entry)
+    normalized["entries"] = entries
+    normalized["reserved_count"] = max(
+        _journal_non_negative_int(snapshot.get("reserved_count")),
+        len(entries),
+    )
+    if changed:
+        normalized["schema_version"] = 2
+        try:
+            _write_private_json(journal_path, normalized)
+        except (OSError, TypeError, ValueError) as exc:
+            raise _WorkerCleanupFailure(
+                "Failed to finalize benchmark call journal after cleanup"
+            ) from exc
+    return normalized
+
+
 def _process_exists(pid: int) -> bool:
     if pid <= 1:
         return False
@@ -361,6 +610,8 @@ def _process_exists(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
+        return True
+    except OSError:
         return True
     return True
 
@@ -373,6 +624,8 @@ def _process_group_exists(process_group_id: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
+        return True
+    except OSError:
         return True
     return True
 
@@ -401,11 +654,17 @@ def _signal_provider_entries(
                 os.killpg(process_group_id, process_signal)
             except ProcessLookupError:
                 continue
+            except OSError:
+                # Cleanup confirmation will fail closed if the group survives.
+                continue
             signaled += 1
             continue
         try:
             os.kill(pid, process_signal)
         except ProcessLookupError:
+            continue
+        except OSError:
+            # Continue so one inaccessible process cannot hide later entries.
             continue
         signaled += 1
     return signaled
@@ -812,6 +1071,10 @@ def _run_live_sprint_arm_in_child(context: WorkerContext) -> WorkerOutcome:
         sprint=sprint,
         quality=quality,
         telemetry_records=telemetry_records,
+        invocation_attempts=_summarize_call_journal(
+            budget_snapshot,
+            telemetry_records=telemetry_records,
+        ),
         started_at=started_at,
         ended_at=_utc_now_iso(),
         wall_duration_ms=duration_ms,
@@ -861,6 +1124,80 @@ def _read_json_mapping(path: Path) -> dict[str, Any]:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
     return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _read_call_journal_strict(
+    path: Path,
+    *,
+    required: bool = False,
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if required:
+            raise _WorkerCleanupFailure(
+                "Required benchmark call journal is missing"
+            )
+        return {}
+    except (json.JSONDecodeError, OSError) as exc:
+        raise _WorkerCleanupFailure(
+            "Existing benchmark call journal is unreadable or malformed"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise _WorkerCleanupFailure("Benchmark call journal must be a JSON object")
+    snapshot = dict(payload)
+    if _journal_non_negative_int(snapshot.get("schema_version")) not in {1, 2}:
+        raise _WorkerCleanupFailure("Benchmark call journal schema is invalid")
+    entries = snapshot.get("entries")
+    if not isinstance(entries, list) or not all(
+        isinstance(entry, dict) for entry in entries
+    ):
+        raise _WorkerCleanupFailure("Benchmark call journal entries are invalid")
+    for field_name in (
+        "max_invocations",
+        "reserved_count",
+        "remaining",
+        "rejected_count",
+    ):
+        raw_value = snapshot.get(field_name)
+        if (
+            raw_value is None
+            or isinstance(raw_value, bool)
+            or not isinstance(raw_value, int)
+            or raw_value < 0
+        ):
+            raise _WorkerCleanupFailure(
+                f"Benchmark call journal {field_name} is invalid"
+            )
+    max_invocations = int(snapshot["max_invocations"])
+    reserved_count = int(snapshot["reserved_count"])
+    if (
+        max_invocations <= 0
+        or reserved_count != len(entries)
+        or reserved_count > max_invocations
+        or int(snapshot["remaining"]) != max(max_invocations - reserved_count, 0)
+    ):
+        raise _WorkerCleanupFailure("Benchmark call journal counts do not reconcile")
+    reservation_ids: set[str] = set()
+    for entry in entries:
+        reservation_id = str(entry.get("reservation_id") or "").strip()
+        if not reservation_id or reservation_id in reservation_ids:
+            raise _WorkerCleanupFailure(
+                "Benchmark call journal reservation ids are missing or duplicated"
+            )
+        reservation_ids.add(reservation_id)
+        state = str(entry.get("state") or "").strip()
+        if state not in _CALL_JOURNAL_STATES:
+            raise _WorkerCleanupFailure(
+                "Benchmark call journal contains an invalid invocation state"
+            )
+        if state == "running":
+            pid = entry.get("pid")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+                raise _WorkerCleanupFailure(
+                    "Running benchmark journal entry has an invalid process id"
+                )
+    return snapshot
 
 
 def _manifest_payload(
@@ -984,6 +1321,9 @@ def _worker_outcome_payload(outcome: WorkerOutcome) -> dict[str, Any]:
         "telemetry_records": [
             dict(record) for record in outcome.telemetry_records
         ],
+        "invocation_attempts": sanitize_invocation_attempts(
+            outcome.invocation_attempts
+        ),
         "started_at": outcome.started_at,
         "ended_at": outcome.ended_at,
         "wall_duration_ms": outcome.wall_duration_ms,
@@ -1048,11 +1388,15 @@ def _worker_outcome_from_payload(payload: Mapping[str, Any]) -> WorkerOutcome:
         for record in (payload.get("telemetry_records") or [])
         if isinstance(record, dict)
     )
+    invocation_attempts = sanitize_invocation_attempts(
+        payload.get("invocation_attempts")
+    )
     return WorkerOutcome(
         status=status,  # type: ignore[arg-type]
         sprint=sprint,
         quality=quality,
         telemetry_records=telemetry_records,
+        invocation_attempts=invocation_attempts,
         started_at=str(payload.get("started_at") or ""),
         ended_at=str(payload.get("ended_at") or ""),
         wall_duration_ms=max(int(payload.get("wall_duration_ms") or 0), 0),
@@ -1086,14 +1430,30 @@ def _signal_child_group(
             os.killpg(process.pid, process_signal)
         elif process.poll() is None:
             process.send_signal(process_signal)
-    except ProcessLookupError:
+    except OSError:
         pass
 
 
 def _worker_group_alive(process: subprocess.Popen[Any]) -> bool:
     if hasattr(os, "killpg"):
+        try:
+            process.poll()
+        except OSError:
+            return True
         return _process_group_exists(process.pid)
     return process.poll() is None
+
+
+def _append_cleanup_log(
+    worker_log: _WorkerLog,
+    event: str,
+    **fields: Any,
+) -> None:
+    try:
+        worker_log.append(event, **fields)
+    except OSError:
+        # Diagnostics must not prevent process termination.
+        pass
 
 
 def _wait_for_cleanup_confirmation(
@@ -1110,7 +1470,8 @@ def _wait_for_cleanup_confirmation(
             entry for entry in provider_entries if _provider_entry_alive(entry)
         ]
         if not worker_alive and not surviving_providers:
-            worker_log.append(
+            _append_cleanup_log(
+                worker_log,
                 "worker_cleanup_confirmed",
                 provider_group_count=len(provider_entries),
             )
@@ -1119,7 +1480,8 @@ def _wait_for_cleanup_confirmation(
         if worker_alive:
             _signal_child_group(process, signal.SIGKILL)
         if time.monotonic() >= deadline:
-            worker_log.append(
+            _append_cleanup_log(
+                worker_log,
                 "worker_cleanup_failed",
                 provider_group_count=len(surviving_providers),
                 worker_group_alive=worker_alive,
@@ -1135,54 +1497,104 @@ def _terminate_worker_child(
     *,
     journal_path: Path,
     worker_log: _WorkerLog,
-) -> None:
-    initial_snapshot = _read_json_mapping(journal_path)
+    stop_reason: str = "worker_cleanup",
+) -> dict[str, Any]:
+    cleanup_failures: list[tuple[str, _WorkerCleanupFailure]] = []
+
+    def defer_failure(stage: str, failure: _WorkerCleanupFailure) -> None:
+        cleanup_failures.append((stage, failure))
+        _append_cleanup_log(
+            worker_log,
+            "worker_cleanup_failure_deferred",
+            stage=stage,
+            error_category=type(failure).__name__,
+        )
+
+    def read_journal(stage: str) -> dict[str, Any]:
+        try:
+            snapshot = _read_call_journal_strict(
+                journal_path,
+                required=True,
+            )
+        except _WorkerCleanupFailure as exc:
+            defer_failure(stage, exc)
+            return {}
+        if any(
+            str(entry.get("state") or "").strip() == "reserved"
+            for entry in (snapshot.get("entries") or [])
+            if isinstance(entry, dict)
+        ):
+            defer_failure(
+                f"{stage}_reserved_attempt",
+                _WorkerCleanupFailure(
+                    "Benchmark provider launch registration was incomplete"
+                ),
+            )
+        return snapshot
+
+    initial_snapshot = read_journal("initial_journal")
     provider_entries = _merge_active_process_entries(initial_snapshot)
     provider_count = _signal_provider_entries(
         provider_entries,
         signal.SIGTERM,
     )
-    worker_log.append(
+    _append_cleanup_log(
+        worker_log,
         "parent_provider_termination_requested",
         process_count=provider_count,
     )
     _signal_child_group(process, signal.SIGTERM)
+    term_timed_out = False
     try:
         process.wait(timeout=_CHILD_TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        # The worker may reserve and launch a provider between the first journal
-        # read and delivery of SIGTERM. Re-read before either kill signal.
-        pre_kill_snapshot = _read_json_mapping(journal_path)
-        provider_entries = _merge_active_process_entries(
-            initial_snapshot,
-            pre_kill_snapshot,
+        term_timed_out = True
+    except OSError:
+        term_timed_out = True
+        defer_failure(
+            "worker_term_wait",
+            _WorkerCleanupFailure(
+                "Unable to reap benchmark worker after SIGTERM"
+            ),
         )
-        _signal_provider_entries(provider_entries, signal.SIGKILL)
-        _signal_child_group(process, signal.SIGKILL)
+
+    # The worker may reserve and launch a provider between the first journal
+    # read and delivery of SIGTERM. This read is required regardless of whether
+    # the worker exited during its grace window.
+    pre_kill_snapshot = read_journal("pre_kill_journal")
+    provider_entries = _merge_active_process_entries(
+        initial_snapshot,
+        pre_kill_snapshot,
+    )
+    _signal_provider_entries(provider_entries, signal.SIGKILL)
+    _signal_child_group(process, signal.SIGKILL)
+    if term_timed_out:
         try:
             process.wait(timeout=_CHILD_TERMINATION_GRACE_SECONDS)
-        except subprocess.TimeoutExpired as exc:
-            worker_log.append(
+        except subprocess.TimeoutExpired:
+            _append_cleanup_log(
+                worker_log,
                 "worker_process_reap_failed",
                 provider_group_count=len(provider_entries),
             )
-            raise _WorkerCleanupFailure(
-                "Benchmark worker did not exit after SIGKILL"
-            ) from exc
-    else:
-        # Even a worker that exits during its TERM grace window may have written
-        # a new provider reservation after the initial snapshot.
-        pre_kill_snapshot = _read_json_mapping(journal_path)
-        provider_entries = _merge_active_process_entries(
-            initial_snapshot,
-            pre_kill_snapshot,
-        )
-        _signal_provider_entries(provider_entries, signal.SIGKILL)
-        _signal_child_group(process, signal.SIGKILL)
+            defer_failure(
+                "worker_kill_wait",
+                _WorkerCleanupFailure(
+                    "Benchmark worker did not exit after SIGKILL"
+                ),
+            )
+        except OSError:
+            defer_failure(
+                "worker_kill_wait",
+                _WorkerCleanupFailure(
+                    "Unable to reap benchmark worker after SIGKILL"
+                ),
+            )
 
-    # Once the worker is reaped it cannot create another call. A final journal
-    # read closes the remaining write/read race before liveness verification.
-    final_snapshot = _read_json_mapping(journal_path)
+    # Once the worker has received SIGKILL it cannot intentionally launch
+    # another call. A final read closes the remaining write/read race before
+    # liveness verification.
+    final_snapshot = read_journal("final_journal")
     provider_entries = _merge_active_process_entries(
         initial_snapshot,
         pre_kill_snapshot,
@@ -1196,6 +1608,30 @@ def _terminate_worker_child(
         worker_log=worker_log,
         timeout_seconds=_CHILD_TERMINATION_GRACE_SECONDS,
     )
+
+    finalized_snapshot: dict[str, Any] = {}
+    if final_snapshot:
+        try:
+            finalized_snapshot = _finalize_call_journal_after_cleanup(
+                journal_path,
+                final_snapshot,
+                stop_reason=stop_reason,
+            )
+        except _WorkerCleanupFailure as exc:
+            defer_failure("journal_finalization", exc)
+
+    if cleanup_failures:
+        stages = ",".join(stage for stage, _failure in cleanup_failures)
+        _append_cleanup_log(
+            worker_log,
+            "worker_cleanup_failed_closed",
+            failure_count=len(cleanup_failures),
+            stages=stages,
+        )
+        raise _WorkerCleanupFailure(
+            f"Benchmark worker cleanup could not be verified: {stages}"
+        ) from cleanup_failures[0][1]
+    return finalized_snapshot
 
 
 def _partial_outcome(
@@ -1211,11 +1647,20 @@ def _partial_outcome(
     sprint = _sprint_evidence(sprint_state)
     quality = _quality_evidence(sprint_state, sprint)
     duration_ms = max(int((time.monotonic() - started_monotonic) * 1000), 0)
+    telemetry_records = load_workspace_telemetry(context.workspace_root)
+    journal_snapshot = _read_call_journal_strict(
+        context.run_output_dir.expanduser().resolve() / "call_journal.json",
+        required=True,
+    )
     return WorkerOutcome(
         status=status,  # type: ignore[arg-type]
         sprint=sprint,
         quality=quality,
-        telemetry_records=load_workspace_telemetry(context.workspace_root),
+        telemetry_records=telemetry_records,
+        invocation_attempts=_summarize_call_journal(
+            journal_snapshot,
+            telemetry_records=telemetry_records,
+        ),
         started_at=started_at,
         ended_at=_utc_now_iso(),
         wall_duration_ms=duration_ms,
@@ -1254,6 +1699,22 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
     journal_path = run_output_dir / "call_journal.json"
     with contextlib.suppress(FileNotFoundError):
         journal_path.unlink()
+    try:
+        _write_private_json(
+            journal_path,
+            {
+                "schema_version": 2,
+                "max_invocations": context.max_invocations,
+                "reserved_count": 0,
+                "remaining": context.max_invocations,
+                "rejected_count": 0,
+                "entries": [],
+            },
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise _WorkerCleanupFailure(
+            "Failed to initialize benchmark call journal"
+        ) from exc
     _write_private_json(
         manifest_path,
         _manifest_payload(context, result_path=result_path),
@@ -1291,15 +1752,17 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
         )
 
     timed_out = False
+    final_journal_snapshot: dict[str, Any] = {}
     try:
         process.wait(timeout=context.run_timeout_seconds)
     except subprocess.TimeoutExpired:
         timed_out = True
         worker_log.append("worker_child_timeout")
-        _terminate_worker_child(
+        final_journal_snapshot = _terminate_worker_child(
             process,
             journal_path=journal_path,
             worker_log=worker_log,
+            stop_reason="run_timeout_exceeded",
         )
     finally:
         with contextlib.suppress(FileNotFoundError):
@@ -1308,10 +1771,11 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
     if not timed_out:
         # The child's own asyncio deadline can fire just before the parent's.
         # Verify cleanup even when process.wait() observed a normal child exit.
-        _terminate_worker_child(
+        final_journal_snapshot = _terminate_worker_child(
             process,
             journal_path=journal_path,
             worker_log=worker_log,
+            stop_reason="worker_exit_cleanup",
         )
 
     if timed_out:
@@ -1366,6 +1830,14 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
         started_at=started_at,
         ended_at=_utc_now_iso(),
         wall_duration_ms=parent_duration_ms,
+        invocation_attempts=(
+            _summarize_call_journal(
+                final_journal_snapshot,
+                telemetry_records=outcome.telemetry_records,
+            )
+            if final_journal_snapshot
+            else outcome.invocation_attempts
+        ),
     )
     worker_log.append(
         "worker_parent_finished",

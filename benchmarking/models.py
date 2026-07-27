@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping, Protocol, Sequence
+from typing import Any, Iterable, Literal, Mapping, Protocol, Sequence
 
 
 BenchmarkVariant = Literal["before", "after"]
@@ -14,6 +17,108 @@ RunStatus = Literal[
     "call_budget_exhausted",
     "preflight_failed",
 ]
+_INVOCATION_ATTEMPT_BOOLEAN_FIELDS = frozenset(
+    {
+        "journal_available",
+        "identity_reconciled",
+        "reconciled",
+    }
+)
+_INVOCATION_ATTEMPT_INTEGER_FIELDS = frozenset(
+    {
+        "schema_version",
+        "journal_schema_version",
+        "max_invocations",
+        "reserved_count",
+        "entry_count",
+        "telemetry_record_count",
+        "unobserved_attempt_count",
+        "telemetry_overage_count",
+        "completed_count",
+        "failed_count",
+        "timeout_count",
+        "launch_failed_count",
+        "terminated_count",
+        "active_count",
+        "unknown_state_count",
+        "malformed_entry_count",
+        "unaccounted_count",
+        "overaccounted_count",
+        "rejected_count",
+        "remaining_budget",
+        "journal_invocation_id_missing_count",
+        "journal_invocation_id_duplicate_count",
+        "telemetry_invocation_id_missing_count",
+        "telemetry_invocation_id_duplicate_count",
+        "telemetry_invocation_id_unmatched_count",
+        "journal_invocation_id_unobserved_count",
+    }
+)
+_INVOCATION_ATTEMPT_FLOAT_FIELDS = frozenset(
+    {
+        "telemetry_coverage_percent",
+    }
+)
+_INVOCATION_ATTEMPT_HASH_FIELDS = frozenset(
+    {
+        "journal_invocation_ids_sha256",
+    }
+)
+
+
+def invocation_identity_digest(values: Iterable[Any]) -> str:
+    normalized = sorted(
+        str(value or "").strip()
+        for value in values
+    )
+    canonical = json.dumps(
+        normalized,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def sanitize_invocation_attempts(
+    value: Any,
+) -> dict[str, bool | float | int | str]:
+    """Keep only bounded count fields at the worker/report privacy boundary."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    sanitized: dict[str, bool | float | int | str] = {}
+    for field_name in _INVOCATION_ATTEMPT_BOOLEAN_FIELDS:
+        raw_value = value.get(field_name)
+        if isinstance(raw_value, bool):
+            sanitized[field_name] = raw_value
+    for field_name in _INVOCATION_ATTEMPT_INTEGER_FIELDS:
+        raw_value = value.get(field_name)
+        if raw_value is None or isinstance(raw_value, bool):
+            continue
+        try:
+            normalized = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if normalized >= 0:
+            sanitized[field_name] = normalized
+    for field_name in _INVOCATION_ATTEMPT_FLOAT_FIELDS:
+        raw_value = value.get(field_name)
+        if isinstance(raw_value, bool):
+            continue
+        try:
+            normalized = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(normalized) and 0.0 <= normalized <= 100.0:
+            sanitized[field_name] = normalized
+    for field_name in _INVOCATION_ATTEMPT_HASH_FIELDS:
+        normalized = str(value.get(field_name) or "").strip().lower()
+        if (
+            len(normalized) == 64
+            and all(character in "0123456789abcdef" for character in normalized)
+        ):
+            sanitized[field_name] = normalized
+    return dict(sorted(sanitized.items()))
 
 
 class BenchmarkWorkerSafetyError(RuntimeError):
@@ -157,6 +262,7 @@ class WorkerOutcome:
     sprint: SprintEvidence = field(default_factory=SprintEvidence)
     quality: QualityEvidence = field(default_factory=QualityEvidence)
     telemetry_records: tuple[Mapping[str, Any], ...] = ()
+    invocation_attempts: Mapping[str, Any] = field(default_factory=dict)
     started_at: str = ""
     ended_at: str = ""
     wall_duration_ms: int = 0
@@ -185,6 +291,7 @@ class ArmResult:
     metrics: Mapping[str, Any]
     quality: QualityEvidence
     sprint: SprintEvidence
+    invocation_attempts: Mapping[str, Any] = field(default_factory=dict)
     invocation_records: tuple[Mapping[str, Any], ...] = ()
     retained_workspace: str = ""
 
@@ -207,6 +314,9 @@ class ArmResult:
             "metrics": dict(self.metrics),
             "quality": self.quality.to_dict(),
             "sprint": self.sprint.to_dict(),
+            "invocation_attempts": sanitize_invocation_attempts(
+                self.invocation_attempts
+            ),
             "retained_workspace": self.retained_workspace,
         }
         if include_records:
@@ -264,5 +374,7 @@ __all__ = [
     "SprintEvidence",
     "WorkerContext",
     "WorkerOutcome",
+    "invocation_identity_digest",
     "make_arm_schedule",
+    "sanitize_invocation_attempts",
 ]

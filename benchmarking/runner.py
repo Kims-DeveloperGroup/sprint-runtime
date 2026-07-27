@@ -28,7 +28,9 @@ from teams_runtime.benchmarking.models import (
     QualityEvidence,
     WorkerContext,
     WorkerOutcome,
+    invocation_identity_digest,
     make_arm_schedule,
+    sanitize_invocation_attempts,
 )
 from teams_runtime.benchmarking.reporting import (
     build_report,
@@ -153,6 +155,115 @@ def _merge_quality(
         blocked_todo_count=max(worker.blocked_todo_count, sprint.blocked_todo_count),
         failed_todo_count=max(worker.failed_todo_count, sprint.failed_todo_count),
         notes=notes,
+    )
+
+
+_REQUIRED_INVOCATION_ATTEMPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "journal_schema_version",
+        "max_invocations",
+        "reserved_count",
+        "entry_count",
+        "telemetry_record_count",
+        "unobserved_attempt_count",
+        "telemetry_overage_count",
+        "completed_count",
+        "failed_count",
+        "timeout_count",
+        "launch_failed_count",
+        "terminated_count",
+        "active_count",
+        "unknown_state_count",
+        "malformed_entry_count",
+        "unaccounted_count",
+        "overaccounted_count",
+        "rejected_count",
+        "remaining_budget",
+        "journal_invocation_ids_sha256",
+        "journal_invocation_id_missing_count",
+        "journal_invocation_id_duplicate_count",
+        "telemetry_invocation_id_missing_count",
+        "telemetry_invocation_id_duplicate_count",
+        "telemetry_invocation_id_unmatched_count",
+        "journal_invocation_id_unobserved_count",
+    }
+)
+_INVOCATION_ATTEMPT_STATE_COUNTS = (
+    "completed_count",
+    "failed_count",
+    "timeout_count",
+    "launch_failed_count",
+    "terminated_count",
+    "active_count",
+    "unknown_state_count",
+    "malformed_entry_count",
+)
+
+
+def _journal_coverage_available(
+    invocation_attempts: Mapping[str, Any],
+    *,
+    expected_max_invocations: int,
+) -> bool:
+    if (
+        invocation_attempts.get("journal_available") is not True
+        or invocation_attempts.get("reconciled") is not True
+        or invocation_attempts.get("identity_reconciled") is not True
+        or not _REQUIRED_INVOCATION_ATTEMPT_FIELDS.issubset(
+            invocation_attempts
+        )
+    ):
+        return False
+    summary_schema = int(invocation_attempts["schema_version"])
+    journal_schema = int(invocation_attempts["journal_schema_version"])
+    maximum = int(invocation_attempts["max_invocations"])
+    reserved = int(invocation_attempts["reserved_count"])
+    entries = int(invocation_attempts["entry_count"])
+    observed = int(invocation_attempts["telemetry_record_count"])
+    accounted = sum(
+        int(invocation_attempts[field_name])
+        for field_name in _INVOCATION_ATTEMPT_STATE_COUNTS
+    )
+    return (
+        summary_schema == 1
+        and journal_schema in {1, 2}
+        and maximum == expected_max_invocations
+        and reserved <= maximum
+        and int(invocation_attempts["remaining_budget"])
+        == maximum - reserved
+        and reserved == entries == accounted
+        and int(invocation_attempts["unknown_state_count"]) == 0
+        and int(invocation_attempts["malformed_entry_count"]) == 0
+        and int(invocation_attempts["unaccounted_count"]) == 0
+        and int(invocation_attempts["overaccounted_count"]) == 0
+        and int(
+            invocation_attempts["journal_invocation_id_missing_count"]
+        )
+        == 0
+        and int(
+            invocation_attempts["journal_invocation_id_duplicate_count"]
+        )
+        == 0
+        and int(
+            invocation_attempts["telemetry_invocation_id_missing_count"]
+        )
+        == 0
+        and int(
+            invocation_attempts["telemetry_invocation_id_duplicate_count"]
+        )
+        == 0
+        and int(
+            invocation_attempts["telemetry_invocation_id_unmatched_count"]
+        )
+        == 0
+        and int(
+            invocation_attempts["journal_invocation_id_unobserved_count"]
+        )
+        == max(reserved - observed, 0)
+        and int(invocation_attempts["unobserved_attempt_count"])
+        == max(reserved - observed, 0)
+        and int(invocation_attempts["telemetry_overage_count"]) == 0
     )
 
 
@@ -313,7 +424,120 @@ def _run_arm(
         if outcome.telemetry_records
         else load_workspace_telemetry(scenario.root)
     )
-    metrics = reduce_telemetry(raw_records)
+    invocation_attempts = sanitize_invocation_attempts(
+        outcome.invocation_attempts
+    )
+    if invocation_attempts.get("journal_available") is True:
+        reserved_count = int(invocation_attempts.get("reserved_count") or 0)
+        telemetry_record_count = len(raw_records)
+        telemetry_invocation_ids = [
+            str(record.get("invocation_id") or "").strip()
+            for record in raw_records
+        ]
+        telemetry_nonempty_ids = [
+            invocation_id
+            for invocation_id in telemetry_invocation_ids
+            if invocation_id
+        ]
+        telemetry_missing_id_count = (
+            len(telemetry_invocation_ids) - len(telemetry_nonempty_ids)
+        )
+        telemetry_duplicate_id_count = (
+            len(telemetry_nonempty_ids)
+            - len(set(telemetry_nonempty_ids))
+        )
+        telemetry_identity_digest = invocation_identity_digest(
+            telemetry_invocation_ids
+        )
+        invocation_attempts.update(
+            {
+                "telemetry_record_count": telemetry_record_count,
+                "unobserved_attempt_count": max(
+                    reserved_count - telemetry_record_count,
+                    0,
+                ),
+                "telemetry_overage_count": max(
+                    telemetry_record_count - reserved_count,
+                    0,
+                ),
+                "telemetry_coverage_percent": (
+                    round(
+                        min(
+                            telemetry_record_count * 100 / reserved_count,
+                            100.0,
+                        ),
+                        2,
+                    )
+                    if reserved_count
+                    else 0.0
+                ),
+                "telemetry_invocation_id_missing_count": (
+                    telemetry_missing_id_count
+                ),
+                "telemetry_invocation_id_duplicate_count": (
+                    telemetry_duplicate_id_count
+                ),
+                "identity_reconciled": bool(
+                    invocation_attempts.get("identity_reconciled")
+                    and telemetry_missing_id_count == 0
+                    and telemetry_duplicate_id_count == 0
+                    and int(
+                        invocation_attempts.get(
+                            "telemetry_invocation_id_unmatched_count"
+                        )
+                        or 0
+                    )
+                    == 0
+                    and int(
+                        invocation_attempts.get(
+                            "journal_invocation_id_unobserved_count"
+                        )
+                        or 0
+                    )
+                    == max(
+                        reserved_count - telemetry_record_count,
+                        0,
+                    )
+                    and (
+                        telemetry_record_count < reserved_count
+                        or invocation_attempts.get(
+                            "journal_invocation_ids_sha256"
+                        )
+                        == telemetry_identity_digest
+                    )
+                ),
+            }
+        )
+        accounted_count = sum(
+            int(invocation_attempts.get(field_name) or 0)
+            for field_name in _INVOCATION_ATTEMPT_STATE_COUNTS
+        )
+        invocation_attempts["reconciled"] = bool(
+            invocation_attempts.get("reconciled")
+            and int(invocation_attempts.get("max_invocations") or 0)
+            == options.max_invocations
+            and reserved_count
+            == int(invocation_attempts.get("entry_count") or 0)
+            == accounted_count
+            and int(invocation_attempts.get("unaccounted_count") or 0) == 0
+            and int(invocation_attempts.get("overaccounted_count") or 0) == 0
+        )
+    coverage_available = _journal_coverage_available(
+        invocation_attempts,
+        expected_max_invocations=options.max_invocations,
+    )
+    if not coverage_available:
+        invocation_attempts.pop("telemetry_coverage_percent", None)
+    expected_invocation_count = (
+        int(invocation_attempts.get("reserved_count") or 0)
+        if coverage_available
+        else None
+    )
+    metrics = reduce_telemetry(
+        raw_records,
+        expected_invocation_count=expected_invocation_count,
+        coverage_available=coverage_available,
+    )
     quality = _merge_quality(outcome, scenario)
     result = ArmResult(
         arm=arm,
@@ -329,6 +553,7 @@ def _run_arm(
         metrics=metrics,
         quality=quality,
         sprint=outcome.sprint,
+        invocation_attempts=invocation_attempts,
         invocation_records=raw_records,
     )
     keep = options.keep_workspaces == "all" or (

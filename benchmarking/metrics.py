@@ -214,8 +214,34 @@ def _prompt_context(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def reduce_telemetry(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def reduce_telemetry(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    expected_invocation_count: int | None = None,
+    coverage_available: bool = True,
+) -> dict[str, Any]:
     normalized = [sanitize_invocation_record(record) for record in records]
+    if not isinstance(coverage_available, bool):
+        raise ValueError("coverage_available must be a boolean")
+    if expected_invocation_count is not None and (
+        isinstance(expected_invocation_count, bool)
+        or not isinstance(expected_invocation_count, int)
+        or expected_invocation_count < 0
+    ):
+        raise ValueError("expected_invocation_count must be a non-negative integer")
+    if not coverage_available and expected_invocation_count is not None:
+        raise ValueError(
+            "expected_invocation_count must be omitted when coverage is unavailable"
+        )
+    observed_invocation_count = len(normalized)
+    coverage_denominator = max(
+        observed_invocation_count,
+        (
+            expected_invocation_count
+            if expected_invocation_count is not None
+            else observed_invocation_count
+        ),
+    )
     logical_calls = {
         str(record.get("logical_call_id") or "")
         for record in normalized
@@ -223,7 +249,24 @@ def reduce_telemetry(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     }
     durations: list[int] = []
     totals = {
-        "invocation_count": len(normalized),
+        "invocation_count": observed_invocation_count,
+        "coverage_basis": (
+            "call_journal"
+            if coverage_available and expected_invocation_count is not None
+            else (
+                "observed_telemetry"
+                if coverage_available
+                else "unavailable_untrusted_call_journal"
+            )
+        ),
+        "expected_invocation_count": (
+            coverage_denominator if coverage_available else None
+        ),
+        "unobserved_invocation_count": (
+            max(coverage_denominator - observed_invocation_count, 0)
+            if coverage_available
+            else None
+        ),
         "logical_call_count": len(logical_calls),
         "primary_count": 0,
         "contract_repair_count": 0,
@@ -432,21 +475,50 @@ def reduce_telemetry(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
                 12,
             )
 
-    count = len(normalized)
+    count = observed_invocation_count
     for group in groups.values():
-        if group.pop("_priced_count") != group["invocation_count"]:
+        if (
+            group.pop("_priced_count") != group["invocation_count"]
+            or not coverage_available
+            or count != coverage_denominator
+        ):
             group["estimated_cost_usd"] = None
-    token_coverage = round(native_usage_count * 100 / count, 2) if count else 0.0
-    tool_call_coverage = round(tool_call_usage_count * 100 / count, 2) if count else 0.0
-    pricing_coverage = round(priced_count * 100 / count, 2) if count else 0.0
-    totals["token_coverage_percent"] = token_coverage
-    totals["tool_call_coverage_percent"] = tool_call_coverage
-    totals["pricing_coverage_percent"] = pricing_coverage
+    token_coverage = (
+        round(native_usage_count * 100 / coverage_denominator, 2)
+        if coverage_denominator
+        else 0.0
+    )
+    tool_call_coverage = (
+        round(tool_call_usage_count * 100 / coverage_denominator, 2)
+        if coverage_denominator
+        else 0.0
+    )
+    pricing_coverage = (
+        round(priced_count * 100 / coverage_denominator, 2)
+        if coverage_denominator
+        else 0.0
+    )
+    totals["token_coverage_percent"] = (
+        token_coverage if coverage_available else None
+    )
+    totals["tool_call_coverage_percent"] = (
+        tool_call_coverage if coverage_available else None
+    )
+    totals["pricing_coverage_percent"] = (
+        pricing_coverage if coverage_available else None
+    )
     totals["estimated_cost_usd"] = (
-        round(total_cost, 12) if count and priced_count == count else None
+        round(total_cost, 12)
+        if coverage_available
+        and coverage_denominator
+        and count == coverage_denominator
+        and priced_count == coverage_denominator
+        else None
     )
     compaction["unobserved_invocation_count"] = (
-        count - compaction["observed_invocation_count"]
+        coverage_denominator - compaction["observed_invocation_count"]
+        if coverage_available
+        else None
     )
     compaction["selection_policies"] = sorted(selection_policies)
     return {

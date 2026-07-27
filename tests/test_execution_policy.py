@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from teams_runtime.runtime import benchmark_launcher
 from teams_runtime.runtime.codex_runner import CodexRunner
 from teams_runtime.runtime.execution_policy import (
     InvocationBudget,
@@ -156,7 +157,151 @@ class BenchmarkExecutionPolicyTests(unittest.TestCase):
             persisted = json.loads(
                 (root / "call_journal.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(persisted["schema_version"], 2)
             self.assertEqual(persisted["entries"][0]["state"], "timeout")
+
+    def test_provider_launch_waits_for_durable_pid_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            policy, _budget = self._policy(root)
+            runner = CodexRunner(
+                RoleRuntimeConfig(model="gpt-benchmark"),
+                execution_policy=policy,
+            )
+            process = mock.Mock(pid=43210, returncode=0)
+            process.communicate.return_value = ("provider output", "")
+            events: list[str] = []
+            reservation = mock.Mock()
+            reservation.mark_started.side_effect = (
+                lambda **_kwargs: events.append("registered")
+            )
+
+            def release_provider(
+                file_descriptor: int,
+                payload: bytes,
+            ) -> int:
+                self.assertEqual(file_descriptor, 12)
+                self.assertEqual(payload, b"\x01")
+                events.append("released")
+                return len(payload)
+
+            command = [sys.executable, "-c", "print('provider')"]
+            with (
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.os.pipe",
+                    return_value=(11, 12),
+                ),
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.os.close",
+                ) as close_fd,
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.os.write",
+                    side_effect=release_provider,
+                ),
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.subprocess.Popen",
+                    return_value=process,
+                ) as popen,
+            ):
+                completed = runner._run_benchmark_process(
+                    command,
+                    cwd=root,
+                    stdin_input=None,
+                    env={"PATH": os.defpath},
+                    reservation=reservation,
+                )
+
+            self.assertEqual(events, ["registered", "released"])
+            reservation.mark_started.assert_called_once_with(
+                pid=43210,
+                process_group_id=43210,
+            )
+            launch_command = popen.call_args.args[0]
+            self.assertEqual(
+                launch_command[-len(command):],
+                command,
+            )
+            self.assertEqual(
+                popen.call_args.kwargs["pass_fds"],
+                (11,),
+            )
+            self.assertEqual(close_fd.call_args_list[0].args, (11,))
+            self.assertEqual(close_fd.call_args_list[-1].args, (12,))
+            self.assertEqual(completed.returncode, 0)
+
+    def test_registration_failure_never_releases_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            policy, _budget = self._policy(root)
+            runner = CodexRunner(
+                RoleRuntimeConfig(model="gpt-benchmark"),
+                execution_policy=policy,
+            )
+            process = mock.Mock(pid=43210, returncode=None)
+            reservation = mock.Mock()
+            reservation.mark_started.side_effect = OSError(
+                "journal unavailable"
+            )
+
+            with (
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.os.pipe",
+                    return_value=(11, 12),
+                ),
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.os.close",
+                ) as close_fd,
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.os.write",
+                ) as release_provider,
+                mock.patch(
+                    "teams_runtime.runtime.codex_runner.subprocess.Popen",
+                    return_value=process,
+                ),
+                mock.patch.object(
+                    runner,
+                    "_terminate_process_group",
+                    return_value=("", ""),
+                ) as terminate_process,
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "journal unavailable",
+                ):
+                    runner._run_benchmark_process(
+                        [sys.executable, "-c", "print('provider')"],
+                        cwd=root,
+                        stdin_input=None,
+                        env={"PATH": os.defpath},
+                        reservation=reservation,
+                    )
+
+            release_provider.assert_not_called()
+            self.assertIn(mock.call(11), close_fd.call_args_list)
+            self.assertIn(mock.call(12), close_fd.call_args_list)
+            terminate_process.assert_called_once()
+
+    def test_launcher_exits_without_exec_when_parent_closes_gate(self) -> None:
+        ready_read_fd, ready_write_fd = os.pipe()
+        os.close(ready_write_fd)
+
+        with mock.patch.object(
+            benchmark_launcher.os,
+            "execvpe",
+        ) as execute_provider:
+            exit_code = benchmark_launcher.main(
+                [
+                    "--ready-fd",
+                    str(ready_read_fd),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "print('must not run')",
+                ]
+            )
+
+        self.assertEqual(exit_code, 70)
+        execute_provider.assert_not_called()
 
 
 if __name__ == "__main__":
