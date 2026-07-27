@@ -102,6 +102,7 @@ python -m teams_runtime goal cancel
 - Sprint backlog definition items should carry concrete `acceptance_criteria` plus planner trace in `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs`, `origin.plan_action_refs`, and `origin.research_refs` when a source-backed or local-evidence research report is available.
 - During an active sprint, clear new user requirements are stored as sprint-local `REQ-CAND-*` entries in `pending_requirement_candidates`. They are not accepted scope, not acknowledged as registered requirements, and not included in role context until planner reaches the next completed/committed TODO checkpoint.
 - At that checkpoint, planner receives pending candidates in an `ongoing_review` request and may return `proposals.sprint_requirement_reconciliation` with `registered_requirements`, `merged_candidates`, `deferred_candidates`, and `rejected_candidates`. Only registered candidates become `REQ-*`; unresolved candidates expire into `requirement_candidate_archive` at sprint closeout.
+- Manual sprints batch all currently pending candidates into that single checkpoint review. A completed or committed TODO does not force an `ongoing_review` when no valid pending candidates exist; interval-based planner reviews continue to use `sprint.interval_minutes`.
 - Legacy planner aliases such as `planned_backlog_updates` are compatibility inputs only inside role-runtime normalization. They are not accepted by the canonical backlog helper interface.
 
 ## Sprint Requirement Feedback
