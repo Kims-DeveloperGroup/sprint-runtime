@@ -4,12 +4,20 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from teams_runtime.runtime.execution_policy import (
+    DEFAULT_MODEL_EXECUTION_POLICY,
+    InvocationReservation,
+    ModelExecutionPolicy,
+    ModelExecutionPolicyViolation,
+    ModelInvocationTimeout,
+)
 from teams_runtime.runtime.model_telemetry import (
     ModelInvocationContext,
     ModelTelemetryRecorder,
@@ -22,6 +30,51 @@ from teams_runtime.shared.persistence import runtime_now
 
 SESSION_ID_PATTERN = re.compile(r"session id:\s*([0-9a-fA-F-]+)", re.IGNORECASE)
 LOGGER = logging.getLogger(__name__)
+CODEX_TOOL_ITEM_TYPES = frozenset(
+    {
+        "command_execution",
+        "file_change",
+        "mcp_tool_call",
+        "web_search",
+    }
+)
+BENCHMARK_DISABLED_CODEX_FEATURES = (
+    "apps",
+    "browser_use",
+    "browser_use_external",
+    "computer_use",
+    "enable_fanout",
+    "enable_mcp_apps",
+    "hooks",
+    "image_generation",
+    "in_app_browser",
+    "multi_agent",
+    "multi_agent_v2",
+    "plugin_sharing",
+    "plugins",
+    "standalone_web_search",
+    "web_search_request",
+    "workspace_dependencies",
+)
+BENCHMARK_PROVIDER_ENVIRONMENT_KEYS = (
+    "CODEX_API_KEY",
+    "CODEX_HOME",
+    "CURL_CA_BUNDLE",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID",
+    "PATH",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+)
 
 
 def _nested_mapping(payload: Any, *keys: str) -> dict[str, Any]:
@@ -68,6 +121,8 @@ def parse_codex_jsonl(stdout: str) -> tuple[str | None, ModelUsage, str]:
     session_id: str | None = None
     usage = ModelUsage()
     final_message = ""
+    completed_tool_calls = 0
+    completed_tool_item_ids: set[tuple[str, str]] = set()
     for raw_line in str(stdout or "").splitlines():
         try:
             event = json.loads(raw_line)
@@ -98,6 +153,20 @@ def parse_codex_jsonl(stdout: str) -> tuple[str | None, ModelUsage, str]:
             item = event.get("item") if isinstance(event.get("item"), dict) else params.get("item")
             item = item if isinstance(item, dict) else event
             item_type = str(item.get("type") or item.get("kind") or "").strip()
+            normalized_item_type = item_type.lower().replace("-", "_").replace(".", "_")
+            if (
+                event_type in {"item.completed", "item/completed"}
+                and (
+                    normalized_item_type in CODEX_TOOL_ITEM_TYPES
+                    or normalized_item_type.endswith("_tool_call")
+                )
+            ):
+                item_id = str(item.get("id") or item.get("item_id") or "").strip()
+                item_identity = (normalized_item_type, item_id)
+                if not item_id or item_identity not in completed_tool_item_ids:
+                    completed_tool_calls += 1
+                    if item_id:
+                        completed_tool_item_ids.add(item_identity)
             if item_type in {"agent_message", "message"} or event_type == "agent_message":
                 candidate_text = item.get("text") or item.get("message") or item.get("content")
                 if isinstance(candidate_text, list):
@@ -107,6 +176,15 @@ def parse_codex_jsonl(stdout: str) -> tuple[str | None, ModelUsage, str]:
                     )
                 if candidate_text:
                     final_message = str(candidate_text).strip()
+    if usage.source == "native" or completed_tool_calls:
+        usage = ModelUsage.from_values(
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            output_tokens=usage.output_tokens,
+            reasoning_output_tokens=usage.reasoning_output_tokens,
+            total_tokens=usage.total_tokens,
+            tool_calls=max(usage.tool_calls or 0, completed_tool_calls),
+        )
     return session_id, usage, final_message
 
 
@@ -211,10 +289,12 @@ class CodexRunner:
         *,
         role: str = "",
         telemetry_recorder: ModelTelemetryRecorder | None = None,
+        execution_policy: ModelExecutionPolicy | None = None,
     ):
         self.runtime_config = runtime_config
         self.role = str(role or "").strip()
         self.telemetry_recorder = telemetry_recorder
+        self.execution_policy = execution_policy or DEFAULT_MODEL_EXECUTION_POLICY
 
     def _cli_version(self, cli_name: str) -> str:
         if self.telemetry_recorder is None or not self.telemetry_recorder.enabled:
@@ -223,11 +303,19 @@ class CodexRunner:
         if cached is not None:
             return cached
         try:
+            run_options: dict[str, Any] = {}
+            if self.execution_policy.benchmark_mode:
+                run_options["env"] = self._provider_environment()
+                run_options["timeout"] = min(
+                    float(self.execution_policy.call_timeout_seconds or 10.0),
+                    10.0,
+                )
             process = subprocess.run(
                 [cli_name, "--version"],
                 capture_output=True,
                 text=True,
                 check=False,
+                **run_options,
             )
             version = str(process.stdout or process.stderr or "").strip().splitlines()[0]
         except Exception:
@@ -248,9 +336,171 @@ class CodexRunner:
                 continue
             resolved_text = str(resolved)
             if resolved != workspace and resolved_text not in seen:
+                self.execution_policy.assert_workspace_allowed(resolved)
                 seen.add(resolved_text)
                 extra_dirs.append(resolved_text)
         return extra_dirs
+
+    def _provider_environment(self) -> dict[str, str]:
+        if not self.execution_policy.benchmark_mode:
+            return {**os.environ, "HOME": str(Path.home())}
+        environment = {
+            key: value
+            for key in BENCHMARK_PROVIDER_ENVIRONMENT_KEYS
+            if (value := os.environ.get(key)) is not None
+        }
+        environment["HOME"] = str(Path.home())
+        environment.setdefault("PATH", os.defpath)
+        environment["NO_COLOR"] = "1"
+        return environment
+
+    def _append_benchmark_codex_controls(
+        self,
+        command: list[str],
+        *,
+        supports_sandbox_option: bool,
+    ) -> None:
+        if supports_sandbox_option:
+            command.extend(["--sandbox", "workspace-write"])
+        command.extend(
+            [
+                "--ignore-user-config",
+                "--ignore-rules",
+                "-c",
+                'approval_policy="never"',
+                "-c",
+                'sandbox_mode="workspace-write"',
+                "-c",
+                "mcp_servers={}",
+                "-c",
+                'shell_environment_policy.inherit="none"',
+            ]
+        )
+        for name, value in self.execution_policy.shell_environment.items():
+            command.extend(
+                [
+                    "-c",
+                    f"shell_environment_policy.set.{name}={json.dumps(value, ensure_ascii=True)}",
+                ]
+            )
+        for feature_name in BENCHMARK_DISABLED_CODEX_FEATURES:
+            command.extend(["--disable", feature_name])
+
+    @staticmethod
+    def _terminate_process_group(
+        process: subprocess.Popen[str],
+        *,
+        process_group_id: int | None,
+        grace_seconds: float,
+    ) -> tuple[str, str]:
+        def send_group_signal(group_signal: signal.Signals) -> None:
+            if process.poll() is not None:
+                return
+            try:
+                if process_group_id is not None and hasattr(os, "killpg"):
+                    os.killpg(process_group_id, group_signal)
+                elif group_signal == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+
+        send_group_signal(signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            send_group_signal(signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        return str(stdout or ""), str(stderr or "")
+
+    def _run_benchmark_process(
+        self,
+        command: list[str],
+        *,
+        cwd: Path,
+        stdin_input: str | None,
+        env: dict[str, str],
+        reservation: InvocationReservation,
+    ) -> subprocess.CompletedProcess[str]:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            stdin=subprocess.PIPE if stdin_input is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+        process_group_id: int | None
+        try:
+            process_group_id = os.getpgid(process.pid) if hasattr(os, "getpgid") else None
+        except ProcessLookupError:
+            process_group_id = process.pid
+        try:
+            reservation.mark_started(
+                pid=process.pid,
+                process_group_id=process_group_id,
+            )
+        except BaseException:
+            self._terminate_process_group(
+                process,
+                process_group_id=process_group_id,
+                grace_seconds=float(self.execution_policy.kill_grace_seconds),
+            )
+            raise
+
+        timeout_seconds = float(self.execution_policy.call_timeout_seconds or 0)
+        try:
+            stdout, stderr = process.communicate(
+                input=stdin_input,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            stdout, stderr = self._terminate_process_group(
+                process,
+                process_group_id=process_group_id,
+                grace_seconds=float(self.execution_policy.kill_grace_seconds),
+            )
+            completed_process = subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout,
+                stderr,
+            )
+            raise ModelInvocationTimeout(
+                timeout_seconds,
+                completed_process=completed_process,
+            )
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            str(stdout or ""),
+            str(stderr or ""),
+        )
+
+    @staticmethod
+    def _reservation_result(
+        *,
+        completed: bool,
+        process: Any,
+        captured_error: BaseException | None,
+    ) -> tuple[str, str]:
+        if isinstance(captured_error, ModelInvocationTimeout):
+            return "timeout", "timeout"
+        if process is None:
+            return "launch_failed", (
+                normalized_error_category(captured_error) or "launch_failed"
+            )
+        if process.returncode not in (None, 0):
+            return "failed", "nonzero_exit"
+        if captured_error is not None or not completed:
+            return "failed", (
+                normalized_error_category(captured_error, exit_code=process.returncode)
+                or "runner_error"
+            )
+        return "completed", "completed"
 
     def _build_command(
         self,
@@ -264,6 +514,11 @@ class CodexRunner:
         is_gemini = "gemini" in self.runtime_config.model.lower()
 
         if is_gemini:
+            if self.execution_policy.benchmark_mode:
+                raise ModelExecutionPolicyViolation(
+                    "Benchmark execution currently supports only the Codex CLI because "
+                    "Gemini cannot provide the same non-interactive workspace-write policy."
+                )
             command = ["gemini"]
             if session_id:
                 command.extend(["--resume", session_id])
@@ -291,7 +546,12 @@ class CodexRunner:
                     "--skip-git-repo-check",
                 ]
             )
-            if bypass_sandbox:
+            if self.execution_policy.benchmark_mode:
+                self._append_benchmark_codex_controls(
+                    command,
+                    supports_sandbox_option=False,
+                )
+            elif bypass_sandbox:
                 command.append("--dangerously-bypass-approvals-and-sandbox")
             else:
                 command.append("--full-auto")
@@ -314,7 +574,12 @@ class CodexRunner:
         )
         for extra_dir in self._discover_extra_writable_dirs(workspace):
             command.extend(["--add-dir", extra_dir])
-        if bypass_sandbox:
+        if self.execution_policy.benchmark_mode:
+            self._append_benchmark_codex_controls(
+                command,
+                supports_sandbox_option=True,
+            )
+        elif bypass_sandbox:
             command.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             command.append("--full-auto")
@@ -333,6 +598,19 @@ class CodexRunner:
         invocation_context: ModelInvocationContext | None = None,
     ) -> tuple[str, str | None]:
         abs_workspace = workspace.expanduser().resolve()
+        self.execution_policy.assert_workspace_allowed(abs_workspace)
+        if self.execution_policy.benchmark_mode and bypass_sandbox:
+            raise ModelExecutionPolicyViolation(
+                "Benchmark execution forbids sandbox bypass requests."
+            )
+        if self.execution_policy.benchmark_mode:
+            for directory_key in ("HOME", "TMPDIR", "TMP", "TEMP"):
+                directory_value = self.execution_policy.shell_environment.get(directory_key)
+                if not directory_value:
+                    continue
+                directory_path = Path(directory_value).expanduser().resolve()
+                self.execution_policy.assert_workspace_allowed(directory_path)
+                directory_path.mkdir(mode=0o700, parents=True, exist_ok=True)
         output_file = abs_workspace / ".teams_runtime_codex_output.txt"
         try:
             output_file.unlink()
@@ -347,7 +625,7 @@ class CodexRunner:
         )
 
         is_gemini = "gemini" in self.runtime_config.model.lower()
-        env = {**os.environ, "HOME": str(Path.home())}
+        env = self._provider_environment()
         if is_gemini:
             env["GEMINI_SYSTEM_MD"] = str(abs_workspace / "GEMINI.md")
             gemini_dir = abs_workspace / ".gemini"
@@ -368,16 +646,40 @@ class CodexRunner:
         usage = ModelUsage()
         captured_error: BaseException | None = None
         completed = False
+        reservation: InvocationReservation | None = None
         try:
-            process = subprocess.run(
-                command,
-                cwd=str(abs_workspace),
-                capture_output=True,
-                input=stdin_input,
-                text=True,
-                env=env,
-                check=False,
-            )
+            if self.execution_policy.benchmark_mode:
+                budget = self.execution_policy.invocation_budget
+                if budget is None:
+                    raise ModelExecutionPolicyViolation(
+                        "Benchmark execution has no invocation budget."
+                    )
+                reservation = budget.reserve(
+                    invocation_context,
+                    provider="gemini_cli" if is_gemini else "codex_cli",
+                    role=self.role,
+                )
+                try:
+                    process = self._run_benchmark_process(
+                        command,
+                        cwd=abs_workspace,
+                        stdin_input=stdin_input,
+                        env=env,
+                        reservation=reservation,
+                    )
+                except ModelInvocationTimeout as exc:
+                    process = exc.completed_process
+                    raise
+            else:
+                process = subprocess.run(
+                    command,
+                    cwd=str(abs_workspace),
+                    capture_output=True,
+                    input=stdin_input,
+                    text=True,
+                    env=env,
+                    check=False,
+                )
             if is_gemini:
                 try:
                     res_json = json.loads(process.stdout)
@@ -420,7 +722,25 @@ class CodexRunner:
             captured_error = exc
             raise
         finally:
-            if self.telemetry_recorder is not None and invocation_context is not None:
+            if reservation is not None:
+                reservation_state, stop_reason = self._reservation_result(
+                    completed=completed,
+                    process=process,
+                    captured_error=captured_error,
+                )
+                reservation.complete(
+                    state=reservation_state,
+                    exit_code=process.returncode if process is not None else None,
+                    stop_reason=stop_reason,
+                )
+            should_record_telemetry = (
+                not self.execution_policy.benchmark_mode or reservation is not None
+            )
+            if (
+                should_record_telemetry
+                and self.telemetry_recorder is not None
+                and invocation_context is not None
+            ):
                 cli_name = "gemini" if is_gemini else "codex"
                 exit_code = process.returncode if process is not None else None
                 ended_at = runtime_now()

@@ -115,6 +115,13 @@ class ModelInvocationContext:
     todo_id: str = ""
     backlog_id: str = ""
     goal_id: str = ""
+    prompt_context_enabled: bool | None = None
+    prompt_context_total_events: int | None = None
+    prompt_context_included_events: int | None = None
+    prompt_context_omitted_events: int | None = None
+    prompt_context_recent_events: int | None = None
+    prompt_context_max_events: int | None = None
+    prompt_context_selection_policy: str = ""
 
 
 class InvocationSequence:
@@ -144,6 +151,13 @@ class InvocationSequence:
         self.operation_id = _text(operation_id) or uuid.uuid4().hex
         self.logical_call_id = uuid.uuid4().hex
         self._attempt_index = 0
+        self.prompt_context_enabled: bool | None = None
+        self.prompt_context_total_events: int | None = None
+        self.prompt_context_included_events: int | None = None
+        self.prompt_context_omitted_events: int | None = None
+        self.prompt_context_recent_events: int | None = None
+        self.prompt_context_max_events: int | None = None
+        self.prompt_context_selection_policy = ""
 
     @classmethod
     def from_request(
@@ -177,6 +191,41 @@ class InvocationSequence:
         if purpose is not None:
             self.purpose = _text(purpose) or self.purpose
 
+    def set_prompt_context_projection(
+        self,
+        projection: Any,
+        *,
+        enabled: bool,
+        selection_policy: str = "",
+    ) -> None:
+        """Attach content-free prompt projection evidence to subsequent attempts."""
+        self.prompt_context_enabled = bool(enabled)
+        self.prompt_context_total_events = _optional_non_negative_int(
+            getattr(projection, "total_events", None)
+        )
+        self.prompt_context_included_events = _optional_non_negative_int(
+            getattr(projection, "included_events", None)
+        )
+        self.prompt_context_omitted_events = _optional_non_negative_int(
+            getattr(projection, "omitted_events", None)
+        )
+        self.prompt_context_recent_events = _optional_non_negative_int(
+            getattr(projection, "recent_events", None)
+        )
+        self.prompt_context_max_events = _optional_non_negative_int(
+            getattr(projection, "max_events", None)
+        )
+        self.prompt_context_selection_policy = _text(selection_policy)
+
+    def clear_prompt_context_projection(self) -> None:
+        self.prompt_context_enabled = None
+        self.prompt_context_total_events = None
+        self.prompt_context_included_events = None
+        self.prompt_context_omitted_events = None
+        self.prompt_context_recent_events = None
+        self.prompt_context_max_events = None
+        self.prompt_context_selection_policy = ""
+
     def next(self, attempt_kind: str = "primary") -> ModelInvocationContext:
         normalized_kind = _text(attempt_kind)
         if normalized_kind not in VALID_ATTEMPT_KINDS:
@@ -197,6 +246,13 @@ class InvocationSequence:
             todo_id=self.todo_id,
             backlog_id=self.backlog_id,
             goal_id=self.goal_id,
+            prompt_context_enabled=self.prompt_context_enabled,
+            prompt_context_total_events=self.prompt_context_total_events,
+            prompt_context_included_events=self.prompt_context_included_events,
+            prompt_context_omitted_events=self.prompt_context_omitted_events,
+            prompt_context_recent_events=self.prompt_context_recent_events,
+            prompt_context_max_events=self.prompt_context_max_events,
+            prompt_context_selection_policy=self.prompt_context_selection_policy,
         )
 
 
@@ -298,6 +354,13 @@ class ModelTelemetryRecorder:
                 "todo_id": context.todo_id,
                 "backlog_id": context.backlog_id,
                 "goal_id": context.goal_id,
+                "prompt_context_enabled": context.prompt_context_enabled,
+                "prompt_context_total_events": context.prompt_context_total_events,
+                "prompt_context_included_events": context.prompt_context_included_events,
+                "prompt_context_omitted_events": context.prompt_context_omitted_events,
+                "prompt_context_recent_events": context.prompt_context_recent_events,
+                "prompt_context_max_events": context.prompt_context_max_events,
+                "prompt_context_selection_policy": context.prompt_context_selection_policy,
                 "provider": _text(provider),
                 "model": _text(model),
                 "reasoning": _text(reasoning),
@@ -455,13 +518,18 @@ def _empty_group(role: str, purpose: str, provider: str, model: str) -> dict[str
         "provider": provider,
         "model": model,
         "invocation_count": 0,
+        "primary_count": 0,
         "failed_count": 0,
         "contract_repair_count": 0,
         "sandbox_retry_count": 0,
+        "tool_call_count": 0,
         "input_tokens": 0,
         "cached_input_tokens": 0,
+        "uncached_input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
+        "prompt_context_observed_count": 0,
+        "prompt_context_compacted_count": 0,
         "duration_ms": 0,
         "estimated_cost_usd": None,
     }
@@ -526,6 +594,7 @@ def aggregate_model_invocations(
     durations: list[int] = []
     logical_calls: set[str] = set()
     groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    group_priced_counts: dict[tuple[str, str, str, str], int] = {}
     token_fields = (
         "input_tokens",
         "cached_input_tokens",
@@ -534,9 +603,18 @@ def aggregate_model_invocations(
         "total_tokens",
     )
     tokens = {name: 0 for name in token_fields}
-    completed_count = failed_count = repair_count = sandbox_count = 0
+    completed_count = failed_count = primary_count = repair_count = sandbox_count = 0
     prompt_chars = output_chars = 0
-    native_usage_count = priced_count = 0
+    native_usage_count = priced_count = tool_call_coverage_count = 0
+    tool_call_count = 0
+    prompt_context_observed_count = 0
+    prompt_context_enabled_count = 0
+    prompt_context_eligible_count = 0
+    prompt_context_compacted_count = 0
+    prompt_context_total_events = 0
+    prompt_context_included_events = 0
+    prompt_context_omitted_events = 0
+    prompt_context_selection_policies: set[str] = set()
     total_cost = 0.0
     for record in invocations:
         logical_id = _text(record.get("logical_call_id"))
@@ -550,14 +628,57 @@ def aggregate_model_invocations(
             completed_count += 1
         else:
             failed_count += 1
-        if _text(record.get("attempt_kind")) == "contract_repair":
+        attempt_kind = _text(record.get("attempt_kind"))
+        if attempt_kind == "primary":
+            primary_count += 1
+        if attempt_kind == "contract_repair":
             repair_count += 1
-        if _text(record.get("attempt_kind")) == "sandbox_retry":
+        if attempt_kind == "sandbox_retry":
             sandbox_count += 1
         if _text(record.get("usage_source")) == "native":
             native_usage_count += 1
         for name in token_fields:
             tokens[name] += _optional_non_negative_int(record.get(name)) or 0
+        input_tokens = _optional_non_negative_int(record.get("input_tokens"))
+        cached_input_tokens = _optional_non_negative_int(record.get("cached_input_tokens")) or 0
+        uncached_input_tokens = (
+            max(input_tokens - min(cached_input_tokens, input_tokens), 0)
+            if input_tokens is not None
+            else 0
+        )
+        tool_calls = _optional_non_negative_int(record.get("tool_calls"))
+        if tool_calls is not None:
+            tool_call_coverage_count += 1
+            tool_call_count += tool_calls
+
+        prompt_context_enabled = record.get("prompt_context_enabled")
+        context_counts = tuple(
+            _optional_non_negative_int(record.get(name))
+            for name in (
+                "prompt_context_total_events",
+                "prompt_context_included_events",
+                "prompt_context_omitted_events",
+            )
+        )
+        prompt_context_observed = isinstance(prompt_context_enabled, bool) and all(
+            value is not None for value in context_counts
+        )
+        prompt_context_compacted = False
+        if prompt_context_observed:
+            total_events, included_events, omitted_events = context_counts
+            prompt_context_observed_count += 1
+            prompt_context_enabled_count += int(prompt_context_enabled)
+            prompt_context_total_events += int(total_events or 0)
+            prompt_context_included_events += int(included_events or 0)
+            prompt_context_omitted_events += int(omitted_events or 0)
+            max_events = _optional_non_negative_int(record.get("prompt_context_max_events"))
+            if max_events is not None and int(total_events or 0) > max_events:
+                prompt_context_eligible_count += 1
+            prompt_context_compacted = bool(prompt_context_enabled) and int(omitted_events or 0) > 0
+            prompt_context_compacted_count += int(prompt_context_compacted)
+            selection_policy = _text(record.get("prompt_context_selection_policy"))
+            if selection_policy:
+                prompt_context_selection_policies.add(selection_policy)
         cost = record.get("estimated_cost_usd")
         if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
             priced_count += 1
@@ -567,12 +688,20 @@ def aggregate_model_invocations(
         group = groups.setdefault(key, _empty_group(*key))
         group["invocation_count"] += 1
         group["duration_ms"] += duration
+        if attempt_kind == "primary":
+            group["primary_count"] += 1
         if _text(record.get("status")) != "completed":
             group["failed_count"] += 1
-        if _text(record.get("attempt_kind")) == "contract_repair":
+        if attempt_kind == "contract_repair":
             group["contract_repair_count"] += 1
-        if _text(record.get("attempt_kind")) == "sandbox_retry":
+        if attempt_kind == "sandbox_retry":
             group["sandbox_retry_count"] += 1
+        group["tool_call_count"] += tool_calls or 0
+        group["uncached_input_tokens"] += uncached_input_tokens
+        if prompt_context_observed:
+            group["prompt_context_observed_count"] += 1
+        if prompt_context_compacted:
+            group["prompt_context_compacted_count"] += 1
         for source, target in (
             ("input_tokens", "input_tokens"),
             ("cached_input_tokens", "cached_input_tokens"),
@@ -582,32 +711,60 @@ def aggregate_model_invocations(
             group[target] += _optional_non_negative_int(record.get(source)) or 0
         if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
             group["estimated_cost_usd"] = round((group["estimated_cost_usd"] or 0.0) + float(cost), 12)
+            group_priced_counts[key] = group_priced_counts.get(key, 0) + 1
 
     count = len(invocations)
+    for key, group in groups.items():
+        if group_priced_counts.get(key, 0) != group["invocation_count"]:
+            group["estimated_cost_usd"] = None
     return {
         "schema_version": TELEMETRY_SCHEMA_VERSION,
         "generated_at": runtime_now_iso(),
         "filters": filters,
         "totals": {
             "invocation_count": count,
+            "physical_attempt_count": count,
             "logical_call_count": len(logical_calls),
+            "primary_count": primary_count,
             "completed_count": completed_count,
             "failed_count": failed_count,
             "contract_repair_count": repair_count,
             "sandbox_retry_count": sandbox_count,
+            "tool_call_count": tool_call_count,
             "prompt_chars": prompt_chars,
             "output_chars": output_chars,
-            "estimated_cost_usd": round(total_cost, 12) if priced_count else None,
+            "estimated_cost_usd": (
+                round(total_cost, 12) if count and priced_count == count else None
+            ),
             "token_coverage_percent": round(native_usage_count * 100 / count, 2) if count else 0.0,
+            "tool_call_coverage_percent": (
+                round(tool_call_coverage_count * 100 / count, 2) if count else 0.0
+            ),
             "pricing_coverage_percent": round(priced_count * 100 / count, 2) if count else 0.0,
             "invalid_record_count": invalid_count,
         },
         "tokens": {
             "input": tokens["input_tokens"],
             "cached_input": tokens["cached_input_tokens"],
+            "uncached_input": sum(
+                int(group["uncached_input_tokens"]) for group in groups.values()
+            ),
             "output": tokens["output_tokens"],
             "reasoning_output": tokens["reasoning_output_tokens"],
             "total": tokens["total_tokens"],
+        },
+        "prompt_context": {
+            "observed_invocation_count": prompt_context_observed_count,
+            "enabled_invocation_count": prompt_context_enabled_count,
+            "eligible_invocation_count": prompt_context_eligible_count,
+            "compacted_invocation_count": prompt_context_compacted_count,
+            "total_events": prompt_context_total_events,
+            "included_events": prompt_context_included_events,
+            "omitted_events": prompt_context_omitted_events,
+            "coverage_percent": (
+                round(prompt_context_observed_count * 100 / count, 2) if count else 0.0
+            ),
+            "selection_policies": sorted(prompt_context_selection_policies),
         },
         "latency_ms": {
             "total": sum(durations),

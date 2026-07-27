@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
+from teams_runtime.runtime.execution_policy import ModelExecutionPolicy
 from teams_runtime.runtime.identities import service_runtime_identity
 from teams_runtime.runtime.model_telemetry import (
     InvocationSequence,
@@ -227,6 +228,7 @@ class GoalSourcingRuntime:
         runtime_config: RoleRuntimeConfig,
         session_identity: str | None = None,
         telemetry_config: TelemetryRuntimeConfig | None = None,
+        execution_policy: ModelExecutionPolicy | None = None,
     ):
         self.paths = paths
         self.role = "sourcer"
@@ -244,6 +246,7 @@ class GoalSourcingRuntime:
             runtime_config,
             role=self.role,
             telemetry_recorder=self.telemetry_recorder,
+            execution_policy=execution_policy,
         )
         self._run_lock = threading.Lock()
 

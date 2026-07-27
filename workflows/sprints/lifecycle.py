@@ -1078,6 +1078,38 @@ def confirmed_initial_plan(sprint_state: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def apply_initial_plan_confirmation(
+    sprint_state: dict[str, Any],
+    *,
+    confirmed_by: dict[str, Any],
+    message_id: str = "",
+    parser_reason: str = "",
+    parser_confidence: str = "high",
+    confirmed_at: str = "",
+) -> dict[str, Any]:
+    confirmation = (
+        dict(sprint_state.get("initial_plan_confirmation") or {})
+        if isinstance(sprint_state.get("initial_plan_confirmation"), dict)
+        else {}
+    )
+    if str(confirmation.get("status") or "").strip().lower() != "pending":
+        raise ValueError("Initial implementation plan is not awaiting confirmation.")
+    now = str(confirmed_at or "").strip() or utc_now_iso()
+    confirmation.update(
+        {
+            "status": "confirmed",
+            "confirmed_at": now,
+            "updated_at": now,
+            "confirmed_by": dict(confirmed_by or {}),
+            "confirmed_message_id": str(message_id or "").strip(),
+            "parser_reason": str(parser_reason or "").strip(),
+            "parser_confidence": str(parser_confidence or "").strip() or "high",
+        }
+    )
+    sprint_state["initial_plan_confirmation"] = confirmation
+    return confirmation
+
+
 def initial_plan_action_records(sprint_state: dict[str, Any]) -> list[dict[str, Any]]:
     plan = confirmed_initial_plan(sprint_state)
     return [dict(item) for item in (plan.get("plan_actions") or []) if isinstance(item, dict)]
