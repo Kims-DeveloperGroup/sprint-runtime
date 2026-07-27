@@ -66,14 +66,18 @@ An arm passes its behavior and workflow gates only when all of the following are
 - the final Git worktree is clean
 - the isolated repository still has no Git remotes
 - every persisted invocation has native token usage
+- the call journal is present, uses a supported schema, and reconciles every
+  reservation to exactly one terminal attempt
 - the After arm records at least one real compacted prompt projection
 - the Before and After non-feature configuration fingerprints match
 
 ## Backfill
 
 In this benchmark, **Backfill** means adding a deterministic history prefix to the
-request that exercises the sprint TODO. It does not mean importing production
-telemetry, replaying customer data, or modifying an existing workspace.
+canonical initial sprint-planning request before it is relayed to research or
+planner. The same canonical request, including the prefix, is used by later routing
+steps. It does not mean importing production telemetry, replaying customer data, or
+modifying an existing workspace.
 
 The benchmark generates 48 content-safe historical events. They contain neutral
 checkpoints and one evidence checkpoint for each workflow role:
@@ -102,9 +106,11 @@ checkpoints and one evidence checkpoint for each workflow role:
 ```
 
 The full 48-event sequence and its canonical SHA-256 hash are identical in both arms.
-It is prepended only to the internal execution request, before that request's normal
-events. This produces a realistic long-history prompt without changing planning
-inputs or introducing facts that could change the desired implementation.
+It is prepended exactly once, before the initial planning request's normal `created`
+and `delegated` events. The benchmark persists and hash-verifies the prefix before
+the first provider call. This produces a realistic long-history prompt from the
+beginning of the sprint without introducing facts that could change the desired
+implementation.
 
 Backfill serves three purposes:
 
@@ -138,8 +144,9 @@ The selection policy is
 8. Add a projection notice with total, included, and omitted counts plus the path to
    the complete canonical request.
 
-For example, assume the 48-event backfill is followed by one normal request-created
-event. Before compaction, the prompt input contains:
+For example, the first relayed planning request normally has the 48-event Backfill
+followed by its `created` and `delegated` events. Before compaction, the prompt input
+contains:
 
 ```json
 {
@@ -147,20 +154,21 @@ event. Before compaction, the prompt input contains:
   "events": [
     {"type": "role_report", "payload": {"role": "research", "status": "completed"}},
     "... 47 additional deterministic historical events ...",
-    {"type": "created", "actor": "orchestrator"}
+    {"type": "created", "actor": "sprint_runner"},
+    {"type": "delegated", "actor": "orchestrator"}
   ]
 }
 ```
 
-The Before arm embeds all 49 events. The After arm's projection contains the latest
+The Before arm embeds all 50 events. The After arm's projection contains the latest
 8 events and the most recent older evidence for up to 8 missing roles:
 
 ```json
 {
   "compacted": true,
-  "total_events": 49,
+  "total_events": 50,
   "included_events": 16,
-  "omitted_events": 33,
+  "omitted_events": 34,
   "recent_events": 8,
   "max_events": 16,
   "selection": "recent_tail_plus_latest_role_evidence",
@@ -169,7 +177,7 @@ The Before arm embeds all 49 events. The After arm's projection contains the lat
 ```
 
 The projected `events` array contains 16 complete event objects in chronological
-order. The other 33 events still exist in the canonical request. The prompt tells the
+order. The other 34 events still exist in the canonical request. The prompt tells the
 role to open that file only when a decision requires evidence missing from the
 projection.
 
@@ -241,6 +249,9 @@ The live worker is deliberately narrower than normal runtime execution:
 - writable paths must resolve inside the isolated arm root
 - a shared atomic journal reserves a call before launch, so concurrent roles cannot
   exceed the arm's physical-call budget
+- a benchmark-only launcher waits on a private pipe and executes the provider only
+  after its PID and process group are durably journaled; parent death closes the
+  pipe and exits the launcher without starting the provider
 - provider processes run in dedicated process groups and are terminated on call
   timeout
 - an arm timeout terminates active provider groups before the worker is stopped
@@ -277,7 +288,9 @@ Artifacts are written under:
 
 The execution report includes:
 
-- physical invocation and logical-call counts
+- journal-reserved, telemetry-observed, completed, failed, timed-out,
+  launch-failed, parent-terminated, active, and rejected attempt counts
+- physical telemetry invocation and logical-call counts
 - primary, contract-repair, sandbox-retry, failed, and completed counts
 - tool-call count and coverage
 - provider and end-to-end wall duration, including p50 and p95 provider latency
@@ -290,6 +303,18 @@ The execution report includes:
 - per-role/provider/model groups
 - matched primary calls keyed by role, purpose, workflow step, and occurrence
 - full-sprint Before/After deltas and reduction percentages
+
+Provider usage is reported only for telemetry-observed calls. Native-token,
+tool-call, and pricing coverage use journal-reserved attempts as their denominator.
+If the hard arm deadline terminates a provider before telemetry can be finalized,
+the call journal records a terminal `terminated` attempt while its token usage
+remains unmeasured. Reports show both counts, leave aggregate and per-group costs
+unpriced, and never infer tokens for that attempt. If the journal is absent,
+unsupported, unreconciled, incomplete, or has more telemetry records than
+reservations, all coverage percentages and cost totals remain unknown. Coverage
+also requires unique, nonempty telemetry invocation IDs that match a subset of the
+journaled invocation IDs. Reports persist only bounded mismatch counts and a
+SHA-256 identity digest, not the journal's raw identity list.
 
 Reports are content-safe: they do not contain prompts, model responses, tool output,
 raw errors, raw session IDs, credentials, or environment values.
