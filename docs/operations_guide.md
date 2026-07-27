@@ -279,17 +279,19 @@ params: {"_teams_kind":"delegate"}
 
 ### 2. Persisted request record
 
-The target role also receives the full persisted request record through its prompt context.
+The target role receives a prompt projection of the persisted request record. Request metadata, current status, reply route, artifacts, and the most recent role result remain available. Event history is included in full while it is within the configured limit; longer histories use the bounded `prompt_context` compaction policy.
 
 That record contains:
 
 - request metadata
 - current status
 - reply route
-- event history
+- full or compacted event history
 - most recent role result
 
-So later roles can see earlier role output even though the relay message itself stays small.
+Compaction always keeps the configured recent tail, then uses remaining capacity to backfill the newest older evidence for roles missing from that tail. Here, backfill means selecting complete historical event objects; it does not summarize or modify them. An adjacent notice gives the total, included, and omitted counts plus the canonical `.teams_runtime/requests/<request_id>.json` path. The persisted file remains complete and can be inspected when omitted evidence is required.
+
+This keeps normal later-role prompts bounded while preserving a path to the complete audit history. See [`configuration_guide.md`](./configuration_guide.md#prompt_context) for the exact algorithm and worked input/output example.
 
 ## Request Examples
 

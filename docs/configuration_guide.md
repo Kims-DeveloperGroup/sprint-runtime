@@ -238,6 +238,82 @@ Public service runtimes still use role-name identities such as `planner`, so the
 
 Many `backlog_id` and `request_id` values may exist while one configured sprint session scope remains active.
 
+### `prompt_context`
+
+Controls how much persisted request event history is copied into model prompts:
+
+```yaml
+prompt_context:
+  enabled: true
+  recent_events: 8
+  max_events: 16
+```
+
+Defaults:
+
+- `enabled: true`
+- `recent_events: 8`
+- `max_events: 16`
+
+Both event limits must be positive integers, and `max_events` must be greater than or equal to `recent_events`. Role services load these values at startup, so restart them after changing this section. There is no CLI mutation command for this policy.
+
+Compaction changes only the prompt projection. The canonical request JSON under `.teams_runtime/requests/` retains every event, and the current request metadata, result, artifacts, and selected event payloads are not truncated or summarized.
+
+#### Compaction And Backfill
+
+**Compaction** is executed only when `enabled` is `true` and the request contains more than `max_events` events. The runtime:
+
+1. Includes the last `recent_events` entries by list position, regardless of event shape.
+2. Treats roles represented in that recent tail as already covered.
+3. Scans older events from newest to oldest.
+4. Backfills the newest evidence for each role not already represented, stopping at `max_events`.
+5. Restores the selected events to their original chronological order.
+
+**Backfill** means using remaining capacity to retain older role evidence that would otherwise disappear behind the recent-event boundary. An older event qualifies as role evidence when either `type` or legacy `event_type` is `role_report`, or when its `payload` contains non-empty `role` and `status` fields. The role identity comes from `payload.role`, falling back to the event `actor`.
+
+Backfill is not a summary, database repair, or write to history. It copies complete existing event objects into the prompt. Repeated reports for one role do not consume multiple backfill slots; the newest qualifying older report wins. If `max_events` equals `recent_events`, no backfill capacity exists and the projection is recent-only.
+
+#### Worked Example
+
+With `recent_events: 4` and `max_events: 7`, suppose the persisted request has this abbreviated event list:
+
+```json
+[
+  {"timestamp": "T01", "type": "created", "actor": "orchestrator"},
+  {"timestamp": "T02", "type": "role_report", "payload": {"role": "research", "status": "completed"}},
+  {"timestamp": "T03", "type": "delegated", "actor": "orchestrator"},
+  {"timestamp": "T04", "type": "role_report", "payload": {"role": "planner", "status": "completed", "summary": "initial plan"}},
+  {"timestamp": "T05", "type": "role_report", "payload": {"role": "designer", "status": "completed"}},
+  {"timestamp": "T06", "type": "role_report", "payload": {"role": "planner", "status": "completed", "summary": "final plan"}},
+  {"timestamp": "T07", "type": "retried", "actor": "orchestrator"},
+  {"timestamp": "T08", "type": "role_report", "payload": {"role": "developer", "status": "completed"}},
+  {"timestamp": "T09", "type": "role_report", "payload": {"role": "architect", "status": "completed"}},
+  {"timestamp": "T10", "type": "delegated", "actor": "orchestrator"},
+  {"timestamp": "T11", "type": "role_report", "payload": {"role": "qa", "status": "blocked"}},
+  {"timestamp": "T12", "type": "resumed", "actor": "orchestrator"}
+]
+```
+
+The recent tail is `T09` through `T12`, representing `architect` and `qa`. Three slots remain. Scanning backward selects `T08` for `developer`, `T06` for `planner`, and `T05` for `designer`. `T04` is skipped because the newer planner report already represents that role. Capacity is then full, so older `research` evidence at `T02` is not selected.
+
+The prompt receives:
+
+```json
+[
+  {"timestamp": "T05", "type": "role_report", "payload": {"role": "designer", "status": "completed"}},
+  {"timestamp": "T06", "type": "role_report", "payload": {"role": "planner", "status": "completed", "summary": "final plan"}},
+  {"timestamp": "T08", "type": "role_report", "payload": {"role": "developer", "status": "completed"}},
+  {"timestamp": "T09", "type": "role_report", "payload": {"role": "architect", "status": "completed"}},
+  {"timestamp": "T10", "type": "delegated", "actor": "orchestrator"},
+  {"timestamp": "T11", "type": "role_report", "payload": {"role": "qa", "status": "blocked"}},
+  {"timestamp": "T12", "type": "resumed", "actor": "orchestrator"}
+]
+```
+
+The adjacent prompt notice reports `total_events: 12`, `included_events: 7`, `omitted_events: 5`, the selection policy, and the canonical request path. A role may open that canonical file when its current decision needs omitted evidence.
+
+For immediate rollback, set `enabled: false` and restart role services. This restores full event-history inclusion in prompts without changing persisted request data.
+
 ## Changing `sprint.id`
 
 To rotate the configured sprint session scope:
