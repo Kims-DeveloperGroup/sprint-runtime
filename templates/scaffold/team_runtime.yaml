@@ -50,6 +50,11 @@ research_defaults:
   cleanup: false
   reasoning_level: "Standard"
 
+prompt_context:
+  enabled: true
+  recent_events: 8
+  max_events: 16
+
 telemetry:
   enabled: true
   rate_cards: {}

@@ -992,6 +992,7 @@ class TeamService:
             agent_root=self.paths.internal_agent_root("version_controller"),
             session_identity=self._local_runtime_session_identity("version_controller"),
             telemetry_config=self.runtime_config.telemetry,
+            prompt_context_config=self.runtime_config.prompt_context,
         )
         self._purge_request_scoped_role_output_files()
         self._role_runtime_cache: dict[tuple[str, str, str], RoleAgentRuntime] = {
@@ -2944,6 +2945,7 @@ class TeamService:
                 research_defaults=self.runtime_config.research_defaults,
                 session_identity=session_identity,
                 telemetry_config=self.runtime_config.telemetry,
+                prompt_context_config=self.runtime_config.prompt_context,
             )
         return RoleAgentRuntime(
             paths=self.paths,
@@ -2952,6 +2954,7 @@ class TeamService:
             runtime_config=self.runtime_config.role_defaults[role],
             session_identity=session_identity,
             telemetry_config=self.runtime_config.telemetry,
+            prompt_context_config=self.runtime_config.prompt_context,
         )
 
     def _runtime_for_role(self, role: str, sprint_id: str) -> RoleAgentRuntime:

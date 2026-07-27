@@ -10,6 +10,7 @@ from libs.gemini.deep_research import run_deep_research_sync
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.shared.models import (
     MessageEnvelope,
+    PromptContextRuntimeConfig,
     RequestRecord,
     ResearchRuntimeConfig,
     RoleResult,
@@ -93,6 +94,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
         agent_root: Path | None = None,
         session_identity: str | None = None,
         telemetry_config: TelemetryRuntimeConfig | None = None,
+        prompt_context_config: PromptContextRuntimeConfig | None = None,
     ):
         super().__init__(
             paths=paths,
@@ -102,6 +104,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
             agent_root=agent_root,
             session_identity=session_identity,
             telemetry_config=telemetry_config,
+            prompt_context_config=prompt_context_config,
         )
         self.research_defaults = research_defaults
 
@@ -536,6 +539,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
             envelope,
             request_record,
             local_sources_checked=local_sources_checked,
+            prompt_context_config=self.prompt_context_config,
         )
         output, resolved_session_id = run_with_optional_telemetry(
             self.codex_runner,

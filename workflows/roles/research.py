@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
-from teams_runtime.shared.models import MessageEnvelope, RequestRecord
+from teams_runtime.shared.models import (
+    MessageEnvelope,
+    PromptContextRuntimeConfig,
+    RequestRecord,
+)
+from teams_runtime.shared.prompt_context import (
+    project_request_record_for_prompt,
+    render_prompt_event_history_notice,
+)
 
+
+LOGGER = logging.getLogger(__name__)
 
 RESEARCH_REASON_CODE_NEEDED_EXTERNAL_GROUNDING = "needed_external_grounding"
 RESEARCH_REASON_CODE_NOT_NEEDED_LOCAL_EVIDENCE = "not_needed_local_evidence"
@@ -607,7 +618,24 @@ def build_research_decision_prompt(
     request_record: RequestRecord,
     *,
     local_sources_checked: list[str],
+    prompt_context_config: PromptContextRuntimeConfig | None = None,
 ) -> str:
+    request_projection = project_request_record_for_prompt(
+        request_record,
+        prompt_context_config,
+    )
+    if request_projection.compacted:
+        LOGGER.info(
+            "[research] prompt_context_compacted request_id=%s purpose=research_decision total_events=%s "
+            "included_events=%s omitted_events=%s recent_events=%s max_events=%s",
+            str(request_record.get("request_id") or "unknown"),
+            request_projection.total_events,
+            request_projection.included_events,
+            request_projection.omitted_events,
+            request_projection.recent_events,
+            request_projection.max_events,
+        )
+    event_history_notice = render_prompt_event_history_notice(request_projection)
     params = dict(request_record.get("params") or {}) if isinstance(request_record.get("params"), dict) else {}
     public_targeted = str(params.get("user_requested_role") or "").strip().lower() == "research"
     closeout_requirements = closeout_original_requirements_from_request(request_record)
@@ -689,8 +717,9 @@ def build_research_decision_prompt(
             "Local sources already checked:",
             *[f"- {item}" for item in local_sources_checked],
             "",
+            event_history_notice,
             "Current request:",
-            json.dumps(request_record, ensure_ascii=False, indent=2),
+            json.dumps(request_projection.request_record, ensure_ascii=False, indent=2),
             "",
             "Incoming envelope:",
             json.dumps(envelope.to_dict(), ensure_ascii=False, indent=2),

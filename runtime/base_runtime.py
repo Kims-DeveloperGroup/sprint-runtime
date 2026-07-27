@@ -32,10 +32,16 @@ from teams_runtime.runtime.role_result_contract import (
 from teams_runtime.runtime.session_manager import RoleSessionManager
 from teams_runtime.shared.models import (
     MessageEnvelope,
+    PromptContextRuntimeConfig,
     RequestRecord,
     RoleResult,
     RoleRuntimeConfig,
     TelemetryRuntimeConfig,
+)
+from teams_runtime.shared.prompt_context import (
+    PromptRequestProjection,
+    project_request_record_for_prompt,
+    render_prompt_event_history_notice,
 )
 from teams_runtime.workflows.roles import render_role_prompt_spec
 from teams_runtime.workflows.roles.planner import normalize_planner_proposals
@@ -266,6 +272,7 @@ class RoleAgentRuntime:
         agent_root: Path | None = None,
         session_identity: str | None = None,
         telemetry_config: TelemetryRuntimeConfig | None = None,
+        prompt_context_config: PromptContextRuntimeConfig | None = None,
     ):
         self.paths = paths
         self.role = role
@@ -283,6 +290,7 @@ class RoleAgentRuntime:
             self.sprint_id: self.session_manager,
         }
         self.telemetry_recorder = ModelTelemetryRecorder(paths, self.runtime_identity, telemetry_config)
+        self.prompt_context_config = prompt_context_config or PromptContextRuntimeConfig()
         self.codex_runner = CodexRunner(
             runtime_config,
             role=role,
@@ -290,6 +298,31 @@ class RoleAgentRuntime:
         )
         self.runtime_config = runtime_config
         self._run_lock = threading.Lock()
+
+    def _project_request_for_prompt(
+        self,
+        request_record: RequestRecord,
+        *,
+        purpose: str,
+    ) -> PromptRequestProjection:
+        projection = project_request_record_for_prompt(
+            request_record,
+            self.prompt_context_config,
+        )
+        if projection.compacted:
+            LOGGER.info(
+                "[%s] prompt_context_compacted request_id=%s purpose=%s total_events=%s included_events=%s "
+                "omitted_events=%s recent_events=%s max_events=%s",
+                self.role,
+                str(request_record.get("request_id") or "unknown"),
+                purpose,
+                projection.total_events,
+                projection.included_events,
+                projection.omitted_events,
+                projection.recent_events,
+                projection.max_events,
+            )
+        return projection
 
     def _resolve_request_sprint_id(
         self,
@@ -643,6 +676,11 @@ class RoleAgentRuntime:
         *,
         current_sprint_id: str,
     ) -> str:
+        request_projection = self._project_request_for_prompt(
+            request_record,
+            purpose="contract_repair",
+        )
+        event_history_notice = render_prompt_event_history_notice(request_projection)
         team_workspace_hint = "./workspace/teams_generated" if self.paths.workspace_root.name == "teams_generated" else "./workspace"
         role_specific_rules, extra_fields = render_role_prompt_spec(self.role, team_workspace_hint)
         contract_block = render_role_result_contract(
@@ -674,8 +712,9 @@ Never copy schema enums or placeholder example text literally.
 If validation errors mention copied placeholder or scaffold text, do not reuse any wording from the shape block. Write concrete Korean summary and workflow reason text from the actual request state, or return `failed` with a concrete Korean reason.
 {role_specific_rules}
 
+{event_history_notice}
 Current request:
-{json.dumps(request_record, ensure_ascii=False, indent=2)}
+{json.dumps(request_projection.request_record, ensure_ascii=False, indent=2)}
 """
 
     def _should_retry_with_bypass(self, payload: dict[str, Any]) -> bool:
@@ -734,6 +773,11 @@ Current request:
         *,
         current_sprint_id: str | None = None,
     ) -> str:
+        request_projection = self._project_request_for_prompt(
+            request_record,
+            purpose="role_task",
+        )
+        event_history_notice = render_prompt_event_history_notice(request_projection)
         resolved_sprint_id = str(current_sprint_id or "").strip() or self._resolve_request_sprint_id(
             envelope,
             request_record,
@@ -774,8 +818,9 @@ Separate observed facts from inference. If you did not open the file, run the co
 When you claim a file change or validation result, leave enough evidence in `summary`, `insights`, or `proposals` for orchestrator to verify what you actually checked.
 {role_specific_rules}
 
+{event_history_notice}
 Current request:
-{json.dumps(request_record, ensure_ascii=False, indent=2)}
+{json.dumps(request_projection.request_record, ensure_ascii=False, indent=2)}
 
 Incoming envelope:
 {json.dumps(envelope.to_dict(), ensure_ascii=False, indent=2)}
