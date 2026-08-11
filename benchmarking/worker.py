@@ -64,6 +64,10 @@ _CALL_JOURNAL_STATES = (
     "launch_failed",
     "terminated",
 )
+_PROVIDER_AUTH_ENVIRONMENT_KEYS = (
+    "CODEX_API_KEY",
+    "OPENAI_API_KEY",
+)
 _CHILD_ENVIRONMENT_KEYS = (
     "CODEX_API_KEY",
     "CODEX_HOME",
@@ -323,6 +327,14 @@ def _build_execution_policy(
     *,
     budget: InvocationBudget,
 ) -> ModelExecutionPolicy:
+    if not any(
+        str(os.environ.get(name) or "").strip()
+        for name in _PROVIDER_AUTH_ENVIRONMENT_KEYS
+    ):
+        raise ModelExecutionPolicyViolation(
+            "Live sprint benchmark requires provider-only authentication through "
+            "CODEX_API_KEY or OPENAI_API_KEY; operator Codex home credentials are isolated."
+        )
     return ModelExecutionPolicy.for_benchmark(
         allowed_workspace_root=context.workspace_root,
         invocation_budget=budget,

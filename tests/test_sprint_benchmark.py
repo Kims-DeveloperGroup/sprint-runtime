@@ -48,6 +48,7 @@ from teams_runtime.benchmarking.scenario import (
 from teams_runtime.benchmarking.worker import (
     _BenchmarkHistorySeedState,
     _BenchmarkTeamService,
+    _build_execution_policy,
     _history_seed_hash,
 )
 from teams_runtime.cli import build_parser, cmd_benchmark_sprint_ab
@@ -1627,6 +1628,33 @@ class SprintBenchmarkReportTests(unittest.TestCase):
 
 
 class SprintBenchmarkExecutionSafetyTests(unittest.TestCase):
+    def test_live_policy_requires_provider_only_auth_before_reserving_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            context = mock.Mock(
+                workspace_root=root,
+                call_timeout_seconds=30,
+            )
+            budget = InvocationBudget(1)
+
+            with mock.patch.dict(os.environ, {"PATH": os.defpath}, clear=True):
+                with self.assertRaisesRegex(
+                    ModelExecutionPolicyViolation,
+                    "CODEX_API_KEY or OPENAI_API_KEY",
+                ):
+                    _build_execution_policy(context, budget=budget)
+
+            self.assertEqual(budget.reserved_count, 0)
+
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_API_KEY": "provider-only-secret", "PATH": os.defpath},
+                clear=True,
+            ):
+                policy = _build_execution_policy(context, budget=budget)
+
+            self.assertNotIn("CODEX_API_KEY", policy.shell_environment)
+
     def test_invocation_budget_rejects_the_twenty_first_call_and_journals_no_content(self) -> None:
         class InvocationContext:
             invocation_id = "safe-invocation-id"

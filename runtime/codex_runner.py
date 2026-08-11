@@ -354,7 +354,9 @@ class CodexRunner:
             for key in BENCHMARK_PROVIDER_ENVIRONMENT_KEYS
             if (value := os.environ.get(key)) is not None
         }
-        environment["HOME"] = str(Path.home())
+        # The explicit policy must override outer HOME, CODEX_HOME, temp, Git,
+        # and locale values while provider-only auth variables remain available.
+        environment.update(self.execution_policy.shell_environment)
         environment.setdefault("PATH", os.defpath)
         environment["NO_COLOR"] = "1"
         return environment
@@ -652,7 +654,7 @@ class CodexRunner:
                 "Benchmark execution forbids sandbox bypass requests."
             )
         if self.execution_policy.benchmark_mode:
-            for directory_key in ("HOME", "TMPDIR", "TMP", "TEMP"):
+            for directory_key in ("HOME", "CODEX_HOME", "TMPDIR", "TMP", "TEMP"):
                 directory_value = self.execution_policy.shell_environment.get(directory_key)
                 if not directory_value:
                     continue

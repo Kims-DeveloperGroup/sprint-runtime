@@ -390,13 +390,18 @@ class ModelExecutionPolicy:
         shell_environment: Mapping[str, str] | None = None,
     ) -> "ModelExecutionPolicy":
         allowed_root = Path(allowed_workspace_root).expanduser().resolve()
+        provider_state_root = allowed_root / ".teams_runtime" / "benchmark_provider"
+        provider_tmp = provider_state_root / "tmp"
         environment = {
+            "CODEX_HOME": str(provider_state_root / "codex_home"),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
-            "HOME": str(allowed_root),
+            "HOME": str(provider_state_root / "home"),
             "PATH": os.environ.get("PATH") or os.defpath,
-            "TMPDIR": str(allowed_root / ".tmp"),
+            "TEMP": str(provider_tmp),
+            "TMP": str(provider_tmp),
+            "TMPDIR": str(provider_tmp),
         }
         environment.update(shell_environment or {})
         return cls(

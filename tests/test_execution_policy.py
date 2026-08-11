@@ -81,10 +81,15 @@ class BenchmarkExecutionPolicyTests(unittest.TestCase):
                 execution_policy=policy,
             )
             source_environment = {
+                "CODEX_HOME": "/operator/codex-home",
                 "OPENAI_API_KEY": "provider-secret",
                 "GH_TOKEN": "github-secret",
                 "DISCORD_TOKEN": "discord-secret",
+                "HOME": "/operator/home",
                 "PATH": os.defpath,
+                "TEMP": "/operator/temp",
+                "TMP": "/operator/tmp",
+                "TMPDIR": "/operator/tmpdir",
             }
 
             with mock.patch.dict(os.environ, source_environment, clear=True):
@@ -93,6 +98,42 @@ class BenchmarkExecutionPolicyTests(unittest.TestCase):
             self.assertEqual(environment["OPENAI_API_KEY"], "provider-secret")
             self.assertNotIn("GH_TOKEN", environment)
             self.assertNotIn("DISCORD_TOKEN", environment)
+            provider_state = root / ".teams_runtime" / "benchmark_provider"
+            provider_tmp = str(provider_state / "tmp")
+            self.assertEqual(environment["HOME"], str(provider_state / "home"))
+            self.assertEqual(
+                environment["CODEX_HOME"],
+                str(provider_state / "codex_home"),
+            )
+            self.assertEqual(environment["TMPDIR"], provider_tmp)
+            self.assertEqual(environment["TMP"], provider_tmp)
+            self.assertEqual(environment["TEMP"], provider_tmp)
+            self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+            self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+            self.assertEqual(environment["PYTHONPATH"], str(root))
+
+    def test_benchmark_rejects_provider_state_directory_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            workspace = root / "role"
+            workspace.mkdir()
+            outside = root.parent / "outside-codex-home"
+            budget = InvocationBudget(1)
+            policy = ModelExecutionPolicy.for_benchmark(
+                allowed_workspace_root=root,
+                invocation_budget=budget,
+                call_timeout_seconds=1,
+                shell_environment={"CODEX_HOME": str(outside)},
+            )
+            runner = CodexRunner(
+                RoleRuntimeConfig(model="gpt-benchmark"),
+                execution_policy=policy,
+            )
+
+            with self.assertRaises(ModelExecutionPolicyViolation):
+                runner.run(workspace, "prompt", None)
+
+            self.assertEqual(budget.reserved_count, 0)
 
     def test_benchmark_rejects_bypass_and_gemini_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

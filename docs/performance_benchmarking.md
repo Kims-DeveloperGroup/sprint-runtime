@@ -204,6 +204,14 @@ python -m teams_runtime benchmark sprint-ab \
 Live calls require both the environment variable and `--live`. Omitting either is a
 preflight failure and makes no model call.
 
+The provider does not inherit the operator's `HOME`, `CODEX_HOME`, or temporary
+directories. It uses private paths under the arm's ignored `.teams_runtime` state.
+Provide authentication through a supported provider-only environment variable such as
+`CODEX_API_KEY` or `OPENAI_API_KEY`; stored credentials from the operator's normal
+Codex home are intentionally unavailable. Missing provider-only authentication fails
+preflight before a call is reserved. These authentication variables are not injected
+into model tool shells. Use a rate card matching the selected credential and backend.
+
 Options:
 
 | Option | Default | Meaning |
@@ -242,6 +250,8 @@ The live worker is deliberately narrower than normal runtime execution:
 - dangerous sandbox-bypass requests and automatic bypass retries are rejected
 - MCP servers, web search, plugins, hooks, computer use, and multi-agent features are
   disabled for the provider process
+- the provider's `HOME`, `CODEX_HOME`, and temporary directories resolve inside private
+  ignored benchmark state rather than the operator's home or system temporary directory
 - the provider receives only the authentication and transport variables needed by the
   outer Codex CLI
 - tool shells inherit no outer environment and receive an explicit non-secret
