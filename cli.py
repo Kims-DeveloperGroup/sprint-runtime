@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 from collections.abc import Awaitable
@@ -415,6 +416,91 @@ def cmd_metrics(
     )
 
 
+def cmd_benchmark_sprint_ab(
+    *,
+    live: bool,
+    runtime_config: str,
+    repetitions: int,
+    max_invocations: int,
+    call_timeout_seconds: float,
+    run_timeout_seconds: float,
+    keep_workspaces: str,
+    rate_card_file: str = "",
+    output_dir: str = "",
+    benchmark_id: str = "",
+    allow_dirty_source: bool = False,
+    as_json: bool = False,
+) -> int:
+    from teams_runtime.benchmarking.models import BenchmarkOptions
+    from teams_runtime.benchmarking.runner import (
+        BenchmarkPreflightError,
+        run_sprint_ab_benchmark,
+    )
+    from teams_runtime.benchmarking.worker import (
+        LIVE_BENCHMARK_ENV,
+        run_live_sprint_arm,
+    )
+
+    if not live or os.environ.get(LIVE_BENCHMARK_ENV) != "1":
+        print(
+            "Live benchmark calls require both --live and "
+            f"{LIVE_BENCHMARK_ENV}=1."
+        )
+        return 2
+
+    normalized_runtime_config = str(runtime_config or "").strip()
+    if not normalized_runtime_config:
+        print("--runtime-config is required.")
+        return 2
+
+    options = BenchmarkOptions(
+        source_root=Path(__file__).resolve().parent,
+        runtime_config_path=Path(normalized_runtime_config).expanduser(),
+        output_dir=Path(output_dir).expanduser() if str(output_dir or "").strip() else None,
+        rate_card_path=(
+            Path(rate_card_file).expanduser()
+            if str(rate_card_file or "").strip()
+            else None
+        ),
+        repetitions=repetitions,
+        max_invocations=max_invocations,
+        call_timeout_seconds=call_timeout_seconds,
+        run_timeout_seconds=run_timeout_seconds,
+        keep_workspaces=keep_workspaces,  # type: ignore[arg-type]
+        allow_dirty_source=allow_dirty_source,
+        live=True,
+        benchmark_id=str(benchmark_id or "").strip(),
+    )
+    try:
+        result = run_sprint_ab_benchmark(
+            options,
+            worker=run_live_sprint_arm,
+        )
+    except (BenchmarkPreflightError, FileNotFoundError, OSError, ValueError) as exc:
+        print(f"Benchmark preflight failed: {exc}")
+        return 2
+
+    summary = {
+        "benchmark_id": result.benchmark_id,
+        "status": result.status,
+        "classification": result.classification,
+        "output_dir": str(result.output_dir),
+        "report_json": str(result.report_json),
+        "report_markdown": str(result.report_markdown),
+        "exit_code": result.exit_code,
+    }
+    if as_json:
+        print(json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True))
+    else:
+        print(
+            f"benchmark_id={result.benchmark_id} status={result.status} "
+            f"classification={result.classification}"
+        )
+        print(f"report_json={result.report_json}")
+        print(f"report_markdown={result.report_markdown}")
+    return result.exit_code
+
+
 def cmd_config_role_set(
     workspace_root: Path,
     role: str,
@@ -566,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_goal_stop=cmd_goal_stop,
         cmd_goal_resume=cmd_goal_resume,
         cmd_goal_cancel=cmd_goal_cancel,
+        cmd_benchmark_sprint_ab=cmd_benchmark_sprint_ab,
         default_relay_transport=DEFAULT_RELAY_TRANSPORT,
     )
 

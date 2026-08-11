@@ -8,6 +8,7 @@ from typing import Any
 
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
+from teams_runtime.runtime.execution_policy import ModelExecutionPolicy
 from teams_runtime.runtime.identities import service_runtime_identity
 from teams_runtime.runtime.model_telemetry import (
     InvocationSequence,
@@ -39,6 +40,7 @@ from teams_runtime.shared.models import (
     TelemetryRuntimeConfig,
 )
 from teams_runtime.shared.prompt_context import (
+    PROMPT_EVENT_SELECTION_POLICY,
     PromptRequestProjection,
     project_request_record_for_prompt,
     render_prompt_event_history_notice,
@@ -273,6 +275,7 @@ class RoleAgentRuntime:
         session_identity: str | None = None,
         telemetry_config: TelemetryRuntimeConfig | None = None,
         prompt_context_config: PromptContextRuntimeConfig | None = None,
+        execution_policy: ModelExecutionPolicy | None = None,
     ):
         self.paths = paths
         self.role = role
@@ -295,6 +298,7 @@ class RoleAgentRuntime:
             runtime_config,
             role=role,
             telemetry_recorder=self.telemetry_recorder,
+            execution_policy=execution_policy,
         )
         self.runtime_config = runtime_config
         self._run_lock = threading.Lock()
@@ -362,7 +366,11 @@ class RoleAgentRuntime:
         envelope: MessageEnvelope,
         request_record: RequestRecord,
     ) -> bool:
-        return True
+        return not self._benchmark_execution_enabled()
+
+    def _benchmark_execution_enabled(self) -> bool:
+        execution_policy = getattr(self.codex_runner, "execution_policy", None)
+        return bool(getattr(execution_policy, "benchmark_mode", False))
 
     def run_task(
         self,
@@ -383,10 +391,20 @@ class RoleAgentRuntime:
             )
             session_manager = self._session_manager_for_sprint(current_sprint_id)
             state = session_manager.ensure_session()
+            request_projection = self._project_request_for_prompt(
+                request_record,
+                purpose=telemetry_purpose,
+            )
+            invocation_sequence.set_prompt_context_projection(
+                request_projection,
+                enabled=self.prompt_context_config.enabled,
+                selection_policy=PROMPT_EVENT_SELECTION_POLICY,
+            )
             prompt = self._build_prompt(
                 envelope,
                 request_record,
                 current_sprint_id=current_sprint_id,
+                request_projection=request_projection,
             )
             force_fresh_role_session = (
                 bool((envelope.params or {}).get("_repair_invalid_role_payload_on_resume"))
@@ -437,7 +455,11 @@ class RoleAgentRuntime:
                 )
                 active_session_id = resolved_session_id or active_session_id
                 payload = self._parse_role_output(output, request_record)
-                if not default_bypass and self._should_retry_with_bypass(payload):
+                if (
+                    not self._benchmark_execution_enabled()
+                    and not default_bypass
+                    and self._should_retry_with_bypass(payload)
+                ):
                     retry_session_id = None if active_session_id else active_session_id
                     LOGGER.warning(
                         "[%s] sandbox_denial_detected retrying_with_bypass request_id=%s sprint_id=%s todo_id=%s backlog_id=%s workspace=%s session_id=%s retry_session_mode=%s",
@@ -772,8 +794,9 @@ Current request:
         request_record: RequestRecord,
         *,
         current_sprint_id: str | None = None,
+        request_projection: PromptRequestProjection | None = None,
     ) -> str:
-        request_projection = self._project_request_for_prompt(
+        request_projection = request_projection or self._project_request_for_prompt(
             request_record,
             purpose="role_task",
         )

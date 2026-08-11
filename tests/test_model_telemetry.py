@@ -52,6 +52,36 @@ class ModelTelemetryTests(unittest.TestCase):
                 ),
                 json.dumps(
                     {
+                        "type": "item.completed",
+                        "item": {"id": "command-1", "type": "command_execution"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item/completed",
+                        "item": {"id": "mcp-1", "type": "mcp_tool_call"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"id": "mcp-1", "type": "mcp_tool_call"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "file_change"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "web_search"},
+                    }
+                ),
+                json.dumps(
+                    {
                         "type": "turn.completed",
                         "usage": {
                             "input_tokens": 100,
@@ -73,8 +103,40 @@ class ModelTelemetryTests(unittest.TestCase):
         self.assertEqual(usage.output_tokens, 25)
         self.assertEqual(usage.reasoning_output_tokens, 5)
         self.assertEqual(usage.total_tokens, 125)
+        self.assertEqual(usage.tool_calls, 4)
         self.assertEqual(usage.source, "native")
         self.assertEqual(final_message, '{"status":"completed"}')
+
+    def test_codex_jsonl_parser_does_not_double_count_terminal_tool_usage(self):
+        stdout = "\n".join(
+            (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"id": "command-1", "type": "command_execution"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 2,
+                            "total_tokens": 12,
+                            "tool_calls": 3,
+                        },
+                    }
+                ),
+            )
+        )
+
+        _session_id, usage, _final_message = parse_codex_jsonl(stdout)
+
+        self.assertEqual(usage.input_tokens, 10)
+        self.assertEqual(usage.output_tokens, 2)
+        self.assertEqual(usage.total_tokens, 12)
+        self.assertEqual(usage.tool_calls, 3)
+        self.assertEqual(usage.source, "native")
 
     def test_gemini_usage_parser_sums_models_and_tool_calls(self):
         usage = parse_gemini_usage(
@@ -130,6 +192,39 @@ class ModelTelemetryTests(unittest.TestCase):
             1.25,
         )
 
+    def test_invocation_sequence_carries_prompt_context_projection_across_attempts(self):
+        sequence = InvocationSequence(
+            runtime_identity="service-planner",
+            role="planner",
+            purpose="role_task",
+        )
+        sequence.set_prompt_context_projection(
+            SimpleNamespace(
+                total_events=100,
+                included_events=16,
+                omitted_events=84,
+                recent_events=8,
+                max_events=16,
+            ),
+            enabled=True,
+            selection_policy="recent_tail_plus_latest_role_evidence",
+        )
+
+        primary = sequence.next("primary")
+        repair = sequence.next("contract_repair")
+
+        for context in (primary, repair):
+            self.assertTrue(context.prompt_context_enabled)
+            self.assertEqual(context.prompt_context_total_events, 100)
+            self.assertEqual(context.prompt_context_included_events, 16)
+            self.assertEqual(context.prompt_context_omitted_events, 84)
+            self.assertEqual(context.prompt_context_recent_events, 8)
+            self.assertEqual(context.prompt_context_max_events, 16)
+            self.assertEqual(
+                context.prompt_context_selection_policy,
+                "recent_tail_plus_latest_role_evidence",
+            )
+
     def test_recorder_writes_privacy_safe_daily_shard_and_rate_snapshot(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             paths = RuntimePaths.from_root(tmpdir)
@@ -151,6 +246,17 @@ class ModelTelemetryTests(unittest.TestCase):
                 request_id="request-1",
                 sprint_id="sprint-a",
                 goal_id="goal-1",
+            )
+            sequence.set_prompt_context_projection(
+                SimpleNamespace(
+                    total_events=100,
+                    included_events=16,
+                    omitted_events=84,
+                    recent_events=8,
+                    max_events=16,
+                ),
+                enabled=True,
+                selection_policy="recent_tail_plus_latest_role_evidence",
             )
             now = runtime_now()
             recorder.record(
@@ -183,6 +289,16 @@ class ModelTelemetryTests(unittest.TestCase):
             self.assertEqual(record["session_id_hash"], hash_session_id("secret-session-id"))
             self.assertEqual(record["session_mode"], "resume")
             self.assertEqual(record["goal_id"], "goal-1")
+            self.assertTrue(record["prompt_context_enabled"])
+            self.assertEqual(record["prompt_context_total_events"], 100)
+            self.assertEqual(record["prompt_context_included_events"], 16)
+            self.assertEqual(record["prompt_context_omitted_events"], 84)
+            self.assertEqual(record["prompt_context_recent_events"], 8)
+            self.assertEqual(record["prompt_context_max_events"], 16)
+            self.assertEqual(
+                record["prompt_context_selection_policy"],
+                "recent_tail_plus_latest_role_evidence",
+            )
             self.assertIsNotNone(record["estimated_cost_usd"])
             self.assertEqual(record["rate_card"]["input_per_million_usd"], 2.0)
             self.assertEqual(shards[0].parent.name, now.date().isoformat())
@@ -273,6 +389,17 @@ class ModelTelemetryTests(unittest.TestCase):
                 request_id="request-1",
                 sprint_id="sprint-a",
             )
+            sequence.set_prompt_context_projection(
+                SimpleNamespace(
+                    total_events=100,
+                    included_events=16,
+                    omitted_events=84,
+                    recent_events=8,
+                    max_events=16,
+                ),
+                enabled=True,
+                selection_policy="recent_tail_plus_latest_role_evidence",
+            )
             for index, duration in enumerate((100, 200, 300), start=1):
                 recorder.record(
                     sequence.next("primary" if index == 1 else "contract_repair"),
@@ -290,7 +417,12 @@ class ModelTelemetryTests(unittest.TestCase):
                     error_category="" if index < 3 else "nonzero_exit",
                     prompt_chars=10,
                     output_chars=5,
-                    usage=ModelUsage.from_values(input_tokens=100, cached_input_tokens=25, output_tokens=20),
+                    usage=ModelUsage.from_values(
+                        input_tokens=100,
+                        cached_input_tokens=25,
+                        output_tokens=20,
+                        tool_calls=index,
+                    ),
                 )
             shard = next(paths.model_invocations_dir.rglob("*.jsonl"))
             with shard.open("a", encoding="utf-8") as handle:
@@ -306,17 +438,199 @@ class ModelTelemetryTests(unittest.TestCase):
             )
 
             self.assertEqual(summary["totals"]["invocation_count"], 3)
+            self.assertEqual(summary["totals"]["physical_attempt_count"], 3)
             self.assertEqual(summary["totals"]["logical_call_count"], 1)
+            self.assertEqual(summary["totals"]["primary_count"], 1)
             self.assertEqual(summary["totals"]["contract_repair_count"], 2)
             self.assertEqual(summary["totals"]["failed_count"], 1)
+            self.assertEqual(summary["totals"]["tool_call_count"], 6)
+            self.assertEqual(summary["totals"]["tool_call_coverage_percent"], 100.0)
             self.assertEqual(summary["totals"]["invalid_record_count"], 1)
             self.assertEqual(summary["tokens"]["input"], 300)
+            self.assertEqual(summary["tokens"]["uncached_input"], 225)
+            self.assertEqual(
+                summary["prompt_context"],
+                {
+                    "observed_invocation_count": 3,
+                    "enabled_invocation_count": 3,
+                    "eligible_invocation_count": 3,
+                    "compacted_invocation_count": 3,
+                    "total_events": 300,
+                    "included_events": 48,
+                    "omitted_events": 252,
+                    "coverage_percent": 100.0,
+                    "selection_policies": ["recent_tail_plus_latest_role_evidence"],
+                },
+            )
             self.assertEqual(summary["latency_ms"]["p50"], 200)
             self.assertEqual(summary["latency_ms"]["p95"], 300)
             self.assertEqual(summary["totals"]["token_coverage_percent"], 100.0)
             self.assertEqual(summary["totals"]["pricing_coverage_percent"], 100.0)
             self.assertEqual(len(summary["groups"]), 1)
+            self.assertEqual(summary["groups"][0]["primary_count"], 1)
+            self.assertEqual(summary["groups"][0]["tool_call_count"], 6)
+            self.assertEqual(summary["groups"][0]["uncached_input_tokens"], 225)
+            self.assertEqual(summary["groups"][0]["prompt_context_observed_count"], 3)
+            self.assertEqual(summary["groups"][0]["prompt_context_compacted_count"], 3)
             self.assertIn("role\tpurpose", render_model_metrics_summary(summary))
+
+    def test_aggregation_accepts_records_without_optional_projection_or_tool_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = RuntimePaths.from_root(tmpdir)
+            recorder = ModelTelemetryRecorder(paths, "service-planner")
+            now = runtime_now()
+            sequence = InvocationSequence(
+                runtime_identity="service-planner",
+                role="planner",
+                purpose="role_task",
+            )
+            recorder.record(
+                sequence.next(),
+                provider="codex_cli",
+                model="gpt-5.5",
+                reasoning="xhigh",
+                cli_version="test",
+                started_at=now,
+                ended_at=now,
+                duration_ms=10,
+                session_id_before=None,
+                session_id_after="session-1",
+                status="completed",
+                exit_code=0,
+                error_category="",
+                prompt_chars=10,
+                output_chars=5,
+                usage=ModelUsage.from_values(
+                    input_tokens=100,
+                    cached_input_tokens=150,
+                    output_tokens=20,
+                ),
+            )
+            shard = next(paths.model_invocations_dir.rglob("*.jsonl"))
+            legacy_record = json.loads(shard.read_text(encoding="utf-8"))
+            legacy_record.pop("tool_calls")
+            for key in tuple(legacy_record):
+                if key.startswith("prompt_context_"):
+                    legacy_record.pop(key)
+            shard.write_text(json.dumps(legacy_record) + "\n", encoding="utf-8")
+
+            summary = aggregate_model_invocations(paths, hours=1, now=now)
+
+            self.assertEqual(summary["tokens"]["uncached_input"], 0)
+            self.assertEqual(summary["totals"]["tool_call_count"], 0)
+            self.assertEqual(summary["totals"]["tool_call_coverage_percent"], 0.0)
+            self.assertEqual(summary["prompt_context"]["observed_invocation_count"], 0)
+            self.assertEqual(summary["prompt_context"]["coverage_percent"], 0.0)
+
+    def test_aggregation_hides_partial_cost_totals_and_group_subtotals(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = RuntimePaths.from_root(tmpdir)
+            recorder = ModelTelemetryRecorder(
+                paths,
+                "service-planner",
+                TelemetryRuntimeConfig(
+                    rate_cards={
+                        "codex_cli/gpt-5.5": ModelRateCard(
+                            input_per_million_usd=1.0,
+                            output_per_million_usd=1.0,
+                        )
+                    }
+                ),
+            )
+            now = runtime_now()
+            sequence = InvocationSequence(
+                runtime_identity="service-planner",
+                role="planner",
+                purpose="role_task",
+            )
+            usages = (
+                ModelUsage.from_values(input_tokens=100, output_tokens=20),
+                ModelUsage(),
+            )
+            for index, usage in enumerate(usages):
+                recorder.record(
+                    sequence.next("primary" if index == 0 else "contract_repair"),
+                    provider="codex_cli",
+                    model="gpt-5.5",
+                    reasoning="xhigh",
+                    cli_version="test",
+                    started_at=now,
+                    ended_at=now,
+                    duration_ms=10,
+                    session_id_before=None,
+                    session_id_after=f"session-{index}",
+                    status="completed",
+                    exit_code=0,
+                    error_category="",
+                    prompt_chars=10,
+                    output_chars=5,
+                    usage=usage,
+                )
+
+            summary = aggregate_model_invocations(paths, hours=1, now=now)
+
+            self.assertEqual(summary["totals"]["pricing_coverage_percent"], 50.0)
+            self.assertIsNone(summary["totals"]["estimated_cost_usd"])
+            self.assertEqual(len(summary["groups"]), 1)
+            self.assertIsNone(summary["groups"][0]["estimated_cost_usd"])
+
+    def test_aggregation_distinguishes_disabled_eligible_history_from_compaction(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = RuntimePaths.from_root(tmpdir)
+            recorder = ModelTelemetryRecorder(paths, "service-planner")
+            now = runtime_now()
+            variants = (
+                (False, 100, 0),
+                (True, 16, 84),
+            )
+            for index, (enabled, included_events, omitted_events) in enumerate(variants):
+                sequence = InvocationSequence(
+                    runtime_identity="service-planner",
+                    role="planner",
+                    purpose=f"variant-{index}",
+                )
+                sequence.set_prompt_context_projection(
+                    SimpleNamespace(
+                        total_events=100,
+                        included_events=included_events,
+                        omitted_events=omitted_events,
+                        recent_events=8,
+                        max_events=16,
+                    ),
+                    enabled=enabled,
+                    selection_policy="recent_tail_plus_latest_role_evidence",
+                )
+                recorder.record(
+                    sequence.next(),
+                    provider="codex_cli",
+                    model="gpt-5.5",
+                    reasoning="xhigh",
+                    cli_version="test",
+                    started_at=now,
+                    ended_at=now,
+                    duration_ms=10,
+                    session_id_before=None,
+                    session_id_after=f"session-{index}",
+                    status="completed",
+                    exit_code=0,
+                    error_category="",
+                    prompt_chars=10,
+                    output_chars=5,
+                )
+
+            prompt_context = aggregate_model_invocations(
+                paths,
+                hours=1,
+                now=now,
+            )["prompt_context"]
+
+            self.assertEqual(prompt_context["observed_invocation_count"], 2)
+            self.assertEqual(prompt_context["enabled_invocation_count"], 1)
+            self.assertEqual(prompt_context["eligible_invocation_count"], 2)
+            self.assertEqual(prompt_context["compacted_invocation_count"], 1)
+            self.assertEqual(prompt_context["total_events"], 200)
+            self.assertEqual(prompt_context["included_events"], 116)
+            self.assertEqual(prompt_context["omitted_events"], 84)
 
     def test_codex_runner_records_native_usage_without_changing_tuple_result(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -367,6 +681,7 @@ class ModelTelemetryTests(unittest.TestCase):
             self.assertEqual(record["cached_input_tokens"], 3)
             self.assertEqual(record["output_tokens"], 4)
             self.assertEqual(record["total_tokens"], 14)
+            self.assertEqual(record["tool_calls"], 0)
             self.assertNotIn("private prompt text", json.dumps(record))
 
     def test_role_contract_repair_records_correlated_attempts(self):
