@@ -277,6 +277,8 @@ Options:
 | `--allow-dirty-source` | false | Permit a dirty checkout and record its content-free state hash. |
 | `--json` | false | Print a machine-readable completion summary. |
 
+The runner copies effective public `role_defaults` and internal `internal_agent_defaults` into every arm. For a legacy config without helper overrides, parser, sourcer, and version-controller inherit the orchestrator tier. The effective values participate in `source_config_hash` and appear in `provenance.runtime_model_map`, so runs with different helper tiers are not silently treated as the same deployed model map.
+
 Exit codes:
 
 | Code | Meaning |

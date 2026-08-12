@@ -447,6 +447,12 @@ Use one representative sprint or at least 24 hours of normal traffic before chan
 
 Do not compare only total role cost. Normalize by request count, todo count, and logical-call count so a frequently used inexpensive role is not confused with an inefficient role.
 
+### Measuring Helper Tiers And Workflow Budgets
+
+Group telemetry by `role`, `model`, `reasoning`, and `purpose` before changing helper tiers. Compare equivalent workloads with the public role tiers held constant. The sprint benchmark report's `provenance.runtime_model_map` includes `parser`, `sourcer`, and `version_controller`, and its source configuration hash includes their effective settings even when a legacy workspace inherits them from orchestrator.
+
+For review and reopen controls, compare invocations per completed todo and inspect terminal outcomes alongside cost. A reduced call count is not a successful optimization if blocked todos, repair calls, or QA failures increase. See [`docs/call_amplification_controls.md`](call_amplification_controls.md) for exact counter semantics and the controlled experiment procedure.
+
 ### Measuring Prompt Compaction
 
 Use comparable requests with long event histories before and after enabling `prompt_context`. Keep the provider, model, reasoning level, request shape, and workflow path stable. Compare:

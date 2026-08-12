@@ -182,6 +182,45 @@ role_defaults:
 
 After changing a running role's config, restart that role to apply the new settings.
 
+### `internal_agent_defaults`
+
+Configure the orchestrator-local `parser`, `sourcer`, and `version_controller` independently from public roles:
+
+```yaml
+internal_agent_defaults:
+  parser:
+    model: "gpt-5.4-mini"
+    reasoning: "low"
+  sourcer:
+    model: "gpt-5.4-mini"
+    reasoning: "medium"
+  version_controller:
+    model: "gpt-5.4-mini"
+    reasoning: "low"
+```
+
+Use the CLI for one helper override:
+
+```bash
+python -m teams_runtime config internal set --agent parser --model gpt-5.4-mini --reasoning low
+```
+
+If this section or one helper entry is absent, that helper inherits the effective `role_defaults.orchestrator` model and reasoning level. This keeps existing workspaces backward compatible. Restart the orchestrator after a helper change because all three helpers run inside that service.
+
+See [`docs/call_amplification_controls.md`](call_amplification_controls.md) for tier rationale, measurement, migration, and rollback details.
+
+### Workflow Budgets
+
+The generated orchestrator skill policy at `orchestrator/.agents/skills/agent_utilization/policy.yaml` controls implementation amplification:
+
+```yaml
+workflow_contract:
+  implementation_review_cycle_limit: 3
+  implementation_reopen_limit: 3
+```
+
+The review limit counts routes into architect implementation review. The reopen limit independently counts accepted orchestrator-governed reopen transitions. On reaching either applicable limit, the workflow blocks before another revision handoff. Both values must be positive integers, and workspace policy values override the bundled defaults. Restart orchestrator after a policy change; existing in-flight requests retain their persisted limits, while new internal requests receive the updated values.
+
 ### `actions`
 
 Defines which `execute` actions are allowed.
