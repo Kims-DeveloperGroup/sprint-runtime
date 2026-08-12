@@ -40,6 +40,7 @@ from teams_runtime.benchmarking.models import (
 )
 from teams_runtime.benchmarking.reporting import build_report
 from teams_runtime.benchmarking.runner import (
+    _implementation_result_summary,
     _journal_coverage_available,
     run_sprint_ab_benchmark,
 )
@@ -1147,6 +1148,54 @@ class SprintBenchmarkCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("Benchmark safety abort", output.getvalue())
+
+    def test_cli_returns_two_for_scenario_setup_failure(self) -> None:
+        output = io.StringIO()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"TEAMS_RUNTIME_LIVE_BENCHMARK": "1"},
+                clear=True,
+            ),
+            mock.patch(
+                "teams_runtime.benchmarking.runner.run_sprint_ab_benchmark",
+                side_effect=benchmark_scenario.ScenarioError(
+                    "Pinned Git command timed out"
+                ),
+            ),
+            redirect_stdout(output),
+        ):
+            exit_code = cmd_benchmark_sprint_ab(
+                live=True,
+                runtime_config="unused.yaml",
+                repetitions=1,
+                max_invocations=20,
+                call_timeout_seconds=300,
+                run_timeout_seconds=1800,
+                keep_workspaces="failures",
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Benchmark preflight failed", output.getvalue())
+        self.assertIn("Pinned Git command timed out", output.getvalue())
+
+    def test_retained_result_summary_rejects_oversized_sparse_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "benchmark_app.py"
+            with source.open("wb") as handle:
+                handle.truncate(1024 * 1024 * 1024)
+
+            summary = _implementation_result_summary(
+                root,
+                {"benchmark_app.baseline.py": b"baseline\n"},
+            )
+
+        self.assertEqual(summary["status"], "oversized_or_unsafe")
+        self.assertIsNone(summary["sha256"])
+        self.assertIsNone(summary["size_bytes"])
+        self.assertIsNone(summary["changed_from_baseline"])
 
 
 class SprintBenchmarkReportTests(unittest.TestCase):

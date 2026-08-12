@@ -439,6 +439,7 @@ def cmd_benchmark_sprint_ab(
         BenchmarkPreflightError,
         run_sprint_ab_benchmark,
     )
+    from teams_runtime.benchmarking.scenario import ScenarioError
     from teams_runtime.benchmarking.worker import (
         LIVE_BENCHMARK_ENV,
         run_live_sprint_arm,
@@ -482,7 +483,13 @@ def cmd_benchmark_sprint_ab(
     except BenchmarkWorkerSafetyError as exc:
         print(f"Benchmark safety abort: {exc}")
         return 2
-    except (BenchmarkPreflightError, FileNotFoundError, OSError, ValueError) as exc:
+    except (
+        BenchmarkPreflightError,
+        ScenarioError,
+        FileNotFoundError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"Benchmark preflight failed: {exc}")
         return 2
 

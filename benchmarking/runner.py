@@ -40,6 +40,8 @@ from teams_runtime.benchmarking.reporting import (
     write_text_atomic,
 )
 from teams_runtime.benchmarking.scenario import (
+    _MAX_ORACLE_SOURCE_BYTES,
+    _read_regular_file_at,
     SCENARIO_MILESTONE,
     ScenarioWorkspace,
     create_scenario_workspace,
@@ -344,21 +346,30 @@ def _implementation_result_summary(
             "size_bytes": None,
             "changed_from_baseline": None,
         }
-    source = source_root / source_name
-    digest = hashlib.sha256()
-    size_bytes = 0
-    with source.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(64 * 1024), b""):
-            digest.update(chunk)
-            size_bytes += len(chunk)
-    result_hash = digest.hexdigest()
+    try:
+        payload = _read_regular_file_at(
+            source_root,
+            source_name,
+            max_bytes=_MAX_ORACLE_SOURCE_BYTES,
+        )
+    except (OSError, ValueError):
+        return {
+            "schema_version": 1,
+            "path": source_name,
+            "status": "oversized_or_unsafe",
+            "baseline_sha256": baseline_hash,
+            "sha256": None,
+            "size_bytes": None,
+            "changed_from_baseline": None,
+        }
+    result_hash = hashlib.sha256(payload).hexdigest()
     return {
         "schema_version": 1,
         "path": source_name,
         "status": "hashed",
         "baseline_sha256": baseline_hash,
         "sha256": result_hash,
-        "size_bytes": size_bytes,
+        "size_bytes": len(payload),
         "changed_from_baseline": result_hash != baseline_hash,
     }
 
