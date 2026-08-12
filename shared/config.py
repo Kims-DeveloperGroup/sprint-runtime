@@ -173,6 +173,8 @@ def _normalize_prompt_context_config(value: Any) -> PromptContextRuntimeConfig:
 
 
 def _normalize_non_negative_rate(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a non-negative finite number.")
     try:
         normalized = float(value)
     except (TypeError, ValueError) as exc:
@@ -190,7 +192,7 @@ def _normalize_telemetry_config(value: Any) -> TelemetryRuntimeConfig:
     enabled = value.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError("team_runtime.yaml telemetry.enabled must be a boolean.")
-    raw_rate_cards = value.get("rate_cards") or {}
+    raw_rate_cards = value.get("rate_cards", {})
     if not isinstance(raw_rate_cards, dict):
         raise ValueError("team_runtime.yaml telemetry.rate_cards must be a mapping.")
 

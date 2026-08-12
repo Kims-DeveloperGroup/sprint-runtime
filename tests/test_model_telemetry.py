@@ -870,6 +870,33 @@ class ModelTelemetryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "provider/model"):
                     load_team_runtime_config(tmpdir)
 
+            for invalid_rate_cards in (None, [], False, "codex_cli/gpt-5.5"):
+                with self.subTest(rate_cards=invalid_rate_cards):
+                    payload["telemetry"]["rate_cards"] = invalid_rate_cards
+                    config_path.write_text(
+                        yaml.safe_dump(payload, sort_keys=False),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                        load_team_runtime_config(tmpdir)
+
+            for boolean_rate in (False, True):
+                with self.subTest(rate=boolean_rate):
+                    payload["telemetry"]["rate_cards"] = {
+                        "codex_cli/gpt-5.5": {
+                            "per_invocation_usd": boolean_rate,
+                        }
+                    }
+                    config_path.write_text(
+                        yaml.safe_dump(payload, sort_keys=False),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "non-negative finite",
+                    ):
+                        load_team_runtime_config(tmpdir)
+
     def test_metrics_cli_parser_and_json_output(self):
         args = build_parser().parse_args(
             ["metrics", "--hours", "12", "--request-id", "request-1", "--agent", "planner", "--json"]
