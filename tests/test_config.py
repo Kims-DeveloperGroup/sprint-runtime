@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 from teams_runtime.cli import (
     DEFAULT_WORKSPACE_DIRNAME,
     InternalAgentService,
+    cmd_config_internal_set,
     cmd_config_research_set,
     cmd_config_role_set,
     cmd_start,
@@ -304,6 +305,22 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.role_defaults["developer"].model, "gpt-5.5")
             self.assertEqual(runtime_config.role_defaults["developer"].reasoning, "high")
             self.assertEqual(runtime_config.role_defaults["qa"].reasoning, "medium")
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["parser"].model,
+                "gpt-5.4-mini",
+            )
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["parser"].reasoning,
+                "low",
+            )
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["sourcer"].reasoning,
+                "medium",
+            )
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["version_controller"].reasoning,
+                "low",
+            )
             self.assertIsNone(runtime_config.research_defaults.profile_path)
             self.assertEqual(runtime_config.research_defaults.completion_timeout, 600.0)
             self.assertEqual(runtime_config.research_defaults.callback_timeout, 1200.0)
@@ -626,6 +643,45 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "approval is no longer supported"):
                 load_team_runtime_config(tmpdir)
 
+    def test_internal_agent_defaults_inherit_orchestrator_for_legacy_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            config_path.write_text(
+                """sprint:\n  id: legacy-runtime\nrole_defaults:\n  orchestrator:\n    model: gpt-legacy\n    reasoning: high\n""",
+                encoding="utf-8",
+            )
+
+            runtime_config = load_team_runtime_config(tmpdir)
+
+            for internal_agent in ("parser", "sourcer", "version_controller"):
+                self.assertEqual(
+                    runtime_config.internal_agent_defaults[internal_agent].model,
+                    "gpt-legacy",
+                )
+                self.assertEqual(
+                    runtime_config.internal_agent_defaults[internal_agent].reasoning,
+                    "high",
+                )
+
+    def test_internal_agent_defaults_reject_non_mapping_entry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            config_path = Path(tmpdir) / "team_runtime.yaml"
+            content = config_path.read_text(encoding="utf-8")
+            content = content.replace(
+                '  parser:\n    model: "gpt-5.4-mini"\n    reasoning: "low"\n',
+                "  parser: invalid\n",
+                1,
+            )
+            config_path.write_text(content, encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "internal_agent_defaults.parser must be a mapping",
+            ):
+                load_team_runtime_config(tmpdir)
+
     def test_load_team_runtime_config_rejects_action_approval_required(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -667,9 +723,41 @@ class TeamsRuntimeConfigTests(unittest.TestCase):
             self.assertTrue(policy.planner_reentry_requires_explicit_signal)
             self.assertTrue(policy.verification_result_terminal)
             self.assertTrue(policy.ignore_non_planner_backlog_proposals_for_routing)
+            self.assertEqual(policy.implementation_review_cycle_limit, 3)
+            self.assertEqual(policy.implementation_reopen_limit, 3)
             self.assertTrue((Path(tmpdir) / "shared_workspace" / "current_sprint.md").exists())
             self.assertTrue((Path(tmpdir) / "shared_workspace" / "sprints" / "README.md").exists())
             self.assertTrue((Path(tmpdir) / "shared_workspace" / "sprint_history" / "index.md").exists())
+
+    def test_load_agent_utilization_policy_accepts_custom_workflow_budgets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            policy_path = (
+                Path(tmpdir)
+                / "orchestrator"
+                / ".agents"
+                / "skills"
+                / "agent_utilization"
+                / "policy.yaml"
+            )
+            content = policy_path.read_text(encoding="utf-8")
+            content = content.replace(
+                "implementation_review_cycle_limit: 3",
+                "implementation_review_cycle_limit: 5",
+                1,
+            )
+            content = content.replace(
+                "implementation_reopen_limit: 3",
+                "implementation_reopen_limit: 2",
+                1,
+            )
+            policy_path.write_text(content, encoding="utf-8")
+
+            policy = load_agent_utilization_policy(tmpdir)
+
+            self.assertEqual(policy.policy_source, "workspace_skill_policy")
+            self.assertEqual(policy.implementation_review_cycle_limit, 5)
+            self.assertEqual(policy.implementation_reopen_limit, 2)
 
     def test_load_team_runtime_config_supports_manual_daily_sprint_mode(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1383,6 +1471,37 @@ agents:
             self.assertIn("role=developer model=gpt-5.5 reasoning=low", rendered)
             self.assertIn("python -m teams_runtime restart --agent developer", rendered)
 
+    def test_cmd_config_internal_set_updates_helper_tier_without_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            output = io.StringIO()
+            with patch("teams_runtime.cli.cmd_restart") as restart_mock:
+                with redirect_stdout(output):
+                    exit_code = cmd_config_internal_set(
+                        Path(tmpdir),
+                        "sourcer",
+                        model="gpt-5.4-mini",
+                        reasoning="low",
+                    )
+
+            self.assertEqual(exit_code, 0)
+            restart_mock.assert_not_called()
+            runtime_config = load_team_runtime_config(tmpdir)
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["sourcer"].model,
+                "gpt-5.4-mini",
+            )
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["sourcer"].reasoning,
+                "low",
+            )
+            rendered = output.getvalue()
+            self.assertIn(
+                "internal_agent=sourcer model=gpt-5.4-mini reasoning=low",
+                rendered,
+            )
+            self.assertIn("restart --agent orchestrator", rendered)
+
     def test_cmd_config_research_set_updates_runtime_yaml_without_restart(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scaffold_workspace(tmpdir)
@@ -1612,7 +1731,7 @@ agents:
 
             self.assertEqual(exit_code, 0)
             self.assertIn("sourcer: status=stopped", output.getvalue())
-            self.assertIn("model=N/A reasoning=N/A", output.getvalue())
+            self.assertIn("model=gpt-5.4-mini reasoning=medium", output.getvalue())
             self.assertIn("listener=n/a", output.getvalue())
 
     def test_main_status_accepts_internal_version_controller_agent(self):
@@ -1624,7 +1743,7 @@ agents:
 
             self.assertEqual(exit_code, 0)
             self.assertIn("version_controller: status=stopped", output.getvalue())
-            self.assertIn("model=N/A reasoning=N/A", output.getvalue())
+            self.assertIn("model=gpt-5.4-mini reasoning=low", output.getvalue())
             self.assertIn("listener=n/a", output.getvalue())
 
     def test_main_status_surfaces_internal_agent_listener_health(self):
@@ -1812,6 +1931,37 @@ agents:
                         "qa",
                     ]
                 )
+
+    def test_main_config_internal_set_updates_runtime_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "config",
+                        "internal",
+                        "set",
+                        "--workspace-root",
+                        tmpdir,
+                        "--agent",
+                        "parser",
+                        "--reasoning",
+                        "medium",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            runtime_config = load_team_runtime_config(tmpdir)
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["parser"].model,
+                "gpt-5.4-mini",
+            )
+            self.assertEqual(
+                runtime_config.internal_agent_defaults["parser"].reasoning,
+                "medium",
+            )
+            self.assertIn("internal_agent=parser", output.getvalue())
 
     def test_run_foreground_role_service_does_not_persist_reload_snapshot_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:

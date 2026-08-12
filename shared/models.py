@@ -62,7 +62,10 @@ class WorkflowState(TypedDict, total=False):
     policy_source: str
     contract_version: int
     advisory_pass_count: int
+    reopen_count: int
+    reopen_limit: int
     review_cycle_count: int
+    review_cycle_limit: int
     reopen_category: str
     last_transition_at: str
     last_completed_role: str
@@ -283,6 +286,7 @@ class TeamRuntimeConfig:
     ingress_mentions: bool = True
     allowed_guild_ids: tuple[str, ...] = ()
     role_defaults: dict[str, RoleRuntimeConfig] = field(default_factory=dict)
+    internal_agent_defaults: dict[str, RoleRuntimeConfig] = field(default_factory=dict)
     research_defaults: ResearchRuntimeConfig = field(default_factory=ResearchRuntimeConfig)
     prompt_context: PromptContextRuntimeConfig = field(default_factory=PromptContextRuntimeConfig)
     telemetry: TelemetryRuntimeConfig = field(default_factory=TelemetryRuntimeConfig)

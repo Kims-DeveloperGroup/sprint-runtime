@@ -13,6 +13,7 @@ import yaml
 from teams_runtime.shared.models import (
     ActionConfig,
     DiscordAgentsConfig,
+    INTERNAL_TEAM_AGENTS,
     ModelRateCard,
     PromptContextRuntimeConfig,
     ResearchRuntimeConfig,
@@ -67,6 +68,39 @@ _DEFAULT_ROLE_DEFAULTS: dict[str, RoleRuntimeConfig] = {
     "developer": RoleRuntimeConfig(model="gpt-5.5", reasoning="high"),
     "qa": RoleRuntimeConfig(model="gpt-5.5", reasoning="medium"),
 }
+
+
+def _normalize_internal_agent_defaults(
+    value: Any,
+    *,
+    inherited_runtime: RoleRuntimeConfig,
+) -> dict[str, RoleRuntimeConfig]:
+    if value is None:
+        payload: dict[str, Any] = {}
+    elif isinstance(value, dict):
+        payload = value
+    else:
+        raise ValueError("team_runtime.yaml internal_agent_defaults must be a mapping.")
+
+    normalized: dict[str, RoleRuntimeConfig] = {}
+    for agent in INTERNAL_TEAM_AGENTS:
+        raw_defaults = payload.get(agent)
+        if raw_defaults is None:
+            defaults: dict[str, Any] = {}
+        elif not isinstance(raw_defaults, dict):
+            raise ValueError(
+                f"team_runtime.yaml internal_agent_defaults.{agent} must be a mapping."
+            )
+        else:
+            defaults = raw_defaults
+        normalized[agent] = RoleRuntimeConfig(
+            model=str(defaults.get("model") or "").strip() or inherited_runtime.model,
+            reasoning=(
+                str(defaults.get("reasoning") or "").strip()
+                or inherited_runtime.reasoning
+            ),
+        )
+    return normalized
 
 
 def _normalize_cutoff_time(value: Any) -> str:
@@ -490,6 +524,10 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
         reasoning = str(defaults.get("reasoning") or "").strip() or default_runtime.reasoning
         model = str(defaults.get("model") or "").strip() or default_runtime.model
         role_defaults[role] = RoleRuntimeConfig(model=model, reasoning=reasoning)
+    internal_agent_defaults = _normalize_internal_agent_defaults(
+        payload.get("internal_agent_defaults"),
+        inherited_runtime=role_defaults["orchestrator"],
+    )
     raw_research_defaults = payload.get("research_defaults")
     if raw_research_defaults not in (None, {}) and not isinstance(raw_research_defaults, dict):
         raise ValueError("team_runtime.yaml research_defaults must be a mapping.")
@@ -546,6 +584,7 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
         ingress_mentions=bool(ingress.get("mentions", True)),
         allowed_guild_ids=tuple(str(item).strip() for item in allowed_guild_ids if str(item).strip()),
         role_defaults=role_defaults,
+        internal_agent_defaults=internal_agent_defaults,
         research_defaults=research_defaults,
         prompt_context=prompt_context,
         telemetry=telemetry,
@@ -601,6 +640,59 @@ def update_team_runtime_role_defaults(
 
     runtime_config = load_team_runtime_config(workspace_path)
     return runtime_config.role_defaults[normalized_role]
+
+
+def update_team_runtime_internal_agent_defaults(
+    workspace_root: str | Path,
+    agent: str,
+    *,
+    model: str | None = None,
+    reasoning: str | None = None,
+) -> RoleRuntimeConfig:
+    normalized_agent = str(agent or "").strip()
+    if normalized_agent not in INTERNAL_TEAM_AGENTS:
+        raise ValueError(f"Unsupported internal agent: {normalized_agent or agent}")
+
+    normalized_model = None if model is None else str(model).strip()
+    normalized_reasoning = None if reasoning is None else str(reasoning).strip()
+    if normalized_model == "":
+        raise ValueError("model must be a non-empty string when provided.")
+    if normalized_reasoning == "":
+        raise ValueError("reasoning must be a non-empty string when provided.")
+    if normalized_model is None and normalized_reasoning is None:
+        raise ValueError("At least one of model or reasoning must be provided.")
+
+    workspace_path = Path(workspace_root).expanduser().resolve()
+    config_path = workspace_path / "team_runtime.yaml"
+    payload = _load_yaml(config_path)
+    raw_defaults = payload.get("internal_agent_defaults")
+    if raw_defaults is None:
+        raw_defaults = {}
+        payload["internal_agent_defaults"] = raw_defaults
+    if not isinstance(raw_defaults, dict):
+        raise ValueError("team_runtime.yaml internal_agent_defaults must be a mapping.")
+
+    current_defaults = raw_defaults.get(normalized_agent)
+    if current_defaults is None:
+        current_defaults = {}
+    if not isinstance(current_defaults, dict):
+        raise ValueError(
+            "team_runtime.yaml "
+            f"internal_agent_defaults.{normalized_agent} must be a mapping."
+        )
+    updated_defaults = dict(current_defaults)
+    if normalized_model is not None:
+        updated_defaults["model"] = normalized_model
+    if normalized_reasoning is not None:
+        updated_defaults["reasoning"] = normalized_reasoning
+    raw_defaults[normalized_agent] = updated_defaults
+
+    config_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    runtime_config = load_team_runtime_config(workspace_path)
+    return runtime_config.internal_agent_defaults[normalized_agent]
 
 
 def update_team_runtime_research_defaults(

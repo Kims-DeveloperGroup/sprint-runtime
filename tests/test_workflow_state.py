@@ -8,6 +8,7 @@ from teams_runtime.core.workflow_state import (
     WORKFLOW_STEP_RESEARCH_INITIAL,
     default_workflow_state,
     infer_legacy_internal_workflow_state,
+    initial_workflow_state,
     normalize_workflow_state,
     workflow_complete_state,
     workflow_route_to_architect_review_state,
@@ -37,8 +38,17 @@ class TeamsRuntimeWorkflowStateTests(unittest.TestCase):
         self.assertEqual(normalized["planning_pass_count"], 0)
         self.assertEqual(normalized["planning_pass_limit"], 2)
         self.assertEqual(normalized["review_cycle_count"], 0)
-        self.assertEqual(normalized["review_cycle_limit"], 20)
+        self.assertEqual(normalized["review_cycle_limit"], 3)
+        self.assertEqual(normalized["reopen_count"], 0)
+        self.assertEqual(normalized["reopen_limit"], 3)
         self.assertEqual(normalized["reopen_category"], "")
+
+    def test_initial_workflow_state_accepts_policy_review_and_reopen_limits(self):
+        state = initial_workflow_state(review_cycle_limit=5, reopen_limit=2)
+
+        self.assertEqual(state["review_cycle_limit"], 5)
+        self.assertEqual(state["reopen_limit"], 2)
+        self.assertEqual(state["reopen_count"], 0)
 
     def test_infer_legacy_internal_workflow_state_for_planner_after_advisory(self):
         request_record = {

@@ -116,6 +116,7 @@ from teams_runtime.workflows.orchestration.scheduler import (
     select_backlog_items_for_sprint as select_backlog_items_for_sprint_helper,
 )
 from teams_runtime.workflows.orchestration.engine import (
+    DEFAULT_WORKFLOW_REOPEN_LIMIT,
     DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT,
     WORKFLOW_CONTRACT_VERSION,
     WORKFLOW_PHASE_CLOSEOUT,
@@ -979,7 +980,7 @@ class TeamService:
         self.intent_parser = IntentParserRuntime(
             paths=self.paths,
             sprint_id=self.runtime_config.sprint_id,
-            runtime_config=self.runtime_config.role_defaults["orchestrator"],
+            runtime_config=self.runtime_config.internal_agent_defaults["parser"],
             session_identity=self._local_runtime_session_identity("parser"),
             telemetry_config=self.runtime_config.telemetry,
             execution_policy=self.model_execution_policy,
@@ -987,7 +988,7 @@ class TeamService:
         self.goal_sourcer = GoalSourcingRuntime(
             paths=self.paths,
             sprint_id=self.runtime_config.sprint_id,
-            runtime_config=self.runtime_config.role_defaults["orchestrator"],
+            runtime_config=self.runtime_config.internal_agent_defaults["sourcer"],
             session_identity=self._local_runtime_session_identity("sourcer"),
             telemetry_config=self.runtime_config.telemetry,
             execution_policy=self.model_execution_policy,
@@ -996,7 +997,9 @@ class TeamService:
             paths=self.paths,
             role="version_controller",
             sprint_id=self.runtime_config.sprint_id,
-            runtime_config=self.runtime_config.role_defaults["orchestrator"],
+            runtime_config=(
+                self.runtime_config.internal_agent_defaults["version_controller"]
+            ),
             agent_root=self.paths.internal_agent_root("version_controller"),
             session_identity=self._local_runtime_session_identity("version_controller"),
             telemetry_config=self.runtime_config.telemetry,
@@ -1265,13 +1268,20 @@ class TeamService:
 
     def _initial_workflow_state_for_internal_request(self) -> dict[str, Any]:
         return initial_workflow_state(
-            max(
+            review_cycle_limit=max(
                 1,
                 int(
                     self.agent_utilization_policy.implementation_review_cycle_limit
                     or DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT
                 ),
-            )
+            ),
+            reopen_limit=max(
+                1,
+                int(
+                    self.agent_utilization_policy.implementation_reopen_limit
+                    or DEFAULT_WORKFLOW_REOPEN_LIMIT
+                ),
+            ),
         )
 
     def _request_workflow_state(self, request_record: RequestRecord) -> WorkflowState:

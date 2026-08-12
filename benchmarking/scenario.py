@@ -16,7 +16,7 @@ from typing import Any, Mapping
 import yaml
 
 from teams_runtime.core.template import scaffold_workspace
-from teams_runtime.shared.models import TEAM_ROLES
+from teams_runtime.shared.models import INTERNAL_TEAM_AGENTS, TEAM_ROLES
 
 
 SCENARIO_ID = "sum-positive-full-sprint-v2"
@@ -85,6 +85,7 @@ class ScenarioError(RuntimeError):
 @dataclass(slots=True, frozen=True)
 class RuntimeSettings:
     role_defaults: Mapping[str, Mapping[str, str]]
+    internal_agent_defaults: Mapping[str, Mapping[str, str]]
     rate_cards: Mapping[str, Mapping[str, float | None]]
     source_config_hash: str
 
@@ -308,6 +309,42 @@ def _normalize_role_defaults(payload: Mapping[str, Any]) -> dict[str, dict[str, 
     return normalized
 
 
+def _normalize_internal_agent_defaults(
+    payload: Mapping[str, Any],
+    *,
+    inherited_runtime: Mapping[str, str],
+) -> dict[str, dict[str, str]]:
+    raw_defaults = payload.get("internal_agent_defaults")
+    if raw_defaults is None:
+        return {
+            agent: dict(inherited_runtime)
+            for agent in INTERNAL_TEAM_AGENTS
+        }
+    if not isinstance(raw_defaults, dict):
+        raise ValueError("internal_agent_defaults must be a mapping")
+
+    normalized: dict[str, dict[str, str]] = {}
+    for agent in INTERNAL_TEAM_AGENTS:
+        raw = raw_defaults.get(agent)
+        if raw is None:
+            normalized[agent] = dict(inherited_runtime)
+            continue
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"internal_agent_defaults.{agent} must be a mapping"
+            )
+        model = (
+            str(raw.get("model") or "").strip()
+            or str(inherited_runtime["model"])
+        )
+        reasoning = (
+            str(raw.get("reasoning") or "").strip()
+            or str(inherited_runtime["reasoning"])
+        )
+        normalized[agent] = {"model": model, "reasoning": reasoning}
+    return normalized
+
+
 def _normalize_rate(value: Any, *, field_name: str) -> float | None:
     if value is None:
         return None
@@ -361,12 +398,21 @@ def load_runtime_settings(
     config_file = _runtime_config_file(runtime_config_path)
     payload = _read_yaml(config_file)
     role_defaults = _normalize_role_defaults(payload)
+    internal_agent_defaults = _normalize_internal_agent_defaults(
+        payload,
+        inherited_runtime=role_defaults["orchestrator"],
+    )
     rate_cards: dict[str, dict[str, float | None]] = {}
     if rate_card_path is not None:
         rate_cards = _normalize_rate_cards(_read_yaml(rate_card_path.expanduser().resolve()))
-    source_snapshot = {"role_defaults": role_defaults, "rate_cards": rate_cards}
+    source_snapshot = {
+        "role_defaults": role_defaults,
+        "internal_agent_defaults": internal_agent_defaults,
+        "rate_cards": rate_cards,
+    }
     return RuntimeSettings(
         role_defaults=role_defaults,
+        internal_agent_defaults=internal_agent_defaults,
         rate_cards=rate_cards,
         source_config_hash=canonical_hash(source_snapshot),
     )
@@ -441,6 +487,10 @@ def _benchmark_config(
     payload["role_defaults"] = {
         role: dict(settings.role_defaults[role])
         for role in TEAM_ROLES
+    }
+    payload["internal_agent_defaults"] = {
+        agent: dict(settings.internal_agent_defaults[agent])
+        for agent in INTERNAL_TEAM_AGENTS
     }
     payload["research_defaults"] = {
         "app": "",

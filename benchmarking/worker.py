@@ -549,7 +549,10 @@ def _build_services(
     configured_models = {
         str(config.model or "").strip()
         for service in services.values()
-        for config in service.runtime_config.role_defaults.values()
+        for config in (
+            *service.runtime_config.role_defaults.values(),
+            *service.runtime_config.internal_agent_defaults.values(),
+        )
     }
     unsupported_models = sorted(
         model for model in configured_models if not model or "gemini" in model.lower()

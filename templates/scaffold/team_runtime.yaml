@@ -39,6 +39,17 @@ role_defaults:
     model: "gpt-5.5"
     reasoning: "medium"
 
+internal_agent_defaults:
+  parser:
+    model: "gpt-5.4-mini"
+    reasoning: "low"
+  sourcer:
+    model: "gpt-5.4-mini"
+    reasoning: "medium"
+  version_controller:
+    model: "gpt-5.4-mini"
+    reasoning: "low"
+
 research_defaults:
   app: ""
   notebook: ""

@@ -702,7 +702,10 @@ def run_sprint_ab_benchmark(
         options=options,
         source_revision=source_revision,
         source_config_hash=settings.source_config_hash,
-        runtime_model_map=settings.role_defaults,
+        runtime_model_map={
+            **settings.role_defaults,
+            **settings.internal_agent_defaults,
+        },
         rate_cards=settings.rate_cards,
         history_hash=history_hash,
         runs=tuple(runs),

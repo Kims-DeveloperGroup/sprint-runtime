@@ -9,6 +9,7 @@ from collections.abc import Awaitable
 from pathlib import Path
 
 from teams_runtime.adapters.cli.commands import build_parser as build_cli_parser
+from teams_runtime.adapters.cli.commands import cmd_config_internal_set_impl
 from teams_runtime.adapters.cli.commands import cmd_config_research_set_impl
 from teams_runtime.adapters.cli.commands import cmd_config_role_set_impl
 from teams_runtime.adapters.cli.commands import cmd_goal_cancel_impl
@@ -38,6 +39,7 @@ from teams_runtime.adapters.discord.lifecycle import (
 )
 from teams_runtime.shared.config import (
     load_team_runtime_config,
+    update_team_runtime_internal_agent_defaults,
     update_team_runtime_research_defaults,
     update_team_runtime_role_defaults,
     validate_runtime_discord_agents_config,
@@ -269,6 +271,7 @@ def resolve_workspace_root(raw: str | None) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     return build_cli_parser(
         all_runtime_agents=ALL_RUNTIME_AGENTS,
+        internal_team_agents=INTERNAL_TEAM_AGENTS,
         team_roles=TEAM_ROLES,
         relay_transport_internal=RELAY_TRANSPORT_INTERNAL,
         relay_transport_discord=RELAY_TRANSPORT_DISCORD,
@@ -524,6 +527,25 @@ def cmd_config_role_set(
     )
 
 
+def cmd_config_internal_set(
+    workspace_root: Path,
+    agent: str,
+    *,
+    model: str | None = None,
+    reasoning: str | None = None,
+) -> int:
+    return cmd_config_internal_set_impl(
+        workspace_root,
+        agent,
+        model=model,
+        reasoning=reasoning,
+        update_team_runtime_internal_agent_defaults=(
+            update_team_runtime_internal_agent_defaults
+        ),
+        runtime_paths_cls=RuntimePaths,
+    )
+
+
 def cmd_config_research_set(
     workspace_root: Path,
     *,
@@ -647,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_restart=cmd_restart,
         cmd_list=cmd_list,
         cmd_metrics=cmd_metrics,
+        cmd_config_internal_set=cmd_config_internal_set,
         cmd_config_role_set=cmd_config_role_set,
         cmd_config_research_set=cmd_config_research_set,
         cmd_sprint_start=cmd_sprint_start,

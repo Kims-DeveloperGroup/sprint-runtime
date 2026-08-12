@@ -34,6 +34,7 @@ def _notify_missing_github_token(printer: Printer) -> None:
 def build_parser(
     *,
     all_runtime_agents: list[str] | tuple[str, ...],
+    internal_team_agents: list[str] | tuple[str, ...],
     team_roles: list[str] | tuple[str, ...],
     relay_transport_internal: str,
     relay_transport_discord: str,
@@ -120,6 +121,32 @@ def build_parser(
     role_set_parser.add_argument("--agent", choices=team_roles, required=True, help="Target team role.")
     role_set_parser.add_argument("--model", help="Optional model override to save in team_runtime.yaml.")
     role_set_parser.add_argument("--reasoning", help="Optional reasoning level to save in team_runtime.yaml.")
+
+    internal_parser = config_subparsers.add_parser("internal")
+    internal_subparsers = internal_parser.add_subparsers(
+        dest="internal_command",
+        required=True,
+    )
+    internal_set_parser = internal_subparsers.add_parser("set")
+    internal_set_parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help=workspace_root_help_text,
+    )
+    internal_set_parser.add_argument(
+        "--agent",
+        choices=internal_team_agents,
+        required=True,
+        help="Target internal helper agent.",
+    )
+    internal_set_parser.add_argument(
+        "--model",
+        help="Optional model override to save in team_runtime.yaml.",
+    )
+    internal_set_parser.add_argument(
+        "--reasoning",
+        help="Optional reasoning level to save in team_runtime.yaml.",
+    )
 
     research_parser = config_subparsers.add_parser("research")
     research_subparsers = research_parser.add_subparsers(dest="research_command", required=True)
@@ -303,6 +330,7 @@ def dispatch_main(
     cmd_restart: DispatchSyncCallback,
     cmd_list: DispatchSyncCallback,
     cmd_config_role_set: DispatchSyncCallback,
+    cmd_config_internal_set: DispatchSyncCallback,
     cmd_config_research_set: DispatchSyncCallback,
     cmd_sprint_start: DispatchSyncCallback,
     cmd_sprint_stop: DispatchSyncCallback,
@@ -371,6 +399,13 @@ def dispatch_main(
     if args.command == "config":
         if args.config_command == "role" and args.role_command == "set":
             return cmd_config_role_set(
+                workspace_root,
+                args.agent,
+                model=getattr(args, "model", None),
+                reasoning=getattr(args, "reasoning", None),
+            )
+        if args.config_command == "internal" and args.internal_command == "set":
+            return cmd_config_internal_set(
                 workspace_root,
                 args.agent,
                 model=getattr(args, "model", None),
@@ -601,6 +636,8 @@ def _format_role_runtime_summary(runtime_config: Any, role: str) -> str:
         )
     role_runtime = runtime_config.role_defaults.get(role)
     if role_runtime is None:
+        role_runtime = runtime_config.internal_agent_defaults.get(role)
+    if role_runtime is None:
         return "model=N/A reasoning=N/A"
     model = str(role_runtime.model or "").strip() or "N/A"
     reasoning = "None" if "gemini" in model.lower() else str(role_runtime.reasoning or "").strip() or "medium"
@@ -820,6 +857,41 @@ def cmd_config_role_set_impl(
     return 0
 
 
+def cmd_config_internal_set_impl(
+    workspace_root: Path,
+    agent: str,
+    *,
+    model: str | None = None,
+    reasoning: str | None = None,
+    update_team_runtime_internal_agent_defaults: Callable[..., Any],
+    runtime_paths_cls: Any,
+    printer: Printer = print,
+) -> int:
+    updated = update_team_runtime_internal_agent_defaults(
+        workspace_root,
+        agent,
+        model=model,
+        reasoning=reasoning,
+    )
+    effective_reasoning = (
+        "None" if "gemini" in updated.model.lower() else updated.reasoning
+    )
+    config_path = (
+        runtime_paths_cls.from_root(workspace_root).workspace_root
+        / "team_runtime.yaml"
+    )
+    printer(f"Updated {config_path}")
+    printer(
+        f"internal_agent={agent} model={updated.model} "
+        f"reasoning={effective_reasoning}"
+    )
+    printer(
+        "Restart the orchestrator to apply helper changes: "
+        "python -m teams_runtime restart --agent orchestrator"
+    )
+    return 0
+
+
 def cmd_config_research_set_impl(
     workspace_root: Path,
     *,
@@ -1006,6 +1078,7 @@ def cmd_goal_cancel_impl(
 
 __all__ = [
     "build_parser",
+    "cmd_config_internal_set_impl",
     "cmd_config_research_set_impl",
     "cmd_config_role_set_impl",
     "cmd_goal_cancel_impl",

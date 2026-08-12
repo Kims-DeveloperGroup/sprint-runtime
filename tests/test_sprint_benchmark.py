@@ -59,6 +59,7 @@ from teams_runtime.benchmarking.scenario import (
     build_history_seed,
     canonical_hash,
     create_scenario_workspace,
+    load_runtime_settings,
 )
 from teams_runtime.benchmarking.worker import (
     LIVE_BENCHMARK_ENV,
@@ -76,7 +77,11 @@ from teams_runtime.runtime.execution_policy import (
     ModelExecutionPolicy,
     ModelExecutionPolicyViolation,
 )
-from teams_runtime.shared.models import PromptContextRuntimeConfig, TEAM_ROLES
+from teams_runtime.shared.models import (
+    INTERNAL_TEAM_AGENTS,
+    PromptContextRuntimeConfig,
+    TEAM_ROLES,
+)
 from teams_runtime.shared.prompt_context import (
     PROMPT_EVENT_SELECTION_POLICY,
     project_request_record_for_prompt,
@@ -99,12 +104,30 @@ def _role_defaults() -> dict[str, dict[str, str]]:
     }
 
 
+def _internal_agent_defaults() -> dict[str, dict[str, str]]:
+    return {
+        agent: {
+            "model": "gpt-benchmark-helper",
+            "reasoning": "low",
+        }
+        for agent in INTERNAL_TEAM_AGENTS
+    }
+
+
 def _settings() -> RuntimeSettings:
     role_defaults = _role_defaults()
+    internal_agent_defaults = _internal_agent_defaults()
     return RuntimeSettings(
         role_defaults=role_defaults,
+        internal_agent_defaults=internal_agent_defaults,
         rate_cards={},
-        source_config_hash=canonical_hash({"role_defaults": role_defaults, "rate_cards": {}}),
+        source_config_hash=canonical_hash(
+            {
+                "role_defaults": role_defaults,
+                "internal_agent_defaults": internal_agent_defaults,
+                "rate_cards": {},
+            }
+        ),
     )
 
 
@@ -357,7 +380,7 @@ def _report_for_runs(
         options=options,
         source_revision={"commit_sha": "source-sha", "dirty": False},
         source_config_hash="source-config-hash",
-        runtime_model_map=_role_defaults(),
+        runtime_model_map={**_role_defaults(), **_internal_agent_defaults()},
         rate_cards={},
         history_hash=_HISTORY_SEED_HASH,
         runs=runs,
@@ -367,6 +390,65 @@ def _report_for_runs(
 
 
 class SprintBenchmarkScenarioTests(unittest.TestCase):
+    def test_runtime_settings_hash_and_record_effective_internal_agent_tiers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config_path = root / "team_runtime.yaml"
+            config_path.write_text(
+                yaml.safe_dump({"role_defaults": _role_defaults()}, sort_keys=False),
+                encoding="utf-8",
+            )
+
+            inherited = load_runtime_settings(config_path)
+            self.assertEqual(
+                inherited.internal_agent_defaults["parser"],
+                inherited.role_defaults["orchestrator"],
+            )
+
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "role_defaults": _role_defaults(),
+                        "internal_agent_defaults": {
+                            "parser": {"model": "gpt-benchmark-helper"},
+                        },
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            partial = load_runtime_settings(config_path)
+            self.assertEqual(
+                partial.internal_agent_defaults["parser"],
+                {
+                    "model": "gpt-benchmark-helper",
+                    "reasoning": _role_defaults()["orchestrator"]["reasoning"],
+                },
+            )
+            self.assertEqual(
+                partial.internal_agent_defaults["sourcer"],
+                partial.role_defaults["orchestrator"],
+            )
+
+            explicit_payload = {
+                "role_defaults": _role_defaults(),
+                "internal_agent_defaults": _internal_agent_defaults(),
+            }
+            config_path.write_text(
+                yaml.safe_dump(explicit_payload, sort_keys=False),
+                encoding="utf-8",
+            )
+            explicit = load_runtime_settings(config_path)
+
+            self.assertEqual(
+                explicit.internal_agent_defaults["sourcer"]["model"],
+                "gpt-benchmark-helper",
+            )
+            self.assertNotEqual(
+                inherited.source_config_hash,
+                explicit.source_config_hash,
+            )
+
     def test_schedule_alternates_pair_order_and_only_after_enables_compaction(self) -> None:
         schedule = make_arm_schedule(3)
 
@@ -463,6 +545,10 @@ class SprintBenchmarkScenarioTests(unittest.TestCase):
             )
             self.assertFalse(before_config["prompt_context"]["enabled"])
             self.assertTrue(after_config["prompt_context"]["enabled"])
+            self.assertEqual(
+                before_config["internal_agent_defaults"],
+                _internal_agent_defaults(),
+            )
             before_config["prompt_context"].pop("enabled")
             after_config["prompt_context"].pop("enabled")
             self.assertEqual(before_config, after_config)
