@@ -14,6 +14,8 @@ from teams_runtime.shared.models import (
     DiscordAgentsConfig,
     INTERNAL_TEAM_AGENTS,
     MessageEnvelope,
+    ModelRateCard,
+    PromptContextRuntimeConfig,
     ReplyRoute,
     RequestEvent,
     RequestRecord,
@@ -27,6 +29,7 @@ from teams_runtime.shared.models import (
     TEAM_ROLES,
     TERMINAL_REQUEST_STATUSES,
     TeamRuntimeConfig,
+    TelemetryRuntimeConfig,
     WorkflowState,
 )
 
@@ -37,6 +40,8 @@ __all__ = [
     "DiscordAgentsConfig",
     "INTERNAL_TEAM_AGENTS",
     "MessageEnvelope",
+    "ModelRateCard",
+    "PromptContextRuntimeConfig",
     "ReplyRoute",
     "RequestEvent",
     "RequestRecord",
@@ -50,5 +55,6 @@ __all__ = [
     "TEAM_ROLES",
     "TERMINAL_REQUEST_STATUSES",
     "TeamRuntimeConfig",
+    "TelemetryRuntimeConfig",
     "WorkflowState",
 ]

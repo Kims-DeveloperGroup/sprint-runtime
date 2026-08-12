@@ -238,6 +238,27 @@ class ResearchRuntimeConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class ModelRateCard:
+    input_per_million_usd: float | None = None
+    cached_input_per_million_usd: float | None = None
+    output_per_million_usd: float | None = None
+    per_invocation_usd: float | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class TelemetryRuntimeConfig:
+    enabled: bool = True
+    rate_cards: dict[str, ModelRateCard] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class PromptContextRuntimeConfig:
+    enabled: bool = True
+    recent_events: int = 8
+    max_events: int = 16
+
+
+@dataclass(slots=True, frozen=True)
 class ActionConfig:
     name: str
     command: tuple[str, ...]
@@ -263,6 +284,8 @@ class TeamRuntimeConfig:
     allowed_guild_ids: tuple[str, ...] = ()
     role_defaults: dict[str, RoleRuntimeConfig] = field(default_factory=dict)
     research_defaults: ResearchRuntimeConfig = field(default_factory=ResearchRuntimeConfig)
+    prompt_context: PromptContextRuntimeConfig = field(default_factory=PromptContextRuntimeConfig)
+    telemetry: TelemetryRuntimeConfig = field(default_factory=TelemetryRuntimeConfig)
     actions: dict[str, ActionConfig] = field(default_factory=dict)
 
 
@@ -329,6 +352,7 @@ __all__ = [
     "GoalState",
     "INTERNAL_TEAM_AGENTS",
     "MessageEnvelope",
+    "PromptContextRuntimeConfig",
     "ReplyRoute",
     "RequestEvent",
     "RequestRecord",

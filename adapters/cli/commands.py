@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -93,6 +94,18 @@ def build_parser(
         help=workspace_root_help_text,
     )
     list_parser.add_argument("--request-id", help="Optional request identifier to print.")
+
+    metrics_parser = subparsers.add_parser("metrics", help="Summarize local model cost and latency telemetry.")
+    metrics_parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help=workspace_root_help_text,
+    )
+    metrics_parser.add_argument("--hours", type=float, default=24.0, help="Positive lookback window in hours.")
+    metrics_parser.add_argument("--request-id", default="", help="Optional request identifier filter.")
+    metrics_parser.add_argument("--sprint-id", default="", help="Optional sprint identifier filter.")
+    metrics_parser.add_argument("--agent", choices=all_runtime_agents, help="Optional role filter.")
+    metrics_parser.add_argument("--json", action="store_true", help="Render stable aggregate JSON output.")
 
     config_parser = subparsers.add_parser("config")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
@@ -196,6 +209,84 @@ def build_parser(
             help=workspace_root_help_text,
         )
 
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Run an explicitly opted-in performance benchmark.",
+    )
+    benchmark_subparsers = benchmark_parser.add_subparsers(
+        dest="benchmark_command",
+        required=True,
+    )
+    sprint_ab_parser = benchmark_subparsers.add_parser(
+        "sprint-ab",
+        help="Compare full sprints with prompt event compaction disabled and enabled.",
+    )
+    sprint_ab_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Permit live provider calls; also requires TEAMS_RUNTIME_LIVE_BENCHMARK=1.",
+    )
+    sprint_ab_parser.add_argument(
+        "--runtime-config",
+        required=True,
+        help="Path to the deployed team_runtime.yaml or its workspace directory.",
+    )
+    sprint_ab_parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=1,
+        help="Number of paired runs; execution order alternates AB then BA.",
+    )
+    sprint_ab_parser.add_argument(
+        "--max-invocations",
+        type=int,
+        default=20,
+        help="Hard physical model-invocation cap per arm.",
+    )
+    sprint_ab_parser.add_argument(
+        "--call-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Hard provider-call timeout.",
+    )
+    sprint_ab_parser.add_argument(
+        "--run-timeout-seconds",
+        type=float,
+        default=1800.0,
+        help="Hard full-arm timeout.",
+    )
+    sprint_ab_parser.add_argument(
+        "--keep-workspaces",
+        choices=("none", "failures", "all"),
+        default="failures",
+        help="Retain no workspaces, failed workspaces, or every workspace.",
+    )
+    sprint_ab_parser.add_argument(
+        "--rate-card-file",
+        default="",
+        help="Optional YAML rate card used only for estimated-cost reporting.",
+    )
+    sprint_ab_parser.add_argument(
+        "--output-dir",
+        default="",
+        help="Optional parent directory for benchmark artifacts.",
+    )
+    sprint_ab_parser.add_argument(
+        "--benchmark-id",
+        default="",
+        help="Optional stable artifact directory name.",
+    )
+    sprint_ab_parser.add_argument(
+        "--allow-dirty-source",
+        action="store_true",
+        help="Allow a dirty source checkout and record its state hash in provenance.",
+    )
+    sprint_ab_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable result summary.",
+    )
+
     return parser
 
 
@@ -223,6 +314,8 @@ def dispatch_main(
     cmd_goal_resume: DispatchSyncCallback,
     cmd_goal_cancel: DispatchSyncCallback,
     default_relay_transport: str,
+    cmd_metrics: DispatchSyncCallback | None = None,
+    cmd_benchmark_sprint_ab: DispatchSyncCallback | None = None,
 ) -> int:
     if args.command == "init":
         return cmd_init(
@@ -263,6 +356,18 @@ def dispatch_main(
         )
     if args.command == "list":
         return cmd_list(workspace_root, args.request_id)
+    if args.command == "metrics":
+        if cmd_metrics is None:
+            parser.error("Metrics command is unavailable.")
+            return 2
+        return cmd_metrics(
+            workspace_root,
+            hours=float(getattr(args, "hours", 24.0)),
+            request_id=str(getattr(args, "request_id", "") or ""),
+            sprint_id=str(getattr(args, "sprint_id", "") or ""),
+            role=str(getattr(args, "agent", "") or ""),
+            as_json=bool(getattr(args, "json", False)),
+        )
     if args.command == "config":
         if args.config_command == "role" and args.role_command == "set":
             return cmd_config_role_set(
@@ -315,6 +420,24 @@ def dispatch_main(
             return cmd_goal_resume(workspace_root)
         if args.goal_command in {"cancel", "terminate"}:
             return cmd_goal_cancel(workspace_root)
+    if args.command == "benchmark" and args.benchmark_command == "sprint-ab":
+        if cmd_benchmark_sprint_ab is None:
+            parser.error("Sprint benchmark command is unavailable.")
+            return 2
+        return cmd_benchmark_sprint_ab(
+            live=bool(getattr(args, "live", False)),
+            runtime_config=str(getattr(args, "runtime_config", "") or ""),
+            repetitions=int(getattr(args, "repetitions", 1)),
+            max_invocations=int(getattr(args, "max_invocations", 20)),
+            call_timeout_seconds=float(getattr(args, "call_timeout_seconds", 300.0)),
+            run_timeout_seconds=float(getattr(args, "run_timeout_seconds", 1800.0)),
+            keep_workspaces=str(getattr(args, "keep_workspaces", "failures") or "failures"),
+            rate_card_file=str(getattr(args, "rate_card_file", "") or ""),
+            output_dir=str(getattr(args, "output_dir", "") or ""),
+            benchmark_id=str(getattr(args, "benchmark_id", "") or ""),
+            allow_dirty_source=bool(getattr(args, "allow_dirty_source", False)),
+            as_json=bool(getattr(args, "json", False)),
+        )
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
@@ -545,6 +668,41 @@ def cmd_status_impl(
             f"session={session_state.get('session_id') or 'N/A'} "
             f"{model_summary} {listener_summary}"
         )
+    return 0
+
+
+def cmd_metrics_impl(
+    workspace_root: Path,
+    *,
+    hours: float,
+    request_id: str,
+    sprint_id: str,
+    role: str,
+    as_json: bool,
+    runtime_paths_cls: Any,
+    aggregate_model_invocations: Callable[..., dict[str, Any]],
+    render_model_metrics_summary: Callable[[dict[str, Any]], str],
+    printer: Printer = print,
+) -> int:
+    if hours <= 0:
+        printer("metrics --hours must be a positive number.")
+        return 2
+    paths = runtime_paths_cls.from_root(workspace_root)
+    try:
+        summary = aggregate_model_invocations(
+            paths,
+            hours=hours,
+            request_id=request_id,
+            sprint_id=sprint_id,
+            role=role,
+        )
+    except ValueError as exc:
+        printer(str(exc))
+        return 2
+    if as_json:
+        printer(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        printer(render_model_metrics_summary(summary))
     return 0
 
 
@@ -857,6 +1015,7 @@ __all__ = [
     "cmd_goal_stop_impl",
     "cmd_init_impl",
     "cmd_list_impl",
+    "cmd_metrics_impl",
     "cmd_restart_impl",
     "cmd_sprint_restart_impl",
     "cmd_sprint_start_impl",

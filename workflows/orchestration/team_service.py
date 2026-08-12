@@ -60,6 +60,7 @@ from teams_runtime.workflows.state.goal_store import (
     update_goal_stop_condition,
 )
 from teams_runtime.shared.config import load_discord_agents_config, load_team_runtime_config
+from teams_runtime.runtime.execution_policy import ModelExecutionPolicy
 from teams_runtime.runtime.role_result_contract import is_restart_repairable_invalid_contract_payload
 from teams_runtime.workflows.orchestration.relay import (
     archive_internal_relay_file,
@@ -383,6 +384,7 @@ from teams_runtime.workflows.sprints.lifecycle import (
     INITIAL_PHASE_STEP_TODO_FINALIZATION,
     INITIAL_PHASE_STEPS,
     SPRINT_ACTIVE_BACKLOG_STATUSES,
+    apply_initial_plan_confirmation as apply_initial_plan_confirmation_helper,
     apply_sprint_planning_result as apply_sprint_planning_result_helper,
     archive_pending_requirement_candidates as archive_pending_requirement_candidates_helper,
     build_idle_current_sprint_markdown as build_idle_current_sprint_markdown_helper,
@@ -484,6 +486,7 @@ from teams_runtime.shared.models import MessageEnvelope, RequestRecord, RoleResu
 from teams_runtime.runtime.base_runtime import RoleAgentRuntime, normalize_role_payload
 from teams_runtime.runtime.internal.goal_sourcing import GoalSourcingRuntime, normalize_goal_sourcing_payload
 from teams_runtime.runtime.internal.intent_parser import IntentParserRuntime, normalize_intent_payload
+from teams_runtime.runtime.model_telemetry import run_task_with_optional_telemetry_purpose
 from teams_runtime.runtime.research_runtime import ResearchAgentRuntime
 from teams_runtime.runtime.identities import local_runtime_identity, service_runtime_identity
 
@@ -946,6 +949,8 @@ class TeamService:
         *,
         enable_discord_client: bool = True,
         relay_transport: str = RELAY_TRANSPORT_DISCORD,
+        model_execution_policy: ModelExecutionPolicy | None = None,
+        allow_external_research: bool = True,
     ):
         if role not in TEAM_ROLES:
             raise ValueError(f"Unsupported role: {role}")
@@ -959,6 +964,8 @@ class TeamService:
                 + ", ".join(sorted(VALID_RELAY_TRANSPORTS))
             )
         self.relay_transport = normalized_relay_transport
+        self.model_execution_policy = model_execution_policy
+        self.allow_external_research = bool(allow_external_research)
         self.discord_config = load_discord_agents_config(self.paths.workspace_root)
         self.runtime_config = load_team_runtime_config(self.paths.workspace_root)
         self.agent_utilization_policy = load_agent_utilization_policy(self.paths.workspace_root)
@@ -974,12 +981,16 @@ class TeamService:
             sprint_id=self.runtime_config.sprint_id,
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             session_identity=self._local_runtime_session_identity("parser"),
+            telemetry_config=self.runtime_config.telemetry,
+            execution_policy=self.model_execution_policy,
         )
         self.goal_sourcer = GoalSourcingRuntime(
             paths=self.paths,
             sprint_id=self.runtime_config.sprint_id,
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             session_identity=self._local_runtime_session_identity("sourcer"),
+            telemetry_config=self.runtime_config.telemetry,
+            execution_policy=self.model_execution_policy,
         )
         self.version_controller_runtime = RoleAgentRuntime(
             paths=self.paths,
@@ -988,6 +999,9 @@ class TeamService:
             runtime_config=self.runtime_config.role_defaults["orchestrator"],
             agent_root=self.paths.internal_agent_root("version_controller"),
             session_identity=self._local_runtime_session_identity("version_controller"),
+            telemetry_config=self.runtime_config.telemetry,
+            prompt_context_config=self.runtime_config.prompt_context,
+            execution_policy=self.model_execution_policy,
         )
         self._purge_request_scoped_role_output_files()
         self._role_runtime_cache: dict[tuple[str, str, str], RoleAgentRuntime] = {
@@ -2760,7 +2774,12 @@ class TeamService:
                 f"summary={summary}"
             ),
         )
-        return await asyncio.to_thread(self.version_controller_runtime.run_task, envelope, request_context)
+        return await asyncio.to_thread(
+            self.version_controller_runtime.run_task,
+            envelope,
+            request_context,
+            telemetry_purpose="version_control",
+        )
 
     async def _run_task_version_controller(
         self,
@@ -2934,6 +2953,10 @@ class TeamService:
                 runtime_config=self.runtime_config.role_defaults[role],
                 research_defaults=self.runtime_config.research_defaults,
                 session_identity=session_identity,
+                telemetry_config=self.runtime_config.telemetry,
+                prompt_context_config=self.runtime_config.prompt_context,
+                allow_external_research=self.allow_external_research,
+                execution_policy=self.model_execution_policy,
             )
         return RoleAgentRuntime(
             paths=self.paths,
@@ -2941,6 +2964,9 @@ class TeamService:
             sprint_id=sprint_id,
             runtime_config=self.runtime_config.role_defaults[role],
             session_identity=session_identity,
+            telemetry_config=self.runtime_config.telemetry,
+            prompt_context_config=self.runtime_config.prompt_context,
+            execution_policy=self.model_execution_policy,
         )
 
     def _runtime_for_role(self, role: str, sprint_id: str) -> RoleAgentRuntime:
@@ -3717,18 +3743,14 @@ class TeamService:
         now = utc_now_iso()
         sprint_id = str(sprint_state.get("sprint_id") or "")
         if interpreted_intent == "plan_confirm":
-            confirmation.update(
-                {
-                    "status": "confirmed",
-                    "confirmed_at": now,
-                    "updated_at": now,
-                    "confirmed_by": build_requester_route(message, envelope, forwarded=forwarded),
-                    "confirmed_message_id": str(message.message_id or "").strip(),
-                    "parser_reason": str(interpreted.params.get("parser_reason") or "").strip(),
-                    "parser_confidence": interpreted_confidence,
-                }
+            confirmation = apply_initial_plan_confirmation_helper(
+                sprint_state,
+                confirmed_by=build_requester_route(message, envelope, forwarded=forwarded),
+                message_id=str(message.message_id or "").strip(),
+                parser_reason=str(interpreted.params.get("parser_reason") or "").strip(),
+                parser_confidence=interpreted_confidence,
+                confirmed_at=now,
             )
-            sprint_state["initial_plan_confirmation"] = confirmation
             self._save_sprint_state(sprint_state)
             self._append_sprint_event(
                 sprint_id,
@@ -5852,7 +5874,13 @@ class TeamService:
         )
         try:
             runtime = self._runtime_for_role("planner", self.runtime_config.sprint_id)
-            result = await asyncio.to_thread(runtime.run_task, envelope, request_context)
+            result = await asyncio.to_thread(
+                run_task_with_optional_telemetry_purpose,
+                runtime,
+                envelope,
+                request_context,
+                telemetry_purpose="sprint_closeout_report",
+            )
         except Exception:
             LOGGER.exception(
                 "Planner closeout report drafting failed for sprint %s",

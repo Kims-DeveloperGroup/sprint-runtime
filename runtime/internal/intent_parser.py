@@ -9,9 +9,15 @@ from typing import Any
 from teams_runtime.workflows.orchestration.ingress import is_manual_sprint_finalize_text, is_manual_sprint_start_text
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
+from teams_runtime.runtime.execution_policy import ModelExecutionPolicy
 from teams_runtime.runtime.identities import service_runtime_identity
+from teams_runtime.runtime.model_telemetry import (
+    InvocationSequence,
+    ModelTelemetryRecorder,
+    run_with_optional_telemetry,
+)
 from teams_runtime.runtime.session_manager import RoleSessionManager
-from teams_runtime.shared.models import MessageEnvelope, RoleRuntimeConfig
+from teams_runtime.shared.models import MessageEnvelope, RoleRuntimeConfig, TelemetryRuntimeConfig
 
 
 REQUEST_ID_TEXT_PATTERN = re.compile(r"\brequest[_\s-]*id\s*[:=]?\s*([A-Za-z0-9._-]+)", re.IGNORECASE)
@@ -196,6 +202,8 @@ class IntentParserRuntime:
         sprint_id: str,
         runtime_config: RoleRuntimeConfig,
         session_identity: str | None = None,
+        telemetry_config: TelemetryRuntimeConfig | None = None,
+        execution_policy: ModelExecutionPolicy | None = None,
     ):
         self.paths = paths
         self.role = "parser"
@@ -208,8 +216,28 @@ class IntentParserRuntime:
             agent_root=paths.internal_agent_root("parser"),
             runtime_identity=self.runtime_identity,
         )
-        self.codex_runner = CodexRunner(runtime_config, role=self.role)
-        self._run_lock = threading.Lock()
+        self.telemetry_recorder = ModelTelemetryRecorder(
+            paths,
+            self.runtime_identity,
+            telemetry_config,
+            output_dir=(
+                execution_policy.telemetry_output_dir
+                if execution_policy is not None
+                else None
+            ),
+        )
+        self.codex_runner = CodexRunner(
+            runtime_config,
+            role=self.role,
+            telemetry_recorder=self.telemetry_recorder,
+            execution_policy=execution_policy,
+        )
+        self._run_lock = (
+            execution_policy.execution_lock
+            if execution_policy is not None
+            and execution_policy.execution_lock is not None
+            else threading.Lock()
+        )
 
     def classify(
         self,
@@ -231,7 +259,20 @@ class IntentParserRuntime:
                 backlog_counts=backlog_counts,
                 forwarded=forwarded,
             )
-            output, session_id = self.codex_runner.run(Path(state.workspace_path), prompt, state.session_id or None)
+            invocation_sequence = InvocationSequence(
+                runtime_identity=self.runtime_identity,
+                role=self.role,
+                purpose="intent_classification",
+                request_id=str(envelope.request_id or ""),
+                sprint_id=str(active_sprint.get("sprint_id") or self.sprint_id),
+            )
+            output, session_id = run_with_optional_telemetry(
+                self.codex_runner,
+                Path(state.workspace_path),
+                prompt,
+                state.session_id or None,
+                invocation_context=invocation_sequence.next("primary"),
+            )
             state = self.session_manager.finalize_session_id(state, session_id)
             try:
                 payload = extract_json_object(output)
