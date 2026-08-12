@@ -155,6 +155,7 @@ class TeamsRuntimeGoalStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             parser = build_parser(
                 all_runtime_agents=["orchestrator"],
+                internal_team_agents=["parser"],
                 team_roles=["orchestrator"],
                 relay_transport_internal="internal",
                 relay_transport_discord="discord",
@@ -179,6 +180,7 @@ class TeamsRuntimeGoalStoreTests(unittest.TestCase):
                 cmd_restart=_noop,
                 cmd_list=_noop,
                 cmd_config_role_set=_noop,
+                cmd_config_internal_set=_noop,
                 cmd_config_research_set=_noop,
                 cmd_sprint_start=_noop,
                 cmd_sprint_stop=_noop,

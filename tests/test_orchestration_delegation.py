@@ -1379,7 +1379,63 @@ class TeamsRuntimeOrchestrationDelegationTests(OrchestrationTestCase):
                 self.assertEqual(record["next_role"], "planner")
                 self.assertEqual(workflow["planning_pass_limit"], 2)
                 self.assertEqual(workflow["planning_pass_count"], 0)
-                self.assertEqual(workflow["review_cycle_limit"], 20)
+                self.assertEqual(workflow["review_cycle_limit"], 3)
+                self.assertEqual(workflow["reopen_limit"], 3)
+                self.assertEqual(workflow["reopen_count"], 0)
+
+    def test_orchestrator_builds_internal_runtimes_from_helper_tiers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+
+            self.assertEqual(
+                service.intent_parser.codex_runner.runtime_config.model,
+                "gpt-5.4-mini",
+            )
+            self.assertEqual(
+                service.intent_parser.codex_runner.runtime_config.reasoning,
+                "low",
+            )
+            self.assertEqual(
+                service.goal_sourcer.codex_runner.runtime_config.reasoning,
+                "medium",
+            )
+            self.assertEqual(
+                service.version_controller_runtime.codex_runner.runtime_config.reasoning,
+                "low",
+            )
+
+    def test_orchestrator_copies_workspace_workflow_budgets_into_new_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            policy_path = (
+                Path(tmpdir)
+                / "orchestrator"
+                / ".agents"
+                / "skills"
+                / "agent_utilization"
+                / "policy.yaml"
+            )
+            content = policy_path.read_text(encoding="utf-8")
+            content = content.replace(
+                "implementation_review_cycle_limit: 3",
+                "implementation_review_cycle_limit: 5",
+                1,
+            )
+            content = content.replace(
+                "implementation_reopen_limit: 3",
+                "implementation_reopen_limit: 2",
+                1,
+            )
+            policy_path.write_text(content, encoding="utf-8")
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+
+            state = service._initial_workflow_state_for_internal_request()
+
+            self.assertEqual(state["review_cycle_limit"], 5)
+            self.assertEqual(state["reopen_limit"], 2)
 
     def test_non_orchestrator_ready_resumes_pending_delegated_request(self):
         with tempfile.TemporaryDirectory() as tmpdir:

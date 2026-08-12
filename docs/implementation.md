@@ -136,6 +136,8 @@ Current ownership notes:
   - canonical shared contracts: role/session config dataclasses plus typed request/backlog/sprint/workflow/result shapes
 - `teams_runtime/shared/config.py`
   - canonical runtime and Discord config loading, validation, placeholder-ID guardrails, and runtime config mutation helpers
+- `teams_runtime/shared/prompt_context.py`
+  - canonical pure request-event projection, role-evidence backfill selection, and compacted-history prompt notice rendering
 - `teams_runtime/shared/paths.py`
   - canonical `RuntimePaths` workspace, runtime state, log, role, shared workspace, sprint artifact, and archive path contract
 - `teams_runtime/shared/persistence.py`
@@ -275,6 +277,7 @@ Current ownership notes:
 - Shared contracts now belong in `shared/models.py`.
 - Canonical report/progress formatting helpers, backlog item construction, backlog markdown rendering, and current-sprint markdown rendering belong in `shared/formatting.py`; `core/reports.py` remains compatibility-only and `core/sprints.py` re-exports moved formatting helpers.
 - Canonical runtime and Discord config loading/updating belongs in `shared/config.py`; `core/config.py` remains compatibility-only.
+- Canonical model-facing request event-history projection and backfill selection belongs in `shared/prompt_context.py`; request persistence remains unchanged.
 - Canonical workspace/runtime path helpers belong in `shared/paths.py`; `core/paths.py` remains compatibility-only.
 - Canonical shared JSON/JSONL persistence, ID/fingerprint generation, and KST timestamp helpers belong in `shared/persistence.py`; `core/persistence.py` remains compatibility-only.
 - Canonical request/backlog/sprint/goal file IO, event helpers, planner-review request predicates/lookups/record assembly, internal sprint request predicates/iteration, blocked-backlog review candidate normalization/rendering, non-actionable backlog classification/drop/repair, backlog status/blocker/todo-state helpers, sprint selected-backlog view derivation, backlog kind/acceptance normalization, goal lifecycle reports, and backlog status-report context helpers belong in `workflows/state/request_store.py`, `workflows/state/backlog_store.py`, `workflows/state/sprint_store.py`, and `workflows/state/goal_store.py`; `core/*_store.py` remains compatibility-only.

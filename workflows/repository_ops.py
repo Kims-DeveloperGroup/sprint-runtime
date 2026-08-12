@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -285,12 +286,57 @@ def _select_commit_target_path(changed_paths: list[str]) -> str:
 
 
 def _run_git(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    benchmark_mode = os.environ.get("TEAMS_RUNTIME_LIVE_BENCHMARK") == "1"
+    if benchmark_mode and (repo_root / ".gitattributes").exists():
+        # Repository-controlled clean/process filters execute during `git add`.
+        # The benchmark fails closed instead of allowing model-authored metadata
+        # to run in the trusted worker process.
+        return subprocess.CompletedProcess(
+            ["git", *args], 78, "", "benchmark repository attributes are unsupported"
+        )
+    command = ["git"]
+    environment = None
+    if benchmark_mode:
+        command.extend(
+            [
+                "--no-pager",
+                "--no-replace-objects",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.attributesFile=/dev/null",
+                "-c",
+                "diff.external=",
+                "-c",
+                "maintenance.auto=false",
+                "-c",
+                "gc.auto=0",
+            ]
+        )
+        environment = {
+            "HOME": os.devnull,
+            "PATH": os.defpath,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_EXTERNAL_DIFF": "",
+            "GIT_PAGER": "",
+            "PAGER": "",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+    command.extend(args)
     return subprocess.run(
-        ["git", *args],
+        command,
         cwd=str(repo_root),
         capture_output=True,
         text=True,
         check=False,
+        env=environment,
+        timeout=10 if benchmark_mode else None,
     )
 
 

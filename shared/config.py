@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -12,11 +13,15 @@ import yaml
 from teams_runtime.shared.models import (
     ActionConfig,
     DiscordAgentsConfig,
+    INTERNAL_TEAM_AGENTS,
+    ModelRateCard,
+    PromptContextRuntimeConfig,
     ResearchRuntimeConfig,
     RoleAgentConfig,
     RoleRuntimeConfig,
     TEAM_ROLES,
     TeamRuntimeConfig,
+    TelemetryRuntimeConfig,
 )
 
 
@@ -63,6 +68,39 @@ _DEFAULT_ROLE_DEFAULTS: dict[str, RoleRuntimeConfig] = {
     "developer": RoleRuntimeConfig(model="gpt-5.5", reasoning="high"),
     "qa": RoleRuntimeConfig(model="gpt-5.5", reasoning="medium"),
 }
+
+
+def _normalize_internal_agent_defaults(
+    value: Any,
+    *,
+    inherited_runtime: RoleRuntimeConfig,
+) -> dict[str, RoleRuntimeConfig]:
+    if value is None:
+        payload: dict[str, Any] = {}
+    elif isinstance(value, dict):
+        payload = value
+    else:
+        raise ValueError("team_runtime.yaml internal_agent_defaults must be a mapping.")
+
+    normalized: dict[str, RoleRuntimeConfig] = {}
+    for agent in INTERNAL_TEAM_AGENTS:
+        raw_defaults = payload.get(agent)
+        if raw_defaults is None:
+            defaults: dict[str, Any] = {}
+        elif not isinstance(raw_defaults, dict):
+            raise ValueError(
+                f"team_runtime.yaml internal_agent_defaults.{agent} must be a mapping."
+            )
+        else:
+            defaults = raw_defaults
+        normalized[agent] = RoleRuntimeConfig(
+            model=str(defaults.get("model") or "").strip() or inherited_runtime.model,
+            reasoning=(
+                str(defaults.get("reasoning") or "").strip()
+                or inherited_runtime.reasoning
+            ),
+        )
+    return normalized
 
 
 def _normalize_cutoff_time(value: Any) -> str:
@@ -129,6 +167,117 @@ def _normalize_research_defaults(value: Any) -> ResearchRuntimeConfig:
         cleanup=bool(payload.get("cleanup", False)),
         reasoning_level=_normalize_optional_text(payload.get("reasoning_level")) or "Standard",
     )
+
+
+def _normalize_positive_integer(value: Any, *, field_name: str, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return value
+
+
+def _normalize_prompt_context_config(value: Any) -> PromptContextRuntimeConfig:
+    if value in (None, {}):
+        return PromptContextRuntimeConfig()
+    if not isinstance(value, dict):
+        raise ValueError("team_runtime.yaml prompt_context must be a mapping.")
+    enabled = value.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("team_runtime.yaml prompt_context.enabled must be a boolean.")
+    recent_events = _normalize_positive_integer(
+        value.get("recent_events"),
+        field_name="team_runtime.yaml prompt_context.recent_events",
+        default=8,
+    )
+    max_events = _normalize_positive_integer(
+        value.get("max_events"),
+        field_name="team_runtime.yaml prompt_context.max_events",
+        default=16,
+    )
+    if max_events < recent_events:
+        raise ValueError(
+            "team_runtime.yaml prompt_context.max_events must be greater than or equal to recent_events."
+        )
+    return PromptContextRuntimeConfig(
+        enabled=enabled,
+        recent_events=recent_events,
+        max_events=max_events,
+    )
+
+
+def _normalize_non_negative_rate(value: Any, *, field_name: str) -> float:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a non-negative finite number.") from exc
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ValueError(f"{field_name} must be a non-negative finite number.")
+    return normalized
+
+
+def _normalize_telemetry_config(value: Any) -> TelemetryRuntimeConfig:
+    if value in (None, {}):
+        return TelemetryRuntimeConfig()
+    if not isinstance(value, dict):
+        raise ValueError("team_runtime.yaml telemetry must be a mapping.")
+    enabled = value.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("team_runtime.yaml telemetry.enabled must be a boolean.")
+    raw_rate_cards = value.get("rate_cards") or {}
+    if not isinstance(raw_rate_cards, dict):
+        raise ValueError("team_runtime.yaml telemetry.rate_cards must be a mapping.")
+
+    rate_cards: dict[str, ModelRateCard] = {}
+    for raw_key, raw_card in raw_rate_cards.items():
+        key = str(raw_key or "").strip()
+        field_prefix = f"team_runtime.yaml telemetry.rate_cards.{key or '<empty>'}"
+        provider, separator, model = key.partition("/")
+        if not separator or not provider.strip() or not model.strip():
+            raise ValueError(f"{field_prefix} must use an exact provider/model key.")
+        if not isinstance(raw_card, dict):
+            raise ValueError(f"{field_prefix} must be a mapping.")
+        has_flat_rate = "per_invocation_usd" in raw_card
+        has_token_rate = any(
+            name in raw_card
+            for name in (
+                "input_per_million_usd",
+                "cached_input_per_million_usd",
+                "output_per_million_usd",
+            )
+        )
+        if has_flat_rate and has_token_rate:
+            raise ValueError(f"{field_prefix} cannot mix token and per-invocation pricing.")
+        if has_flat_rate:
+            rate_cards[key] = ModelRateCard(
+                per_invocation_usd=_normalize_non_negative_rate(
+                    raw_card.get("per_invocation_usd"),
+                    field_name=f"{field_prefix}.per_invocation_usd",
+                )
+            )
+            continue
+        if not has_token_rate:
+            raise ValueError(f"{field_prefix} must define token rates or per_invocation_usd.")
+        if "input_per_million_usd" not in raw_card or "output_per_million_usd" not in raw_card:
+            raise ValueError(f"{field_prefix} token pricing requires input and output rates.")
+        input_rate = _normalize_non_negative_rate(
+            raw_card.get("input_per_million_usd"),
+            field_name=f"{field_prefix}.input_per_million_usd",
+        )
+        cached_rate = _normalize_non_negative_rate(
+            raw_card.get("cached_input_per_million_usd", input_rate),
+            field_name=f"{field_prefix}.cached_input_per_million_usd",
+        )
+        output_rate = _normalize_non_negative_rate(
+            raw_card.get("output_per_million_usd"),
+            field_name=f"{field_prefix}.output_per_million_usd",
+        )
+        rate_cards[key] = ModelRateCard(
+            input_per_million_usd=input_rate,
+            cached_input_per_million_usd=cached_rate,
+            output_per_million_usd=output_rate,
+        )
+    return TelemetryRuntimeConfig(enabled=enabled, rate_cards=rate_cards)
 
 
 def _ensure_non_placeholder_snowflake(
@@ -375,10 +524,16 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
         reasoning = str(defaults.get("reasoning") or "").strip() or default_runtime.reasoning
         model = str(defaults.get("model") or "").strip() or default_runtime.model
         role_defaults[role] = RoleRuntimeConfig(model=model, reasoning=reasoning)
+    internal_agent_defaults = _normalize_internal_agent_defaults(
+        payload.get("internal_agent_defaults"),
+        inherited_runtime=role_defaults["orchestrator"],
+    )
     raw_research_defaults = payload.get("research_defaults")
     if raw_research_defaults not in (None, {}) and not isinstance(raw_research_defaults, dict):
         raise ValueError("team_runtime.yaml research_defaults must be a mapping.")
     research_defaults = _normalize_research_defaults(raw_research_defaults)
+    prompt_context = _normalize_prompt_context_config(payload.get("prompt_context"))
+    telemetry = _normalize_telemetry_config(payload.get("telemetry"))
 
     actions: dict[str, ActionConfig] = {}
     raw_actions = payload.get("actions") or {}
@@ -429,7 +584,10 @@ def load_team_runtime_config(workspace_root: str | Path) -> TeamRuntimeConfig:
         ingress_mentions=bool(ingress.get("mentions", True)),
         allowed_guild_ids=tuple(str(item).strip() for item in allowed_guild_ids if str(item).strip()),
         role_defaults=role_defaults,
+        internal_agent_defaults=internal_agent_defaults,
         research_defaults=research_defaults,
+        prompt_context=prompt_context,
+        telemetry=telemetry,
         actions=actions,
     )
 
@@ -482,6 +640,59 @@ def update_team_runtime_role_defaults(
 
     runtime_config = load_team_runtime_config(workspace_path)
     return runtime_config.role_defaults[normalized_role]
+
+
+def update_team_runtime_internal_agent_defaults(
+    workspace_root: str | Path,
+    agent: str,
+    *,
+    model: str | None = None,
+    reasoning: str | None = None,
+) -> RoleRuntimeConfig:
+    normalized_agent = str(agent or "").strip()
+    if normalized_agent not in INTERNAL_TEAM_AGENTS:
+        raise ValueError(f"Unsupported internal agent: {normalized_agent or agent}")
+
+    normalized_model = None if model is None else str(model).strip()
+    normalized_reasoning = None if reasoning is None else str(reasoning).strip()
+    if normalized_model == "":
+        raise ValueError("model must be a non-empty string when provided.")
+    if normalized_reasoning == "":
+        raise ValueError("reasoning must be a non-empty string when provided.")
+    if normalized_model is None and normalized_reasoning is None:
+        raise ValueError("At least one of model or reasoning must be provided.")
+
+    workspace_path = Path(workspace_root).expanduser().resolve()
+    config_path = workspace_path / "team_runtime.yaml"
+    payload = _load_yaml(config_path)
+    raw_defaults = payload.get("internal_agent_defaults")
+    if raw_defaults is None:
+        raw_defaults = {}
+        payload["internal_agent_defaults"] = raw_defaults
+    if not isinstance(raw_defaults, dict):
+        raise ValueError("team_runtime.yaml internal_agent_defaults must be a mapping.")
+
+    current_defaults = raw_defaults.get(normalized_agent)
+    if current_defaults is None:
+        current_defaults = {}
+    if not isinstance(current_defaults, dict):
+        raise ValueError(
+            "team_runtime.yaml "
+            f"internal_agent_defaults.{normalized_agent} must be a mapping."
+        )
+    updated_defaults = dict(current_defaults)
+    if normalized_model is not None:
+        updated_defaults["model"] = normalized_model
+    if normalized_reasoning is not None:
+        updated_defaults["reasoning"] = normalized_reasoning
+    raw_defaults[normalized_agent] = updated_defaults
+
+    config_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    runtime_config = load_team_runtime_config(workspace_path)
+    return runtime_config.internal_agent_defaults[normalized_agent]
 
 
 def update_team_runtime_research_defaults(

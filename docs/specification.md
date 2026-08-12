@@ -151,7 +151,26 @@ Supported sections:
   - `mentions`
 - `allowed_guild_ids`
 - `role_defaults`
+- `prompt_context`
+  - `enabled`
+  - `recent_events`
+  - `max_events`
+- `telemetry`
+  - `enabled`
+  - `rate_cards`
 - `actions`
+
+### Prompt event-history projection
+
+- persisted request records remain the canonical, complete audit history
+- model-facing normal role, role-result repair, research-decision, and version-controller prompts share one event projection policy
+- when enabled and event count exceeds `max_events`, the projection always includes the final `recent_events` entries
+- remaining capacity is backfilled by scanning older events newest-first and selecting the newest evidence for each role not represented in the recent tail
+- qualifying evidence is a `role_report` in `type` or `event_type`, or an event whose payload contains non-empty `role` and `status`; identity uses `payload.role` then `actor`
+- selected events retain their complete payload and original chronological order
+- prompt compaction never mutates the persisted request record
+- compacted prompts include counts, policy name, and canonical request path so omitted history remains discoverable
+- disabling `prompt_context` restores full event-history prompt inclusion after role services restart
 
 ## Backlog And Sprint Model
 

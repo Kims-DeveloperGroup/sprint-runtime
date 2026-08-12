@@ -102,6 +102,7 @@ python -m teams_runtime goal cancel
 - Sprint backlog definition items should carry concrete `acceptance_criteria` plus planner trace in `origin.milestone_ref`, `origin.requirement_refs`, `origin.spec_refs`, `origin.plan_action_refs`, and `origin.research_refs` when a source-backed or local-evidence research report is available.
 - During an active sprint, clear new user requirements are stored as sprint-local `REQ-CAND-*` entries in `pending_requirement_candidates`. They are not accepted scope, not acknowledged as registered requirements, and not included in role context until planner reaches the next completed/committed TODO checkpoint.
 - At that checkpoint, planner receives pending candidates in an `ongoing_review` request and may return `proposals.sprint_requirement_reconciliation` with `registered_requirements`, `merged_candidates`, `deferred_candidates`, and `rejected_candidates`. Only registered candidates become `REQ-*`; unresolved candidates expire into `requirement_candidate_archive` at sprint closeout.
+- Manual sprints batch all currently pending candidates into that single checkpoint review. A completed or committed TODO does not force an `ongoing_review` when no valid pending candidates exist; interval-based planner reviews continue to use `sprint.interval_minutes`.
 - Legacy planner aliases such as `planned_backlog_updates` are compatibility inputs only inside role-runtime normalization. They are not accepted by the canonical backlog helper interface.
 
 ## Sprint Requirement Feedback
@@ -278,17 +279,19 @@ params: {"_teams_kind":"delegate"}
 
 ### 2. Persisted request record
 
-The target role also receives the full persisted request record through its prompt context.
+The target role receives a prompt projection of the persisted request record. Request metadata, current status, reply route, artifacts, and the most recent role result remain available. Event history is included in full while it is within the configured limit; longer histories use the bounded `prompt_context` compaction policy.
 
 That record contains:
 
 - request metadata
 - current status
 - reply route
-- event history
+- full or compacted event history
 - most recent role result
 
-So later roles can see earlier role output even though the relay message itself stays small.
+Compaction always keeps the configured recent tail, then uses remaining capacity to backfill the newest older evidence for roles missing from that tail. Here, backfill means selecting complete historical event objects; it does not summarize or modify them. An adjacent notice gives the total, included, and omitted counts plus the canonical `.teams_runtime/requests/<request_id>.json` path. The persisted file remains complete and can be inspected when omitted evidence is required.
+
+This keeps normal later-role prompts bounded while preserving a path to the complete audit history. See [`configuration_guide.md`](./configuration_guide.md#prompt_context) for the exact algorithm and worked input/output example.
 
 ## Request Examples
 

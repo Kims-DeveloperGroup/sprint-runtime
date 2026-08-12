@@ -203,6 +203,40 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
         self.assertEqual(decision["workflow_state"]["phase_status"], "blocked")
         self.assertEqual(decision["workflow_state"]["reopen_category"], "implementation")
 
+    def test_architect_review_reopen_counts_before_developer_revision(self):
+        workflow_state = default_workflow_state()
+        workflow_state["phase"] = "implementation"
+        workflow_state["step"] = WORKFLOW_STEP_ARCHITECT_REVIEW
+        workflow_state["phase_owner"] = "architect"
+        workflow_state["review_cycle_count"] = 1
+        transition = workflow_transition(
+            {
+                "proposals": {
+                    "workflow_transition": {
+                        "outcome": "reopen",
+                        "target_phase": "implementation",
+                        "target_step": "developer_revision",
+                        "reopen_category": "implementation",
+                    }
+                }
+            }
+        )
+
+        decision = derive_workflow_routing_decision(
+            workflow_state,
+            transition,
+            current_role="architect",
+            reason="The implementation requires one revision.",
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["next_role"], "developer")
+        self.assertEqual(
+            decision["workflow_state"]["step"],
+            "developer_revision",
+        )
+        self.assertEqual(decision["workflow_state"]["reopen_count"], 1)
+
     def test_qa_verification_reopen_returns_to_developer_revision(self):
         workflow_state = default_workflow_state()
         workflow_state["phase"] = "validation"
@@ -234,6 +268,41 @@ class TeamsRuntimeWorkflowEngineTests(unittest.TestCase):
         self.assertEqual(decision["workflow_state"]["step"], "developer_revision")
         self.assertEqual(decision["workflow_state"]["phase_owner"], "developer")
         self.assertEqual(decision["workflow_state"]["reopen_category"], "verification")
+        self.assertEqual(decision["workflow_state"]["reopen_count"], 1)
+
+    def test_qa_reopen_blocks_before_fourth_model_handoff(self):
+        workflow_state = default_workflow_state()
+        workflow_state["phase"] = "validation"
+        workflow_state["step"] = WORKFLOW_STEP_QA_VALIDATION
+        workflow_state["phase_owner"] = "qa"
+        workflow_state["reopen_count"] = 3
+        workflow_state["reopen_limit"] = 3
+        transition = workflow_transition(
+            {
+                "proposals": {
+                    "workflow_transition": {
+                        "outcome": "reopen",
+                        "target_phase": "implementation",
+                        "target_step": "developer_revision",
+                        "reopen_category": "verification",
+                    }
+                }
+            }
+        )
+
+        decision = derive_workflow_routing_decision(
+            workflow_state,
+            transition,
+            current_role="qa",
+            reason="A fourth implementation handoff would exceed the budget.",
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["next_role"], "")
+        self.assertEqual(decision["terminal_status"], "blocked")
+        self.assertEqual(decision["workflow_state"]["phase_status"], "blocked")
+        self.assertEqual(decision["workflow_state"]["reopen_count"], 3)
+        self.assertIn("reopen limit 3", decision["terminal_summary"])
 
     def test_qa_ux_reopen_routes_to_designer_advisory(self):
         workflow_state = default_workflow_state()

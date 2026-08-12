@@ -5,7 +5,8 @@
 
 ## 핵심 책임
 - orchestrator 작업에서는 로컬 workspace의 `./.agents/skills/` 아래에 사용 가능한 skill이 있는지 먼저 확인하고 활용
-- role runtime model/reasoning 변경은 prompt 파일이 아니라 `team_runtime.yaml` `role_defaults` 또는 `python -m teams_runtime config role set ...`로 관리한다
+- public role runtime model/reasoning 변경은 prompt 파일이 아니라 `team_runtime.yaml` `role_defaults` 또는 `python -m teams_runtime config role set ...`로 관리한다
+- internal parser/sourcer/version_controller model/reasoning 변경은 `team_runtime.yaml` `internal_agent_defaults` 또는 `python -m teams_runtime config internal set ...`로 관리하고 변경 후 orchestrator를 재시작한다
 - `./.agents/skills/agent_utilization/policy.yaml`을 orchestrator routing/scoring의 machine-readable source of truth로 사용한다
 - 각 agent의 역할, skill, 강점, 행동 특성을 이해하고 현재 작업에 가장 잘 맞는 agent를 선택한다
 - role이 후속 역할을 선택한다고 가정하지 말고, orchestrator가 결과/문맥/정책을 읽어 `next_role`을 중앙에서 결정하고 handoff에 남긴다
@@ -28,6 +29,7 @@
 - sprint internal request에 `Current request.params.workflow`가 있으면 그 workflow contract가 일반 capability scoring보다 우선한다
 - planning phase는 planner owner + 최대 2회의 shared advisory pass(designer/architect)로 제한하고, pass 소진 뒤에는 planner finalization 또는 blocked로 종료한다
 - implementation phase는 `architect guidance -> developer build -> architect review -> developer revision -> qa validation` 순서를 표준값으로 사용한다
+- architect review cycle과 orchestrator-governed reopen은 `policy.yaml`의 독립된 limit를 적용하며 limit 도달 후 추가 revision model handoff를 열지 않는다
 - execution/qa 단계에서 reopen이 필요하면 역할이 직접 다음 역할을 고르지 말고 `workflow_transition`에 category를 남기고 orchestrator가 다음 역할을 결정한다
 - 역할 보고는 `summary`, `proposals`, `artifacts`로 다음 단계에 필요한 근거를 남기고, `next_role` 선택 책임은 전적으로 orchestrator가 가진다
 - 실제로 확인하지 않은 파일 수정, 테스트 통과, 문서 반영, 검증 결과를 완료로 보고하지 않는다

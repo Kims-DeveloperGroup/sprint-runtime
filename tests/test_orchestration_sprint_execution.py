@@ -1,4 +1,5 @@
 from teams_runtime.tests.orchestration_test_utils import *
+from teams_runtime.workflows.sprints.lifecycle import pending_requirement_candidates_for_planner
 
 
 def _no_subject_definition(rationale="The sprint handoff is repo-local and does not need external research."):
@@ -1658,6 +1659,123 @@ class TeamsRuntimeOrchestrationSprintExecutionTests(OrchestrationTestCase):
                 self.assertEqual(sprint_state["last_resume_checkpoint_todo_id"], todo_running["todo_id"])
                 self.assertEqual(sprint_state["last_resume_checkpoint_status"], "running")
                 self.assertEqual(str(sprint_state.get("resume_from_checkpoint_requested_at") or ""), "")
+
+    def test_manual_daily_sprint_does_not_force_planner_review_without_pending_candidates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="batch no-op planner reviews",
+                    trigger="manual_start",
+                )
+                sprint_state["phase"] = "ongoing"
+                sprint_state["status"] = "running"
+                sprint_state["last_planner_review_at"] = datetime.now(timezone.utc).isoformat()
+                sprint_state["todos"] = [
+                    build_todo_item(
+                        build_backlog_item(
+                            title=f"todo {index}",
+                            summary=f"todo {index}",
+                            kind="enhancement",
+                            source="user",
+                            scope=f"todo {index}",
+                        ),
+                        owner_role="developer",
+                    )
+                    for index in (1, 2)
+                ]
+
+                executed_todos: list[str] = []
+
+                async def fake_execute(_sprint_state, todo):
+                    executed_todos.append(str(todo.get("todo_id") or ""))
+                    todo["status"] = "completed"
+
+                with (
+                    patch.object(service, "_save_sprint_state", return_value=None),
+                    patch.object(service, "_sync_manual_sprint_queue", return_value=None),
+                    patch.object(service, "_is_manual_sprint_cutoff_reached", return_value=False),
+                    patch.object(
+                        service,
+                        "_run_internal_request_chain",
+                        new=AsyncMock(side_effect=AssertionError("no-op review must not invoke planner")),
+                    ) as planner_chain_mock,
+                    patch.object(service, "_execute_sprint_todo", side_effect=fake_execute),
+                    patch.object(service, "_finalize_sprint", new=AsyncMock(return_value=None)) as finalize_mock,
+                ):
+                    asyncio.run(service._continue_manual_daily_sprint(sprint_state, announce=False))
+
+                self.assertEqual(len(executed_todos), 2)
+                planner_chain_mock.assert_not_awaited()
+                self.assertEqual(list(service.paths.requests_dir.glob("*.json")), [])
+                finalize_mock.assert_awaited_once_with(sprint_state)
+
+    def test_manual_daily_sprint_batches_pending_candidates_into_one_checkpoint_review(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaffold_workspace(tmpdir)
+            with patch("teams_runtime.core.orchestration.DiscordClient", FakeDiscordClient):
+                service = TeamService(tmpdir, "orchestrator")
+                sprint_state = service._build_manual_sprint_state(
+                    milestone_title="batch pending requirements",
+                    trigger="manual_start",
+                )
+                sprint_state["phase"] = "ongoing"
+                sprint_state["status"] = "running"
+                sprint_state["last_planner_review_at"] = datetime.now(timezone.utc).isoformat()
+                sprint_state["todos"] = [
+                    build_todo_item(
+                        build_backlog_item(
+                            title="todo with requirement feedback",
+                            summary="todo with requirement feedback",
+                            kind="enhancement",
+                            source="user",
+                            scope="todo with requirement feedback",
+                        ),
+                        owner_role="developer",
+                    )
+                ]
+
+                review_calls: list[tuple[bool, bool, int]] = []
+
+                async def fake_review(review_state, *, force=False, requirement_checkpoint=False):
+                    review_calls.append(
+                        (
+                            force,
+                            requirement_checkpoint,
+                            len(pending_requirement_candidates_for_planner(review_state)),
+                        )
+                    )
+                    if requirement_checkpoint:
+                        review_state["pending_requirement_candidates"] = []
+
+                async def fake_execute(execution_state, todo):
+                    todo["status"] = "committed"
+                    execution_state["pending_requirement_candidates"] = [
+                        {
+                            "candidate_id": "REQ-CAND-001",
+                            "status": "pending",
+                            "candidate_text": "Add keyboard-only acceptance.",
+                        },
+                        {
+                            "candidate_id": "REQ-CAND-002",
+                            "status": "pending",
+                            "candidate_text": "Preserve mobile approval flow.",
+                        },
+                    ]
+
+                with (
+                    patch.object(service, "_save_sprint_state", return_value=None),
+                    patch.object(service, "_sync_manual_sprint_queue", return_value=None),
+                    patch.object(service, "_is_manual_sprint_cutoff_reached", return_value=False),
+                    patch.object(service, "_run_ongoing_sprint_review", side_effect=fake_review),
+                    patch.object(service, "_execute_sprint_todo", side_effect=fake_execute),
+                    patch.object(service, "_finalize_sprint", new=AsyncMock(return_value=None)) as finalize_mock,
+                ):
+                    asyncio.run(service._continue_manual_daily_sprint(sprint_state, announce=False))
+
+                self.assertEqual(review_calls, [(False, False, 0), (True, True, 2)])
+                finalize_mock.assert_awaited_once_with(sprint_state)
 
     def test_manual_daily_sprint_wraps_up_when_only_terminal_todos_remain(self):
         with tempfile.TemporaryDirectory() as tmpdir:

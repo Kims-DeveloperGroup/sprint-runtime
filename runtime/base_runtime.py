@@ -8,7 +8,13 @@ from typing import Any
 
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.runtime.codex_runner import CodexRunner, extract_json_object
+from teams_runtime.runtime.execution_policy import ModelExecutionPolicy
 from teams_runtime.runtime.identities import service_runtime_identity
+from teams_runtime.runtime.model_telemetry import (
+    InvocationSequence,
+    ModelTelemetryRecorder,
+    run_with_optional_telemetry,
+)
 from teams_runtime.runtime.role_result_contract import (
     ALLOWED_ROLE_STATUSES,
     CONTRACT_STATUS_INVALID,
@@ -25,7 +31,20 @@ from teams_runtime.runtime.role_result_contract import (
     validate_role_result_contract,
 )
 from teams_runtime.runtime.session_manager import RoleSessionManager
-from teams_runtime.shared.models import MessageEnvelope, RequestRecord, RoleResult, RoleRuntimeConfig
+from teams_runtime.shared.models import (
+    MessageEnvelope,
+    PromptContextRuntimeConfig,
+    RequestRecord,
+    RoleResult,
+    RoleRuntimeConfig,
+    TelemetryRuntimeConfig,
+)
+from teams_runtime.shared.prompt_context import (
+    PROMPT_EVENT_SELECTION_POLICY,
+    PromptRequestProjection,
+    project_request_record_for_prompt,
+    render_prompt_event_history_notice,
+)
 from teams_runtime.workflows.roles import render_role_prompt_spec
 from teams_runtime.workflows.roles.planner import normalize_planner_proposals
 
@@ -254,6 +273,9 @@ class RoleAgentRuntime:
         runtime_config: RoleRuntimeConfig,
         agent_root: Path | None = None,
         session_identity: str | None = None,
+        telemetry_config: TelemetryRuntimeConfig | None = None,
+        prompt_context_config: PromptContextRuntimeConfig | None = None,
+        execution_policy: ModelExecutionPolicy | None = None,
     ):
         self.paths = paths
         self.role = role
@@ -270,9 +292,55 @@ class RoleAgentRuntime:
         self._session_managers: dict[str, RoleSessionManager] = {
             self.sprint_id: self.session_manager,
         }
-        self.codex_runner = CodexRunner(runtime_config, role=role)
+        self.telemetry_recorder = ModelTelemetryRecorder(
+            paths,
+            self.runtime_identity,
+            telemetry_config,
+            output_dir=(
+                execution_policy.telemetry_output_dir
+                if execution_policy is not None
+                else None
+            ),
+        )
+        self.prompt_context_config = prompt_context_config or PromptContextRuntimeConfig()
+        self.codex_runner = CodexRunner(
+            runtime_config,
+            role=role,
+            telemetry_recorder=self.telemetry_recorder,
+            execution_policy=execution_policy,
+        )
         self.runtime_config = runtime_config
-        self._run_lock = threading.Lock()
+        self._run_lock = (
+            execution_policy.execution_lock
+            if execution_policy is not None
+            and execution_policy.execution_lock is not None
+            else threading.Lock()
+        )
+
+    def _project_request_for_prompt(
+        self,
+        request_record: RequestRecord,
+        *,
+        purpose: str,
+    ) -> PromptRequestProjection:
+        projection = project_request_record_for_prompt(
+            request_record,
+            self.prompt_context_config,
+        )
+        if projection.compacted:
+            LOGGER.info(
+                "[%s] prompt_context_compacted request_id=%s purpose=%s total_events=%s included_events=%s "
+                "omitted_events=%s recent_events=%s max_events=%s",
+                self.role,
+                str(request_record.get("request_id") or "unknown"),
+                purpose,
+                projection.total_events,
+                projection.included_events,
+                projection.omitted_events,
+                projection.recent_events,
+                projection.max_events,
+            )
+        return projection
 
     def _resolve_request_sprint_id(
         self,
@@ -312,17 +380,45 @@ class RoleAgentRuntime:
         envelope: MessageEnvelope,
         request_record: RequestRecord,
     ) -> bool:
-        return True
+        return not self._benchmark_execution_enabled()
 
-    def run_task(self, envelope: MessageEnvelope, request_record: RequestRecord) -> RoleResult:
+    def _benchmark_execution_enabled(self) -> bool:
+        execution_policy = getattr(self.codex_runner, "execution_policy", None)
+        return bool(getattr(execution_policy, "benchmark_mode", False))
+
+    def run_task(
+        self,
+        envelope: MessageEnvelope,
+        request_record: RequestRecord,
+        *,
+        telemetry_purpose: str = "role_task",
+    ) -> RoleResult:
         with self._run_lock:
             current_sprint_id = self._resolve_request_sprint_id(envelope, request_record)
+            invocation_sequence = InvocationSequence.from_request(
+                runtime_identity=self.runtime_identity,
+                role=self.role,
+                purpose=telemetry_purpose,
+                request_record=request_record,
+                envelope=envelope,
+                sprint_id=current_sprint_id,
+            )
             session_manager = self._session_manager_for_sprint(current_sprint_id)
             state = session_manager.ensure_session()
+            request_projection = self._project_request_for_prompt(
+                request_record,
+                purpose=telemetry_purpose,
+            )
+            invocation_sequence.set_prompt_context_projection(
+                request_projection,
+                enabled=self.prompt_context_config.enabled,
+                selection_policy=PROMPT_EVENT_SELECTION_POLICY,
+            )
             prompt = self._build_prompt(
                 envelope,
                 request_record,
                 current_sprint_id=current_sprint_id,
+                request_projection=request_projection,
             )
             force_fresh_role_session = (
                 bool((envelope.params or {}).get("_repair_invalid_role_payload_on_resume"))
@@ -363,15 +459,21 @@ class RoleAgentRuntime:
             )
             default_bypass = self._request_requires_default_bypass(envelope, request_record)
             try:
-                output, resolved_session_id = self.codex_runner.run(
+                output, resolved_session_id = run_with_optional_telemetry(
+                    self.codex_runner,
                     Path(state.workspace_path),
                     prompt,
                     active_session_id,
                     bypass_sandbox=default_bypass,
+                    invocation_context=invocation_sequence.next("primary"),
                 )
                 active_session_id = resolved_session_id or active_session_id
                 payload = self._parse_role_output(output, request_record)
-                if not default_bypass and self._should_retry_with_bypass(payload):
+                if (
+                    not self._benchmark_execution_enabled()
+                    and not default_bypass
+                    and self._should_retry_with_bypass(payload)
+                ):
                     retry_session_id = None if active_session_id else active_session_id
                     LOGGER.warning(
                         "[%s] sandbox_denial_detected retrying_with_bypass request_id=%s sprint_id=%s todo_id=%s backlog_id=%s workspace=%s session_id=%s retry_session_mode=%s",
@@ -384,11 +486,13 @@ class RoleAgentRuntime:
                         active_session_id or "new",
                         "fresh" if retry_session_id is None else "resume",
                     )
-                    output, resolved_session_id = self.codex_runner.run(
+                    output, resolved_session_id = run_with_optional_telemetry(
+                        self.codex_runner,
                         Path(state.workspace_path),
                         prompt,
                         retry_session_id,
                         bypass_sandbox=True,
+                        invocation_context=invocation_sequence.next("sandbox_retry"),
                     )
                     active_session_id = resolved_session_id or active_session_id
                     payload = self._parse_role_output(output, request_record)
@@ -399,6 +503,7 @@ class RoleAgentRuntime:
                     workspace_path=Path(state.workspace_path),
                     active_session_id=active_session_id,
                     bypass_sandbox=default_bypass,
+                    invocation_sequence=invocation_sequence,
                 )
             except RuntimeError as exc:
                 LOGGER.warning(
@@ -494,6 +599,7 @@ class RoleAgentRuntime:
         workspace_path: Path,
         active_session_id: str | None,
         bypass_sandbox: bool,
+        invocation_sequence: InvocationSequence,
     ) -> tuple[RoleResult, str | None, bool]:
         if not is_invalid_contract_payload(payload):
             return payload, active_session_id, False
@@ -533,11 +639,13 @@ class RoleAgentRuntime:
                     attempts,
                     latest_session_id,
                 )
-            output, resolved_session_id = self.codex_runner.run(
+            output, resolved_session_id = run_with_optional_telemetry(
+                self.codex_runner,
                 workspace_path,
                 repair_prompt,
                 repair_session_id,
                 bypass_sandbox=bypass_sandbox,
+                invocation_context=invocation_sequence.next("contract_repair"),
             )
             latest_session_id = resolved_session_id if repair_session_id is None else (resolved_session_id or latest_session_id)
             latest_payload = self._parse_role_output(output, request_record)
@@ -604,6 +712,11 @@ class RoleAgentRuntime:
         *,
         current_sprint_id: str,
     ) -> str:
+        request_projection = self._project_request_for_prompt(
+            request_record,
+            purpose="contract_repair",
+        )
+        event_history_notice = render_prompt_event_history_notice(request_projection)
         team_workspace_hint = "./workspace/teams_generated" if self.paths.workspace_root.name == "teams_generated" else "./workspace"
         role_specific_rules, extra_fields = render_role_prompt_spec(self.role, team_workspace_hint)
         contract_block = render_role_result_contract(
@@ -635,8 +748,9 @@ Never copy schema enums or placeholder example text literally.
 If validation errors mention copied placeholder or scaffold text, do not reuse any wording from the shape block. Write concrete Korean summary and workflow reason text from the actual request state, or return `failed` with a concrete Korean reason.
 {role_specific_rules}
 
+{event_history_notice}
 Current request:
-{json.dumps(request_record, ensure_ascii=False, indent=2)}
+{json.dumps(request_projection.request_record, ensure_ascii=False, indent=2)}
 """
 
     def _should_retry_with_bypass(self, payload: dict[str, Any]) -> bool:
@@ -694,7 +808,13 @@ Current request:
         request_record: RequestRecord,
         *,
         current_sprint_id: str | None = None,
+        request_projection: PromptRequestProjection | None = None,
     ) -> str:
+        request_projection = request_projection or self._project_request_for_prompt(
+            request_record,
+            purpose="role_task",
+        )
+        event_history_notice = render_prompt_event_history_notice(request_projection)
         resolved_sprint_id = str(current_sprint_id or "").strip() or self._resolve_request_sprint_id(
             envelope,
             request_record,
@@ -735,8 +855,9 @@ Separate observed facts from inference. If you did not open the file, run the co
 When you claim a file change or validation result, leave enough evidence in `summary`, `insights`, or `proposals` for orchestrator to verify what you actually checked.
 {role_specific_rules}
 
+{event_history_notice}
 Current request:
-{json.dumps(request_record, ensure_ascii=False, indent=2)}
+{json.dumps(request_projection.request_record, ensure_ascii=False, indent=2)}
 
 Incoming envelope:
 {json.dumps(envelope.to_dict(), ensure_ascii=False, indent=2)}

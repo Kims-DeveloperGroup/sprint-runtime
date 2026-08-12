@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -9,11 +10,13 @@ from libs.gemini.deep_research import run_deep_research_sync
 from teams_runtime.shared.paths import RuntimePaths
 from teams_runtime.shared.models import (
     MessageEnvelope,
+    PromptContextRuntimeConfig,
     RequestRecord,
     ResearchRuntimeConfig,
     RoleResult,
     RoleRuntimeConfig,
     RoleSessionState,
+    TelemetryRuntimeConfig,
 )
 from teams_runtime.runtime.base_runtime import (
     RoleAgentRuntime,
@@ -21,6 +24,18 @@ from teams_runtime.runtime.base_runtime import (
     normalize_role_payload,
 )
 from teams_runtime.runtime.codex_runner import extract_json_object
+from teams_runtime.runtime.execution_policy import ModelExecutionPolicy
+from teams_runtime.runtime.model_telemetry import (
+    InvocationSequence,
+    normalized_error_category,
+    record_external_invocation,
+    run_with_optional_telemetry,
+)
+from teams_runtime.shared.persistence import runtime_now
+from teams_runtime.shared.prompt_context import (
+    PROMPT_EVENT_SELECTION_POLICY,
+    project_request_record_for_prompt,
+)
 from teams_runtime.workflows.roles.research import (
     RESEARCH_REPORT_LIST_FIELDS,
     RESEARCH_REASON_CODE_BLOCKED_DECISION_FAILED,
@@ -83,6 +98,10 @@ class ResearchAgentRuntime(RoleAgentRuntime):
         research_defaults: ResearchRuntimeConfig,
         agent_root: Path | None = None,
         session_identity: str | None = None,
+        telemetry_config: TelemetryRuntimeConfig | None = None,
+        prompt_context_config: PromptContextRuntimeConfig | None = None,
+        allow_external_research: bool = True,
+        execution_policy: ModelExecutionPolicy | None = None,
     ):
         super().__init__(
             paths=paths,
@@ -91,12 +110,30 @@ class ResearchAgentRuntime(RoleAgentRuntime):
             runtime_config=runtime_config,
             agent_root=agent_root,
             session_identity=session_identity,
+            telemetry_config=telemetry_config,
+            prompt_context_config=prompt_context_config,
+            execution_policy=execution_policy,
         )
         self.research_defaults = research_defaults
+        self.allow_external_research = bool(allow_external_research)
 
-    def run_task(self, envelope: MessageEnvelope, request_record: RequestRecord) -> RoleResult:
+    def run_task(
+        self,
+        envelope: MessageEnvelope,
+        request_record: RequestRecord,
+        *,
+        telemetry_purpose: str = "research_decision",
+    ) -> RoleResult:
         with self._run_lock:
             current_sprint_id = self._resolve_request_sprint_id(envelope, request_record)
+            invocation_sequence = InvocationSequence.from_request(
+                runtime_identity=self.runtime_identity,
+                role=self.role,
+                purpose=telemetry_purpose,
+                request_record=request_record,
+                envelope=envelope,
+                sprint_id=current_sprint_id,
+            )
             session_manager = self._session_manager_for_sprint(current_sprint_id)
             state = session_manager.ensure_session()
             request_id = str(request_record.get("request_id") or envelope.request_id or "").strip() or "unknown"
@@ -111,6 +148,7 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     request_record,
                     state=state,
                     local_sources_checked=local_sources_checked,
+                    invocation_sequence=invocation_sequence,
                 )
                 active_session_id = resolved_session_id or active_session_id
             except Exception as exc:
@@ -182,6 +220,46 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 "session_id": active_session_id or "",
                 "session_workspace": state.workspace_path,
             }
+            if signal["needed"] and not self.allow_external_research:
+                disabled_details = {
+                    "failure_stage": "external_research_policy",
+                    "reason": "external_research_disabled",
+                }
+                requirement_traceability_matrix = mark_requirement_traceability_research_status(
+                    requirement_traceability_matrix,
+                    research_status="failed",
+                    failure_details=disabled_details,
+                )
+                sprint_prepass = _is_sprint_research_prepass_request(envelope, request_record)
+                payload["status"] = "completed" if sprint_prepass else "blocked"
+                payload["summary"] = (
+                    "외부 research 실행은 비활성화되어 unresolved research risk를 planner에 전달합니다."
+                    if sprint_prepass
+                    else "외부 research가 필요하지만 현재 실행 정책에서 비활성화되어 있습니다."
+                )
+                payload["error"] = "" if sprint_prepass else "external_research_disabled"
+                payload["proposals"]["requirement_traceability_matrix"] = requirement_traceability_matrix
+                payload["proposals"]["research_report"] = {
+                    "report_artifact": "",
+                    "research_url": "",
+                    "headline": "External research disabled by execution policy",
+                    "planner_guidance": (
+                        f"{planner_guidance} 외부 research는 실행되지 않았으므로 관련 가정을 unresolved risk로 유지하세요."
+                    ).strip(),
+                    "research_subject_definition": subject_definition,
+                    "requirement_traceability_matrix": requirement_traceability_matrix,
+                    "research_execution_status": "disabled_by_policy",
+                    "backing_sources": [],
+                    **{field: [] for field in RESEARCH_REPORT_LIST_FIELDS},
+                    "open_questions": [
+                        str(signal.get("research_query") or signal.get("subject") or "외부 근거 확인 필요").strip()
+                    ],
+                    "effective_config": asdict(effective_config),
+                }
+                state = session_manager.finalize_session_id(state, active_session_id)
+                payload["session_id"] = state.session_id
+                payload["session_workspace"] = state.workspace_path
+                return normalize_role_payload(payload)
             if signal["needed"]:
                 prompt = build_research_prompt(
                     envelope,
@@ -196,18 +274,25 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                 response_text = ""
                 parsed_report: dict[str, Any] | None = None
                 failure_stage = "run_deep_research"
+                effective_reasoning = effective_config.reasoning_level or (
+                    self.runtime_config.reasoning if self.runtime_config else None
+                )
+                reasoning_level = None
+                if effective_reasoning:
+                    raw_reasoning = str(effective_reasoning).strip()
+                    if raw_reasoning.lower() in ("extended", "xhigh", "high"):
+                        reasoning_level = "Extended"
+                    elif raw_reasoning.lower() in ("standard", "medium", "low"):
+                        reasoning_level = "Standard"
+                    else:
+                        reasoning_level = raw_reasoning
+                invocation_sequence.start_logical_call(purpose="deep_research")
+                invocation_sequence.clear_prompt_context_projection()
+                external_context = invocation_sequence.next("primary")
+                external_started_at = runtime_now()
+                external_started_monotonic = time.monotonic()
+                external_recorded = False
                 try:
-                    effective_reasoning = effective_config.reasoning_level or (self.runtime_config.reasoning if self.runtime_config else None)
-                    reasoning_level = None
-                    if effective_reasoning:
-                        raw_reasoning = str(effective_reasoning).strip()
-                        if raw_reasoning.lower() in ("extended", "xhigh", "high"):
-                            reasoning_level = "Extended"
-                        elif raw_reasoning.lower() in ("standard", "medium", "low"):
-                            reasoning_level = "Standard"
-                        else:
-                            reasoning_level = raw_reasoning
-
                     deep_research_result = run_deep_research_sync(
                         prompt,
                         app_name=effective_config.app,
@@ -232,6 +317,19 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     failure_stage = "response_validation"
                     if not response_text:
                         raise RuntimeError("Deep research returned an empty report.")
+                    record_external_invocation(
+                        self.telemetry_recorder,
+                        external_context,
+                        provider="gemini_deep_research",
+                        model=str(effective_config.app or "default"),
+                        reasoning=str(reasoning_level or ""),
+                        started_at=external_started_at,
+                        started_monotonic=external_started_monotonic,
+                        status="completed",
+                        prompt_chars=len(prompt),
+                        output_chars=len(response_text),
+                    )
+                    external_recorded = True
                     if deep_research_result.url:
                         response_text += f"\n\n---\n**Deep Research URL:** {deep_research_result.url}\n"
                     failure_stage = "write_artifact"
@@ -273,6 +371,24 @@ class ResearchAgentRuntime(RoleAgentRuntime):
                     }
                     payload["artifacts"] = [artifact_hint]
                 except Exception as exc:
+                    if not external_recorded:
+                        record_external_invocation(
+                            self.telemetry_recorder,
+                            external_context,
+                            provider="gemini_deep_research",
+                            model=str(effective_config.app or "default"),
+                            reasoning=str(reasoning_level or ""),
+                            started_at=external_started_at,
+                            started_monotonic=external_started_monotonic,
+                            status="failed",
+                            prompt_chars=len(prompt),
+                            output_chars=len(response_text),
+                            error_category=(
+                                "provider_incomplete"
+                                if failure_stage == "await_final_report"
+                                else normalized_error_category(exc)
+                            ),
+                        )
                     artifact_written = artifact_path.exists()
                     parsed_backing_sources = (
                         parsed_report.get("backing_sources")
@@ -467,17 +583,30 @@ class ResearchAgentRuntime(RoleAgentRuntime):
         *,
         state: RoleSessionState,
         local_sources_checked: list[str],
+        invocation_sequence: InvocationSequence,
     ) -> tuple[dict[str, Any], str | None]:
+        request_projection = project_request_record_for_prompt(
+            request_record,
+            self.prompt_context_config,
+        )
+        invocation_sequence.set_prompt_context_projection(
+            request_projection,
+            enabled=self.prompt_context_config.enabled,
+            selection_policy=PROMPT_EVENT_SELECTION_POLICY,
+        )
         prompt = build_research_decision_prompt(
             envelope,
             request_record,
             local_sources_checked=local_sources_checked,
+            prompt_context_config=self.prompt_context_config,
         )
-        output, resolved_session_id = self.codex_runner.run(
+        output, resolved_session_id = run_with_optional_telemetry(
+            self.codex_runner,
             Path(state.workspace_path),
             prompt,
             state.session_id or None,
             bypass_sandbox=self._request_requires_default_bypass(envelope, request_record),
+            invocation_context=invocation_sequence.next("primary"),
         )
         raw_payload = extract_json_object(output)
         return normalize_research_decision(raw_payload, request_record=request_record), resolved_session_id

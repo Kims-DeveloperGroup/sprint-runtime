@@ -36,7 +36,8 @@ WORKFLOW_STEP_ARCHITECT_REVIEW = "architect_review"
 WORKFLOW_STEP_DEVELOPER_REVISION = "developer_revision"
 WORKFLOW_STEP_QA_VALIDATION = "qa_validation"
 WORKFLOW_STEP_CLOSEOUT = "closeout"
-DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT = 20
+DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT = 3
+DEFAULT_WORKFLOW_REOPEN_LIMIT = 3
 WORKFLOW_STEPS = {
     WORKFLOW_STEP_RESEARCH_INITIAL,
     WORKFLOW_STEP_PLANNER_DRAFT,
@@ -76,6 +77,8 @@ def default_workflow_state() -> WorkflowState:
         "planning_final_owner": "planner",
         "reopen_source_role": "",
         "reopen_category": "",
+        "reopen_count": 0,
+        "reopen_limit": DEFAULT_WORKFLOW_REOPEN_LIMIT,
         "review_cycle_count": 0,
         "review_cycle_limit": DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT,
     }
@@ -88,10 +91,15 @@ def research_first_workflow_state() -> WorkflowState:
     return state
 
 
-def initial_workflow_state(review_cycle_limit: int | None = None) -> WorkflowState:
+def initial_workflow_state(
+    review_cycle_limit: int | None = None,
+    reopen_limit: int | None = None,
+) -> WorkflowState:
     state = dict(default_workflow_state())
     if review_cycle_limit is not None:
         state["review_cycle_limit"] = max(1, int(review_cycle_limit))
+    if reopen_limit is not None:
+        state["reopen_limit"] = max(1, int(reopen_limit))
     return state
 
 
@@ -140,6 +148,14 @@ def normalize_workflow_state(raw: Any) -> WorkflowState:
     state["planning_pass_limit"] = max(1, int(raw.get("planning_pass_limit") or state["planning_pass_limit"]))
     state["review_cycle_count"] = max(0, int(raw.get("review_cycle_count") or state["review_cycle_count"]))
     state["review_cycle_limit"] = max(1, int(raw.get("review_cycle_limit") or state["review_cycle_limit"]))
+    state["reopen_count"] = max(
+        0,
+        int(raw.get("reopen_count") or state["reopen_count"]),
+    )
+    state["reopen_limit"] = max(
+        1,
+        int(raw.get("reopen_limit") or state["reopen_limit"]),
+    )
     return state
 
 
@@ -311,6 +327,18 @@ def workflow_review_cycle_limit_reached(workflow_state: dict[str, Any]) -> bool:
     return review_cycle_count >= review_cycle_limit
 
 
+def workflow_reopen_limit_reached(workflow_state: dict[str, Any]) -> bool:
+    reopen_count = max(0, int((workflow_state or {}).get("reopen_count") or 0))
+    reopen_limit = max(
+        1,
+        int(
+            (workflow_state or {}).get("reopen_limit")
+            or DEFAULT_WORKFLOW_REOPEN_LIMIT
+        ),
+    )
+    return reopen_count >= reopen_limit
+
+
 def workflow_reason(result: dict[str, Any], transition: dict[str, Any], default: str) -> str:
     return (
         str(transition.get("reason") or "").strip()
@@ -441,10 +469,12 @@ def workflow_mark_reopen_state(
     updated_state = dict(workflow_state or default_workflow_state())
     updated_state["reopen_source_role"] = current_role
     updated_state["reopen_category"] = category if category in WORKFLOW_REOPEN_CATEGORIES else ""
+    updated_state["reopen_count"] = int(updated_state.get("reopen_count") or 0) + 1
     return updated_state
 
 
 _WORKFLOW_STATE_EXPORTS = [
+    "DEFAULT_WORKFLOW_REOPEN_LIMIT",
     "DEFAULT_WORKFLOW_REVIEW_CYCLE_LIMIT",
     "PLANNING_ADVISORY_ROLES",
     "PLANNING_ADVISORY_ROLE_TO_STEP",
@@ -481,6 +511,7 @@ _WORKFLOW_STATE_EXPORTS = [
     "workflow_complete_state",
     "workflow_mark_reopen_state",
     "workflow_reason",
+    "workflow_reopen_limit_reached",
     "workflow_review_cycle_limit_reached",
     "workflow_route_to_architect_guidance_state",
     "workflow_route_to_architect_review_state",
@@ -1235,6 +1266,12 @@ def workflow_reopen_decision(
     category: str,
     reason: str,
 ) -> dict[str, Any]:
+    if workflow_reopen_limit_reached(workflow_state):
+        return workflow_reopen_limit_block_decision(
+            workflow_state,
+            reason=reason,
+            category=category,
+        )
     updated_state = workflow_mark_reopen_state(
         workflow_state,
         current_role=current_role,
@@ -1267,6 +1304,36 @@ def workflow_reopen_decision(
             category=category,
         )
     return workflow_route_to_planner_finalize_decision(updated_state, reason=reason, category=category)
+
+
+def workflow_reopen_limit_block_decision(
+    workflow_state: dict[str, Any],
+    *,
+    reason: str,
+    category: str = "",
+) -> dict[str, Any]:
+    reopen_count = max(0, int((workflow_state or {}).get("reopen_count") or 0))
+    reopen_limit = max(
+        1,
+        int(
+            (workflow_state or {}).get("reopen_limit")
+            or DEFAULT_WORKFLOW_REOPEN_LIMIT
+        ),
+    )
+    limit_summary = (
+        f"workflow reopen이 {reopen_count}회 실행되어 reopen limit "
+        f"{reopen_limit}에 도달했습니다."
+    )
+    combined_summary = " ".join(
+        part
+        for part in (limit_summary, str(reason or "").strip())
+        if str(part).strip()
+    ).strip()
+    return workflow_terminal_block_decision(
+        workflow_state,
+        summary=combined_summary or limit_summary,
+        category=category,
+    )
 
 
 def workflow_review_cycle_limit_block_decision(
@@ -1420,17 +1487,10 @@ def derive_workflow_routing_decision(
                 category=reopen_category or "implementation",
             )
         if outcome == "reopen":
-            if reopen_category in {"", "implementation"}:
-                return workflow_route_to_developer_build_decision(
-                    workflow_state,
-                    reason=reason or "architect review 결과를 developer가 반영합니다.",
-                    step=WORKFLOW_STEP_DEVELOPER_REVISION,
-                    category=reopen_category,
-                )
             return workflow_reopen_decision(
                 workflow_state,
                 current_role=current_role or "architect",
-                category=reopen_category,
+                category=reopen_category or "implementation",
                 reason=reason,
             )
         return workflow_route_to_developer_build_decision(
@@ -2133,6 +2193,7 @@ __all__ = [
     "strongest_domain_matches",
     "workflow_complete_decision",
     "workflow_reopen_decision",
+    "workflow_reopen_limit_block_decision",
     "workflow_review_cycle_limit_block_decision",
     "workflow_route_decision",
     "workflow_route_to_architect_guidance_decision",

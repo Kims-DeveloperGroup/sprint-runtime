@@ -182,6 +182,45 @@ role_defaults:
 
 After changing a running role's config, restart that role to apply the new settings.
 
+### `internal_agent_defaults`
+
+Configure the orchestrator-local `parser`, `sourcer`, and `version_controller` independently from public roles:
+
+```yaml
+internal_agent_defaults:
+  parser:
+    model: "gpt-5.4-mini"
+    reasoning: "low"
+  sourcer:
+    model: "gpt-5.4-mini"
+    reasoning: "medium"
+  version_controller:
+    model: "gpt-5.4-mini"
+    reasoning: "low"
+```
+
+Use the CLI for one helper override:
+
+```bash
+python -m teams_runtime config internal set --agent parser --model gpt-5.4-mini --reasoning low
+```
+
+If this section or one helper entry is absent, that helper inherits the effective `role_defaults.orchestrator` model and reasoning level. This keeps existing workspaces backward compatible. Restart the orchestrator after a helper change because all three helpers run inside that service.
+
+See [`docs/call_amplification_controls.md`](call_amplification_controls.md) for tier rationale, measurement, migration, and rollback details.
+
+### Workflow Budgets
+
+The generated orchestrator skill policy at `orchestrator/.agents/skills/agent_utilization/policy.yaml` controls implementation amplification:
+
+```yaml
+workflow_contract:
+  implementation_review_cycle_limit: 3
+  implementation_reopen_limit: 3
+```
+
+The review limit counts routes into architect implementation review. The reopen limit independently counts accepted orchestrator-governed reopen transitions. On reaching either applicable limit, the workflow blocks before another revision handoff. Both values must be positive integers, and workspace policy values override the bundled defaults. Restart orchestrator after a policy change; existing in-flight requests retain their persisted limits, while new internal requests receive the updated values.
+
 ### `actions`
 
 Defines which `execute` actions are allowed.
@@ -237,6 +276,82 @@ That means:
 Public service runtimes still use role-name identities such as `planner`, so their session files remain `planner.json`-style files. Orchestrator-local helper runtimes use separate files such as `orchestrator.local.planner.json`.
 
 Many `backlog_id` and `request_id` values may exist while one configured sprint session scope remains active.
+
+### `prompt_context`
+
+Controls how much persisted request event history is copied into model prompts:
+
+```yaml
+prompt_context:
+  enabled: true
+  recent_events: 8
+  max_events: 16
+```
+
+Defaults:
+
+- `enabled: true`
+- `recent_events: 8`
+- `max_events: 16`
+
+Both event limits must be positive integers, and `max_events` must be greater than or equal to `recent_events`. Role services load these values at startup, so restart them after changing this section. There is no CLI mutation command for this policy.
+
+Compaction changes only the prompt projection. The canonical request JSON under `.teams_runtime/requests/` retains every event, and the current request metadata, result, artifacts, and selected event payloads are not truncated or summarized.
+
+#### Compaction And Backfill
+
+**Compaction** is executed only when `enabled` is `true` and the request contains more than `max_events` events. The runtime:
+
+1. Includes the last `recent_events` entries by list position, regardless of event shape.
+2. Treats roles represented in that recent tail as already covered.
+3. Scans older events from newest to oldest.
+4. Backfills the newest evidence for each role not already represented, stopping at `max_events`.
+5. Restores the selected events to their original chronological order.
+
+**Backfill** means using remaining capacity to retain older role evidence that would otherwise disappear behind the recent-event boundary. An older event qualifies as role evidence when either `type` or legacy `event_type` is `role_report`, or when its `payload` contains non-empty `role` and `status` fields. The role identity comes from `payload.role`, falling back to the event `actor`.
+
+Backfill is not a summary, database repair, or write to history. It copies complete existing event objects into the prompt. Repeated reports for one role do not consume multiple backfill slots; the newest qualifying older report wins. If `max_events` equals `recent_events`, no backfill capacity exists and the projection is recent-only.
+
+#### Worked Example
+
+With `recent_events: 4` and `max_events: 7`, suppose the persisted request has this abbreviated event list:
+
+```json
+[
+  {"timestamp": "T01", "type": "created", "actor": "orchestrator"},
+  {"timestamp": "T02", "type": "role_report", "payload": {"role": "research", "status": "completed"}},
+  {"timestamp": "T03", "type": "delegated", "actor": "orchestrator"},
+  {"timestamp": "T04", "type": "role_report", "payload": {"role": "planner", "status": "completed", "summary": "initial plan"}},
+  {"timestamp": "T05", "type": "role_report", "payload": {"role": "designer", "status": "completed"}},
+  {"timestamp": "T06", "type": "role_report", "payload": {"role": "planner", "status": "completed", "summary": "final plan"}},
+  {"timestamp": "T07", "type": "retried", "actor": "orchestrator"},
+  {"timestamp": "T08", "type": "role_report", "payload": {"role": "developer", "status": "completed"}},
+  {"timestamp": "T09", "type": "role_report", "payload": {"role": "architect", "status": "completed"}},
+  {"timestamp": "T10", "type": "delegated", "actor": "orchestrator"},
+  {"timestamp": "T11", "type": "role_report", "payload": {"role": "qa", "status": "blocked"}},
+  {"timestamp": "T12", "type": "resumed", "actor": "orchestrator"}
+]
+```
+
+The recent tail is `T09` through `T12`, representing `architect` and `qa`. Three slots remain. Scanning backward selects `T08` for `developer`, `T06` for `planner`, and `T05` for `designer`. `T04` is skipped because the newer planner report already represents that role. Capacity is then full, so older `research` evidence at `T02` is not selected.
+
+The prompt receives:
+
+```json
+[
+  {"timestamp": "T05", "type": "role_report", "payload": {"role": "designer", "status": "completed"}},
+  {"timestamp": "T06", "type": "role_report", "payload": {"role": "planner", "status": "completed", "summary": "final plan"}},
+  {"timestamp": "T08", "type": "role_report", "payload": {"role": "developer", "status": "completed"}},
+  {"timestamp": "T09", "type": "role_report", "payload": {"role": "architect", "status": "completed"}},
+  {"timestamp": "T10", "type": "delegated", "actor": "orchestrator"},
+  {"timestamp": "T11", "type": "role_report", "payload": {"role": "qa", "status": "blocked"}},
+  {"timestamp": "T12", "type": "resumed", "actor": "orchestrator"}
+]
+```
+
+The adjacent prompt notice reports `total_events: 12`, `included_events: 7`, `omitted_events: 5`, the selection policy, and the canonical request path. A role may open that canonical file when its current decision needs omitted evidence.
+
+For immediate rollback, set `enabled: false` and restart role services. This restores full event-history inclusion in prompts without changing persisted request data.
 
 ## Changing `sprint.id`
 

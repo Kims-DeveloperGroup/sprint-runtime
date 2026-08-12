@@ -48,6 +48,8 @@ Do not use this skill to do the role-specific work itself.
    Reinforce planner-owned backlog persistence and version_controller-owned commit execution while still keeping orchestrator in charge of workflow.
 8. Enforce the standard sprint collaboration path.
    Use planner-owned planning, bounded advisory passes, mandatory architect guidance before developer work, mandatory architect review before QA, and orchestrator-chosen reopen routing.
+9. Enforce independent implementation budgets.
+   Count architect review cycles and accepted reopen transitions separately. Block before another revision handoff when the applicable `workflow_contract` limit is reached.
 
 ## Guardrails
 
@@ -56,5 +58,6 @@ Do not use this skill to do the role-specific work itself.
 - Do not let implementation go to developer when the real need is still UX or architecture shaping.
 - Do not bypass planner for backlog-management ownership.
 - Do not reopen routing from non-planner backlog proposals or terminal verification results.
+- Do not bypass `implementation_review_cycle_limit` or `implementation_reopen_limit`; a blocked limit requires operator intervention or an explicit policy change.
 - Do not route commit work away from version_controller.
 - Do not leave the reason for role selection implicit.
