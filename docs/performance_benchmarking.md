@@ -40,7 +40,7 @@ def sum_positive(values):
     return sum(values)
 ```
 
-The protected test oracle is:
+The protected functional examples are:
 
 ```python
 assert sum_positive([5, -8, 2]) == 7
@@ -48,17 +48,35 @@ assert sum_positive([-5, 0, -3]) == 0
 assert sum_positive([]) == 0
 ```
 
-The initial test run must fail. The sprint milestone asks the team to preserve the
-public function, fix the behavior, run the `unittest` suite, leave protected benchmark
-files unchanged, and commit the result. The complete production sprint workflow is
-used: planning, explicit benchmark auto-confirmation, backlog/TODO execution, governed
-role handoffs, QA, version control, and closeout.
+The trusted fixture's initial test run must fail. The sprint milestone asks the team
+to preserve the public function, fix the behavior, run the `unittest` suite, leave
+protected benchmark files unchanged, and commit the result. To keep parent-side final
+inspection from importing or executing model-modified Python, the accepted repair has
+one deliberately narrow AST shape:
+
+```python
+def sum_positive(values):
+    return sum(value for value in values if value > 0)
+```
+
+Comments, whitespace, and an optional string docstring at module and function scope
+do not affect acceptance. The module must otherwise contain only that synchronous
+function. The function must have exactly the unannotated `values` parameter, no
+decorators or defaults, and exactly the shown generator-expression return as its only
+non-docstring statement. Imports, additional definitions or statements, annotations,
+list comprehensions, renamed operands, and alternate predicates are rejected even if
+they could produce the same outputs. This intentionally trades general semantic
+equivalence for a deterministic, non-executing oracle. The complete production sprint
+workflow is still used: planning, explicit benchmark auto-confirmation, backlog/TODO
+execution, governed role handoffs, QA, version control, and closeout.
 
 An arm passes its behavior and workflow gates only when all of the following are true:
 
 - the initial defective fixture was reproduced before the arm started
-- the final protected behavior oracle passes
-- protected scenario and test files have the same SHA-256 hashes
+- the final constrained AST behavior oracle passes without importing or executing
+  workspace code
+- protected scenario and test files are regular files reached without following
+  symlinks and have the same SHA-256 hashes
 - the sprint reaches a terminal completed state
 - closeout is verified
 - no TODO is blocked or failed
@@ -68,7 +86,10 @@ An arm passes its behavior and workflow gates only when all of the following are
 - every persisted invocation has native token usage
 - the call journal is present, uses a supported schema, and reconciles every
   reservation to exactly one terminal attempt
-- the After arm records at least one real compacted prompt projection
+- a completed primary call in the Before arm records exactly `50 total / 50
+  included / 0 omitted` events
+- a completed primary call in the After arm records exactly `50 total / 16
+  included / 34 omitted` events
 - the Before and After non-feature configuration fingerprints match
 
 ## Backfill
@@ -183,14 +204,31 @@ projection.
 
 Telemetry records the projection policy and counts on the physical provider attempt.
 This proves that compaction was eligible and executed; token reduction by itself is
-not accepted as proof.
+not accepted as proof. Pair comparability requires at least one completed primary
+provider attempt for `research / research_decision / research_initial` with the exact
+v2 projection in each arm. Before provider launch, the runtime writes that invocation
+identity and projection tuple to the private call journal outside the model-writable
+workspace. During execution, every runtime recorder writes raw usage shards to a
+second parent-owned directory under the arm report path, also outside that workspace.
+After child and provider cleanup, the parent loads and removes those raw shards; it
+does not read the normal workspace telemetry store or trust telemetry carried in the
+child result. Parent-side reconciliation requires the journal and telemetry values to
+match by invocation ID. The reducer also requires the SHA-256 digest of its exact
+target invocation-ID set to match the journal-verified set, so an equal count from a
+different call cannot substitute for the target. Only reconciled evidence becomes
+`metrics.compaction.target_projection_count`; an exact-shaped telemetry record alone
+is only an untrusted candidate and cannot satisfy the gate. `metrics.json`,
+`run.json`, and `report.json` retain the gate result without relying on manual prompt
+or response inspection. The exact paths are `compaction.target_projection_count` in
+`metrics.json`, `metrics.compaction.target_projection_count` in `run.json`, and
+`runs[].metrics.compaction.target_projection_count` in `report.json`.
 
 ## Running The Benchmark
 
 Run from the `teams_runtime` source checkout:
 
 ```bash
-TEAMS_RUNTIME_LIVE_BENCHMARK=1 \
+TEAMS_RUNTIME_LIVE_BENCHMARK=1 PYTHONPATH=.. \
 python -m teams_runtime benchmark sprint-ab \
   --live \
   --runtime-config ../teams_generated/team_runtime.yaml \
@@ -204,6 +242,10 @@ python -m teams_runtime benchmark sprint-ab \
 Live calls require both the environment variable and `--live`. Omitting either is a
 preflight failure and makes no model call.
 
+Both timeout values must be positive, finite numbers. Zero, negative values, `NaN`,
+and positive or negative infinity are rejected before a worker or provider process is
+launched; a non-finite run timeout is never allowed to disable the hard deadline.
+
 The provider does not inherit the operator's `HOME`, `CODEX_HOME`, or temporary
 directories. It uses private paths under the arm's ignored `.teams_runtime` state.
 Provide authentication through a supported provider-only environment variable such as
@@ -211,6 +253,13 @@ Provide authentication through a supported provider-only environment variable su
 Codex home are intentionally unavailable. Missing provider-only authentication fails
 preflight before a call is reserved. These authentication variables are not injected
 into model tool shells. Use a rate card matching the selected credential and backend.
+
+The worker also constructs a benchmark-only `PATH`. It keeps only existing absolute
+directories outside the provider-writable workspace, protected run output, and system
+temporary roots. It resolves `codex` once through that path, canonicalizes symlinks,
+verifies that the target is a regular executable, and pins that absolute path for CLI
+version discovery and every provider launch. A workspace-local `codex` shim therefore
+cannot replace the measured provider executable between arms.
 
 Options:
 
@@ -233,8 +282,8 @@ Exit codes:
 | Code | Meaning |
 | ---: | --- |
 | `0` | Every pair passed quality and comparability gates. |
-| `1` | Artifacts were preserved, but at least one pair is partial or inconclusive. |
-| `2` | Usage or preflight failure; no valid benchmark was started. |
+| `1` | Artifacts were preserved, but at least one pair is partial, inconclusive, or stopped at an arm-level preflight. |
+| `2` | CLI usage, top-level preflight failure, or fatal cleanup-safety abort; no complete benchmark report is available. |
 
 ## Execution Safety
 
@@ -243,10 +292,22 @@ The live worker is deliberately narrower than normal runtime execution:
 - every role uses the internal file relay; no Discord listener or message is used
 - sprint GitHub issue publication is replaced with a local `skipped_benchmark` record
 - external deep research is disabled and remains an unresolved risk if requested
-- the fixture repository has no remote and safe Git configuration disables prompts,
-  signing, system/global configuration, and repository hooks
+- the fixture repository has no remote; final inspection uses the external Git
+  executable resolved before model access, disables prompts and paging, ignores
+  system/global configuration, and overrides repository-controlled hooks, fsmonitor,
+  external diff, diff filters, and automatic maintenance; status reads attributes
+  from the pre-model seed commit and requires the repository-local attributes override
+  to remain empty, preventing later clean-filter commands from running
+- final source verification reads size-bounded regular files through directory-anchored,
+  no-follow descriptors and parses `benchmark_app.py` as AST only; it never imports or
+  executes model-controlled workspace code
 - benchmark model execution supports Codex only; Gemini CLI requests are rejected
 - approval policy is `never` and sandbox mode is `workspace-write`
+- the workspace-write sandbox explicitly excludes `/tmp` and the `TMPDIR` path,
+  so report output beneath a system temporary directory remains model-read-only
+- relative, missing, provider-writable, report-owned, and system-temporary entries are
+  removed from the benchmark `PATH`; the resolved Codex executable is pinned outside
+  those roots before any call is reserved
 - dangerous sandbox-bypass requests and automatic bypass retries are rejected
 - MCP servers, web search, plugins, hooks, computer use, and multi-agent features are
   disabled for the provider process
@@ -259,22 +320,39 @@ The live worker is deliberately narrower than normal runtime execution:
 - writable paths must resolve inside the isolated arm root
 - a shared atomic journal reserves a call before launch, so concurrent roles cannot
   exceed the arm's physical-call budget
+- journal schema v3 stores content-free invocation identity and prompt-projection
+  counts before launch outside the model-writable workspace; parent reconciliation
+  rejects changed, unrelated, unmatched, or internally conflicting telemetry evidence
+- raw benchmark telemetry is written to a parent-owned arm directory outside the
+  provider-writable workspace, consumed only after process cleanup, and then removed;
+  workspace telemetry and child-result telemetry are never accepted as evidence
 - a benchmark-only launcher waits on a private pipe and executes the provider only
   after its PID and process group are durably journaled; parent death closes the
   pipe and exits the launcher without starting the provider
 - provider processes run in dedicated process groups and are terminated on call
   timeout
 - an arm timeout terminates active provider groups before the worker is stopped
+- benchmark Codex commands do not use `-o`/`--output-last-message`; the final message
+  is parsed from the CLI's JSONL stdout, so the unsandboxed outer CLI is never asked to
+  follow a model-created output-file symlink
 
 When a call cap or timeout is reached, the benchmark does not silently raise the
 limit. It preserves partial telemetry, marks the arm inconclusive, and proceeds to the
 other arm when doing so remains safe.
+
+If provider cleanup cannot be proven, the runner aborts instead of producing a
+normal inconclusive result. The CLI returns `2`; a partially created private output
+directory may remain for diagnosis, but automation must not assume `report.json` or
+`report.md` exists.
 
 Live benchmarks are never run automatically in CI. Deterministic fake-worker
 integration tests exercise scheduling, fixtures, aggregation, reporting, and failure
 paths without credentials or provider calls.
 
 ## Reports
+
+`report.json` uses report schema v3. This version identifies the v2 scenario and
+changes comparability semantics to require journal-v3 target-context reconciliation.
 
 Artifacts are written under:
 
@@ -298,6 +376,7 @@ Artifacts are written under:
 
 The execution report includes:
 
+- scenario identity and the exact v2 target projection for both arms
 - journal-reserved, telemetry-observed, completed, failed, timed-out,
   launch-failed, parent-terminated, active, and rejected attempt counts
 - physical telemetry invocation and logical-call counts
@@ -308,8 +387,9 @@ The execution report includes:
 - input, cached input, uncached input, output, reasoning-output, and total tokens
 - native-token coverage
 - optional estimated cost and pricing coverage
-- compaction eligibility, executions, total/included/omitted events, and maximum
-  included events
+- compaction eligibility, executions, total/included/omitted events, maximum
+  included events, untrusted target candidates, journal/telemetry mismatches, and
+  exact-target journal-verified completed-primary evidence count
 - per-role/provider/model groups
 - matched primary calls keyed by role, purpose, workflow step, and occurrence
 - full-sprint Before/After deltas and reduction percentages
@@ -328,6 +408,8 @@ SHA-256 identity digest, not the journal's raw identity list.
 
 Reports are content-safe: they do not contain prompts, model responses, tool output,
 raw errors, raw session IDs, credentials, or environment values.
+The persisted `model_invocations.jsonl` file is a sanitized report artifact produced
+from the consumed private shards; the raw private shard directory is not retained.
 
 ### Optional Rate Card
 
@@ -358,7 +440,8 @@ Prioritize evidence in this order:
 1. Verify both arms passed all quality and comparability gates.
 2. Verify the same history hash and non-feature configuration hash were used.
 3. Verify 100% native token coverage.
-4. Verify the After arm recorded actual omissions and the Before arm did not.
+4. Verify both arms have a positive `target_projection_count`: Before proves
+   journal-reconciled `50/50/0`, and After proves journal-reconciled `50/16/34`.
 5. Compare matched primary calls to isolate prompts that exercised the same role,
    purpose, and workflow step.
 6. Compare full-sprint totals to capture routing, retries, and downstream effects.
@@ -375,6 +458,10 @@ or rate-card snapshots.
 `preflight_failed`:
 
 - confirm both live opt-ins are present
+- provide `CODEX_API_KEY` or `OPENAI_API_KEY`; an arm-level authentication preflight
+  produces an inconclusive report with exit code `1` and zero reserved calls
+- confirm `codex` resolves to a regular executable through an absolute external
+  `PATH` directory, not the arm workspace, report output, or a temporary directory
 - confirm the runtime config exists and defines every role model/reasoning pair
 - commit source changes, or deliberately use `--allow-dirty-source`
 - choose a new benchmark ID or remove only an explicitly disposable old output

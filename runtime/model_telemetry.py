@@ -34,7 +34,7 @@ def _optional_non_negative_int(value: Any) -> int | None:
         return None
     try:
         normalized = int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return normalized if normalized >= 0 else None
 
@@ -289,10 +289,17 @@ class ModelTelemetryRecorder:
         paths: RuntimePaths,
         runtime_identity: str,
         config: TelemetryRuntimeConfig | None = None,
+        *,
+        output_dir: Path | None = None,
     ):
         self.paths = paths
         self.runtime_identity = _text(runtime_identity) or "unknown"
         self.config = config or TelemetryRuntimeConfig()
+        self.output_dir = (
+            Path(output_dir).expanduser().resolve()
+            if output_dir is not None
+            else paths.model_invocations_dir
+        )
         self._last_warning_at = 0.0
 
     @property
@@ -388,12 +395,20 @@ class ModelTelemetryRecorder:
             }
             day = normalize_runtime_datetime(started_at).date().isoformat()
             identity = sanitize_runtime_identity(context.runtime_identity or self.runtime_identity)
-            path = self.paths.model_invocations_dir / day / f"{identity}.{os.getpid()}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path = self.output_dir / day / f"{identity}.{os.getpid()}.jsonl"
+            path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            try:
+                path.parent.chmod(0o700)
+            except OSError:
+                pass
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
                 handle.flush()
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
         except Exception as exc:  # Telemetry is deliberately fail-open.
             self._warning(exc)
 

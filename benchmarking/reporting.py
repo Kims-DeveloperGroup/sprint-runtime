@@ -13,12 +13,19 @@ from teams_runtime.benchmarking.models import ArmResult, BenchmarkOptions
 from teams_runtime.benchmarking.scenario import (
     BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
     BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+    BENCHMARK_TARGET_INCLUDED_EVENTS,
+    BENCHMARK_TARGET_OMITTED_EVENTS,
+    BENCHMARK_TARGET_PURPOSE,
+    BENCHMARK_TARGET_ROLE,
+    BENCHMARK_TARGET_TOTAL_EVENTS,
+    BENCHMARK_TARGET_WORKFLOW_STEP,
     DEFAULT_HISTORY_SEED_COUNT,
+    SCENARIO_ID,
 )
 from teams_runtime.shared.prompt_context import PROMPT_EVENT_SELECTION_POLICY
 
 
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 
 
 def utc_now_iso() -> str:
@@ -80,7 +87,7 @@ def _pair_comparability(before: ArmResult, after: ArmResult) -> tuple[bool, list
         attempts = dict(arm.invocation_attempts)
         if attempts.get("journal_available") is not True:
             reasons.append(f"{label}_call_journal_missing")
-        elif int(attempts.get("journal_schema_version") or 0) not in {1, 2}:
+        elif int(attempts.get("journal_schema_version") or 0) not in {1, 2, 3}:
             reasons.append(f"{label}_call_journal_schema_unsupported")
         else:
             if attempts.get("reconciled") is not True:
@@ -89,6 +96,10 @@ def _pair_comparability(before: ArmResult, after: ArmResult) -> tuple[bool, list
                 reasons.append(
                     f"{label}_invocation_identity_not_reconciled"
                 )
+            if int(attempts.get("journal_schema_version") or 0) != 3:
+                reasons.append(f"{label}_call_journal_context_unavailable")
+            elif attempts.get("context_reconciled") is not True:
+                reasons.append(f"{label}_invocation_context_not_reconciled")
             for field_name, reason_suffix in (
                 ("active_count", "active_attempts_present"),
                 ("unknown_state_count", "unknown_attempt_states"),
@@ -128,6 +139,15 @@ def _pair_comparability(before: ArmResult, after: ArmResult) -> tuple[bool, list
         compaction = dict(arm.metrics.get("compaction") or {})
         if int(compaction.get("invalid_projection_count") or 0):
             reasons.append(f"{label}_prompt_projection_invalid")
+        if int(
+            compaction.get("target_projection_verification_mismatch_count")
+            or 0
+        ):
+            reasons.append(f"{label}_v2_target_projection_not_reconciled")
+        if compaction.get("target_projection_identity_reconciled") is not True:
+            reasons.append(
+                f"{label}_v2_target_projection_identity_not_reconciled"
+            )
         if int(compaction.get("max_observed_events") or 0) < DEFAULT_HISTORY_SEED_COUNT:
             reasons.append(f"{label}_backfill_not_observed")
         if compaction.get("selection_policies") != [PROMPT_EVENT_SELECTION_POLICY]:
@@ -142,6 +162,8 @@ def _pair_comparability(before: ArmResult, after: ArmResult) -> tuple[bool, list
         reasons.append("before_disabled_projection_not_observed")
     if int(before_compaction.get("compacted_invocation_count") or 0):
         reasons.append("before_compaction_unexpectedly_observed")
+    if int(before_compaction.get("target_projection_count") or 0) <= 0:
+        reasons.append("before_v2_target_projection_not_observed")
     if int(after_compaction.get("enabled_invocation_count") or 0) <= 0:
         reasons.append("after_compaction_not_enabled")
     if int(after_compaction.get("enabled_invocation_count") or 0) != int(
@@ -152,6 +174,8 @@ def _pair_comparability(before: ArmResult, after: ArmResult) -> tuple[bool, list
         reasons.append("after_disabled_projection_observed")
     if int(after_compaction.get("compacted_invocation_count") or 0) <= 0:
         reasons.append("after_compaction_not_observed")
+    if int(after_compaction.get("target_projection_count") or 0) <= 0:
+        reasons.append("after_v2_target_projection_not_observed")
     return not reasons, reasons
 
 
@@ -250,6 +274,7 @@ def build_report(
         "started_at": started_at,
         "ended_at": ended_at,
         "provenance": {
+            "scenario_id": SCENARIO_ID,
             "source": dict(source_revision),
             "source_config_hash": source_config_hash,
             "history_hash": history_hash,
@@ -269,12 +294,26 @@ def build_report(
             "run_timeout_seconds": options.run_timeout_seconds,
             "keep_workspaces": options.keep_workspaces,
             "live": options.live,
+            "target_invocation": {
+                "attempt_kind": "primary",
+                "role": BENCHMARK_TARGET_ROLE,
+                "purpose": BENCHMARK_TARGET_PURPOSE,
+                "workflow_step": BENCHMARK_TARGET_WORKFLOW_STEP,
+            },
             "a_b_definition": {
-                "before": {"prompt_context_enabled": False},
+                "before": {
+                    "prompt_context_enabled": False,
+                    "target_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                    "target_included_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                    "target_omitted_events": 0,
+                },
                 "after": {
                     "prompt_context_enabled": True,
                     "recent_events": BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
                     "max_events": BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+                    "target_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                    "target_included_events": BENCHMARK_TARGET_INCLUDED_EVENTS,
+                    "target_omitted_events": BENCHMARK_TARGET_OMITTED_EVENTS,
                 },
             },
         },
@@ -307,25 +346,27 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Benchmark: `{report.get('benchmark_id', '')}`",
         f"- Status: **{report.get('status', 'inconclusive')}**",
         f"- Classification: `{report.get('classification', '')}`",
+        f"- Scenario: `{(report.get('provenance') or {}).get('scenario_id', '')}`",
         f"- Started: `{report.get('started_at', '')}`",
         f"- Ended: `{report.get('ended_at', '')}`",
         "",
         "## Runs",
         "",
-        "| Run | Variant | Status | Reserved | Telemetry | Completed | Failed | Timed out | Launch failed | Terminated | Active | Rejected | Repairs | Input tokens | Total tokens | Wall ms | Quality |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Run | Variant | Status | Reserved | Telemetry | Completed | Failed | Timed out | Launch failed | Terminated | Active | Rejected | Repairs | Input tokens | Total tokens | V2 verified | Wall ms | Quality |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for run in report.get("runs") or []:
         metrics = dict(run.get("metrics") or {})
         totals = dict(metrics.get("totals") or {})
         tokens = dict(metrics.get("tokens") or {})
+        compaction = dict(metrics.get("compaction") or {})
         attempts = dict(run.get("invocation_attempts") or {})
         quality = dict(run.get("quality") or {})
         lines.append(
             "| {run_id} | {variant} | {status} | {reserved} | {telemetry} | "
             "{completed} | {failed} | {timed_out} | {launch_failed} | {terminated} | "
             "{active} | {rejected} | {repairs} | {input_tokens} | {total_tokens} | "
-            "{wall_ms} | {quality} |".format(
+            "{v2_targets} | {wall_ms} | {quality} |".format(
                 run_id=run.get("run_id", ""),
                 variant=run.get("variant", ""),
                 status=run.get("status", ""),
@@ -341,6 +382,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 repairs=totals.get("contract_repair_count", 0),
                 input_tokens=tokens.get("input", 0),
                 total_tokens=tokens.get("total", 0),
+                v2_targets=int(compaction.get("target_projection_count") or 0),
                 wall_ms=run.get("wall_duration_ms", 0),
                 quality="pass" if quality.get("passed") else "fail",
             )

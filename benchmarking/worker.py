@@ -5,10 +5,13 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -17,7 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from teams_runtime.benchmarking.metrics import load_workspace_telemetry
+from teams_runtime.benchmarking.metrics import (
+    is_v2_target_projection,
+    load_telemetry_directory,
+    sanitize_invocation_record,
+)
 from teams_runtime.benchmarking.models import (
     ArmPlan,
     BenchmarkWorkerSafetyError,
@@ -38,6 +45,7 @@ from teams_runtime.runtime.execution_policy import (
     ModelExecutionPolicy,
     ModelExecutionPolicyViolation,
     ModelInvocationTimeout,
+    quarantine_unsafe_workspace_entries,
 )
 from teams_runtime.shared.models import TEAM_ROLES
 from teams_runtime.shared.paths import RuntimePaths
@@ -63,6 +71,35 @@ _CALL_JOURNAL_STATES = (
     "timeout",
     "launch_failed",
     "terminated",
+)
+_JOURNAL_CONTEXT_STRING_FIELDS = (
+    "provider",
+    "operation_id",
+    "logical_call_id",
+    "attempt_kind",
+    "runtime_identity",
+    "role",
+    "purpose",
+    "workflow_step",
+    "request_id",
+    "sprint_id",
+    "todo_id",
+    "backlog_id",
+    "goal_id",
+    "prompt_context_selection_policy",
+)
+_JOURNAL_CONTEXT_INTEGER_FIELDS = (
+    "attempt_index",
+    "prompt_context_total_events",
+    "prompt_context_included_events",
+    "prompt_context_omitted_events",
+    "prompt_context_recent_events",
+    "prompt_context_max_events",
+)
+_JOURNAL_CONTEXT_FIELDS = (
+    *_JOURNAL_CONTEXT_STRING_FIELDS,
+    *_JOURNAL_CONTEXT_INTEGER_FIELDS,
+    "prompt_context_enabled",
 )
 _PROVIDER_AUTH_ENVIRONMENT_KEYS = (
     "CODEX_API_KEY",
@@ -295,6 +332,11 @@ def _validate_context(context: WorkerContext) -> None:
             f"Live benchmark worker requires {LIVE_BENCHMARK_ENV}=1"
         )
     workspace_root = context.workspace_root.expanduser().resolve()
+    run_output_dir = context.run_output_dir.expanduser().resolve()
+    if run_output_dir.is_relative_to(workspace_root):
+        raise ModelExecutionPolicyViolation(
+            "Benchmark run output must be outside the provider-writable workspace"
+        )
     if not workspace_root.is_dir():
         raise FileNotFoundError(f"Benchmark workspace does not exist: {workspace_root}")
     for relative_path in ("team_runtime.yaml", ".git", ".benchmark/scenario.json"):
@@ -311,15 +353,143 @@ def _validate_context(context: WorkerContext) -> None:
         raise ValueError("Benchmark milestone must not be empty")
     if context.max_invocations <= 0:
         raise ValueError("Benchmark invocation budget must be positive")
-    if context.call_timeout_seconds <= 0:
-        raise ValueError("Benchmark call timeout must be positive")
-    if context.run_timeout_seconds <= 0:
-        raise ValueError("Benchmark run timeout must be positive")
+    if (
+        not math.isfinite(context.call_timeout_seconds)
+        or context.call_timeout_seconds <= 0
+    ):
+        raise ValueError("Benchmark call timeout must be positive and finite")
+    if (
+        not math.isfinite(context.run_timeout_seconds)
+        or context.run_timeout_seconds <= 0
+    ):
+        raise ValueError("Benchmark run timeout must be positive and finite")
 
 
 def _source_import_root() -> Path:
     # teams_runtime/benchmarking/worker.py -> import parent containing teams_runtime.
     return Path(__file__).resolve().parents[2]
+
+
+def _private_telemetry_dir(context: WorkerContext) -> Path:
+    return (
+        context.run_output_dir.expanduser().resolve()
+        / ".private_model_invocations"
+    )
+
+
+def _benchmark_unsafe_path_roots(context: WorkerContext) -> tuple[Path, ...]:
+    roots = {
+        context.workspace_root.expanduser().resolve(),
+        context.run_output_dir.expanduser().resolve(),
+        Path("/tmp").resolve(),
+        Path(tempfile.gettempdir()).expanduser().resolve(),
+    }
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        raw_value = str(os.environ.get(name) or "").strip()
+        if raw_value:
+            roots.add(Path(raw_value).expanduser().resolve())
+    return tuple(sorted(roots, key=str))
+
+
+def _sanitized_benchmark_path(context: WorkerContext) -> str:
+    safe_directories: list[str] = []
+    seen: set[str] = set()
+    unsafe_roots = _benchmark_unsafe_path_roots(context)
+    for raw_entry in (os.environ.get("PATH") or os.defpath).split(os.pathsep):
+        if not raw_entry:
+            continue
+        entry = Path(raw_entry).expanduser()
+        if not entry.is_absolute():
+            continue
+        try:
+            resolved = entry.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not resolved.is_dir() or any(
+            resolved.is_relative_to(root) for root in unsafe_roots
+        ):
+            continue
+        resolved_text = str(resolved)
+        if resolved_text not in seen:
+            seen.add(resolved_text)
+            safe_directories.append(resolved_text)
+    if not safe_directories:
+        raise ModelExecutionPolicyViolation(
+            "Benchmark PATH contains no safe external executable directories"
+        )
+    return os.pathsep.join(safe_directories)
+
+
+def _resolve_benchmark_codex_executable(
+    context: WorkerContext,
+    *,
+    search_path: str,
+) -> Path:
+    located = shutil.which("codex", path=search_path)
+    if not located:
+        raise ModelExecutionPolicyViolation(
+            "Live sprint benchmark requires the Codex CLI on a safe PATH"
+        )
+    try:
+        executable = Path(located).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ModelExecutionPolicyViolation(
+            "Benchmark Codex executable could not be resolved safely"
+        ) from exc
+    if (
+        not executable.is_file()
+        or not os.access(executable, os.X_OK)
+        or any(
+            executable.is_relative_to(root)
+            for root in _benchmark_unsafe_path_roots(context)
+        )
+    ):
+        raise ModelExecutionPolicyViolation(
+            "Benchmark Codex executable is not a safe external executable"
+        )
+    return executable
+
+
+def _initialize_private_telemetry(context: WorkerContext) -> Path:
+    telemetry_dir = _private_telemetry_dir(context)
+    if telemetry_dir.exists() or telemetry_dir.is_symlink():
+        raise _WorkerCleanupFailure(
+            "Benchmark private telemetry directory already exists"
+        )
+    try:
+        telemetry_dir.mkdir(parents=True, mode=0o700)
+        telemetry_dir.chmod(0o700)
+    except OSError as exc:
+        raise _WorkerCleanupFailure(
+            "Failed to initialize benchmark private telemetry directory"
+        ) from exc
+    return telemetry_dir
+
+
+def _load_private_telemetry(
+    context: WorkerContext,
+) -> tuple[dict[str, Any], ...]:
+    return load_telemetry_directory(_private_telemetry_dir(context))
+
+
+def _consume_private_telemetry(
+    context: WorkerContext,
+) -> tuple[dict[str, Any], ...]:
+    telemetry_dir = _private_telemetry_dir(context)
+    records = load_telemetry_directory(telemetry_dir)
+    if not telemetry_dir.exists() and not telemetry_dir.is_symlink():
+        return records
+    try:
+        shutil.rmtree(telemetry_dir)
+    except OSError as exc:
+        raise _WorkerCleanupFailure(
+            "Failed to remove benchmark private telemetry shards"
+        ) from exc
+    if telemetry_dir.exists() or telemetry_dir.is_symlink():
+        raise _WorkerCleanupFailure(
+            "Benchmark private telemetry shards remain after cleanup"
+        )
+    return records
 
 
 def _build_execution_policy(
@@ -335,13 +505,21 @@ def _build_execution_policy(
             "Live sprint benchmark requires provider-only authentication through "
             "CODEX_API_KEY or OPENAI_API_KEY; operator Codex home credentials are isolated."
         )
+    safe_path = _sanitized_benchmark_path(context)
+    codex_executable = _resolve_benchmark_codex_executable(
+        context,
+        search_path=safe_path,
+    )
     return ModelExecutionPolicy.for_benchmark(
         allowed_workspace_root=context.workspace_root,
         invocation_budget=budget,
         call_timeout_seconds=context.call_timeout_seconds,
+        codex_executable=codex_executable,
+        telemetry_output_dir=_private_telemetry_dir(context),
         shell_environment={
             "LANG": "C",
             "LC_ALL": "C",
+            "PATH": safe_path,
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": str(_source_import_root()),
             "PYTHONUNBUFFERED": "1",
@@ -437,14 +615,63 @@ def _merge_active_process_entries(
     return list(merged.values())
 
 
+def _merge_launched_process_entries(
+    *snapshots: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Retain only unresolved provider groups for parent cleanup."""
+
+    merged: dict[tuple[int, int | None], dict[str, Any]] = {}
+    for snapshot in snapshots:
+        for raw_entry in (snapshot.get("entries") or []):
+            if not isinstance(raw_entry, dict):
+                continue
+            entry = dict(raw_entry)
+            if str(entry.get("state") or "").strip() not in {"reserved", "running"}:
+                continue
+            key = _provider_entry_key(entry)
+            if key[0] > 1:
+                merged[key] = entry
+    return list(merged.values())
+
+
 def _journal_non_negative_int(value: Any, *, default: int = 0) -> int:
-    if value is None or isinstance(value, bool):
+    if not isinstance(value, int) or isinstance(value, bool):
         return default
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError):
-        return default
-    return normalized if normalized >= 0 else default
+    return value if value >= 0 else default
+
+
+def _journal_optional_non_negative_int(value: Any) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return value if value >= 0 else None
+
+
+def _journal_context_matches(
+    entry: Mapping[str, Any],
+    record: Mapping[str, Any],
+) -> bool:
+    if record.get("prompt_context_representation_conflict") is True:
+        return False
+    for field_name in _JOURNAL_CONTEXT_STRING_FIELDS:
+        if str(entry.get(field_name) or "").strip() != str(
+            record.get(field_name) or ""
+        ).strip():
+            return False
+    for field_name in _JOURNAL_CONTEXT_INTEGER_FIELDS:
+        if _journal_optional_non_negative_int(
+            entry.get(field_name)
+        ) != _journal_optional_non_negative_int(record.get(field_name)):
+            return False
+    journal_enabled = entry.get("prompt_context_enabled")
+    telemetry_enabled = record.get("prompt_context_enabled")
+    if journal_enabled is not telemetry_enabled:
+        return False
+    expected_status = (
+        "completed"
+        if str(entry.get("state") or "").strip() == "completed"
+        else "failed"
+    )
+    return str(record.get("status") or "").strip() == expected_status
 
 
 def _summarize_call_journal(
@@ -467,7 +694,10 @@ def _summarize_call_journal(
 
     reserved_count = _journal_non_negative_int(snapshot.get("reserved_count"))
     entry_count = len(raw_entry_list)
-    telemetry_record_list = tuple(telemetry_records)
+    telemetry_record_list = tuple(
+        sanitize_invocation_record(record)
+        for record in telemetry_records
+    )
     observed_count = len(telemetry_record_list)
     journal_invocation_ids = [
         str(entry.get("invocation_id") or "").strip()
@@ -514,6 +744,37 @@ def _summarize_call_journal(
         and telemetry_duplicate_id_count == 0
         and telemetry_unmatched_id_count == 0
     )
+    journal_entries_by_invocation_id = {
+        str(entry.get("invocation_id") or "").strip(): entry
+        for entry in entries
+        if str(entry.get("invocation_id") or "").strip()
+    }
+    context_mismatch_count = 0
+    verified_target_invocation_ids: list[str] = []
+    for record in telemetry_record_list:
+        invocation_id = str(record.get("invocation_id") or "").strip()
+        entry = journal_entries_by_invocation_id.get(invocation_id)
+        if entry is None:
+            continue
+        if not _journal_context_matches(entry, record):
+            context_mismatch_count += 1
+            continue
+        if is_v2_target_projection(
+            entry,
+            state_field="state",
+        ) and is_v2_target_projection(
+            record,
+            state_field="status",
+        ):
+            verified_target_invocation_ids.append(invocation_id)
+    journal_schema_version = _journal_non_negative_int(
+        snapshot.get("schema_version")
+    )
+    context_reconciled = (
+        journal_schema_version == 3
+        and identity_reconciled
+        and context_mismatch_count == 0
+    )
     unaccounted_count = max(reserved_count - entry_count, 0)
     overaccounted_count = max(entry_count - reserved_count, 0)
     return {
@@ -536,6 +797,12 @@ def _summarize_call_journal(
             else 0.0
         ),
         "identity_reconciled": identity_reconciled,
+        "context_reconciled": context_reconciled,
+        "journal_telemetry_context_mismatch_count": context_mismatch_count,
+        "verified_target_projection_count": len(verified_target_invocation_ids),
+        "verified_target_invocation_ids_sha256": invocation_identity_digest(
+            verified_target_invocation_ids
+        ),
         "journal_invocation_ids_sha256": invocation_identity_digest(
             journal_invocation_ids
         ),
@@ -604,7 +871,10 @@ def _finalize_call_journal_after_cleanup(
         len(entries),
     )
     if changed:
-        normalized["schema_version"] = 2
+        normalized["schema_version"] = _journal_non_negative_int(
+            snapshot.get("schema_version"),
+            default=1,
+        )
         try:
             _write_private_json(journal_path, normalized)
         except (OSError, TypeError, ValueError) as exc:
@@ -1070,7 +1340,7 @@ def _run_live_sprint_arm_in_child(context: WorkerContext) -> WorkerOutcome:
         budget_snapshot=budget_snapshot,
     )
     error_category = forced_error_category or classified_error
-    telemetry_records = load_workspace_telemetry(context.workspace_root)
+    telemetry_records = _load_private_telemetry(context)
     duration_ms = max(int((time.monotonic() - started_monotonic) * 1000), 0)
     worker_log.append(
         "worker_finished",
@@ -1158,7 +1428,10 @@ def _read_call_journal_strict(
     if not isinstance(payload, dict):
         raise _WorkerCleanupFailure("Benchmark call journal must be a JSON object")
     snapshot = dict(payload)
-    if _journal_non_negative_int(snapshot.get("schema_version")) not in {1, 2}:
+    journal_schema_version = _journal_non_negative_int(
+        snapshot.get("schema_version")
+    )
+    if journal_schema_version not in {1, 2, 3}:
         raise _WorkerCleanupFailure("Benchmark call journal schema is invalid")
     entries = snapshot.get("entries")
     if not isinstance(entries, list) or not all(
@@ -1209,6 +1482,54 @@ def _read_call_journal_strict(
                 raise _WorkerCleanupFailure(
                     "Running benchmark journal entry has an invalid process id"
                 )
+            process_group_id = entry.get("process_group_id")
+            if (
+                not isinstance(process_group_id, int)
+                or isinstance(process_group_id, bool)
+                or process_group_id <= 1
+                or process_group_id != pid
+            ):
+                raise _WorkerCleanupFailure(
+                    "Running benchmark journal entry has an invalid process group id"
+                )
+        elif entry.get("process_group_id") is not None:
+            process_group_id = entry.get("process_group_id")
+            if (
+                not isinstance(process_group_id, int)
+                or isinstance(process_group_id, bool)
+                or process_group_id <= 1
+            ):
+                raise _WorkerCleanupFailure(
+                    "Benchmark journal entry has an invalid process group id"
+                )
+        if journal_schema_version == 3:
+            if not all(field_name in entry for field_name in _JOURNAL_CONTEXT_FIELDS):
+                raise _WorkerCleanupFailure(
+                    "Benchmark call journal context fields are incomplete"
+                )
+            prompt_context_enabled = entry.get("prompt_context_enabled")
+            if prompt_context_enabled is not None and not isinstance(
+                prompt_context_enabled,
+                bool,
+            ):
+                raise _WorkerCleanupFailure(
+                    "Benchmark call journal prompt context flag is invalid"
+                )
+            for field_name in _JOURNAL_CONTEXT_INTEGER_FIELDS:
+                raw_value = entry.get(field_name)
+                if raw_value is not None and (
+                    isinstance(raw_value, bool)
+                    or not isinstance(raw_value, int)
+                    or raw_value < 0
+                ):
+                    raise _WorkerCleanupFailure(
+                        "Benchmark call journal context count is invalid"
+                    )
+            for field_name in _JOURNAL_CONTEXT_STRING_FIELDS:
+                if not isinstance(entry.get(field_name), str):
+                    raise _WorkerCleanupFailure(
+                        "Benchmark call journal context identity is invalid"
+                    )
     return snapshot
 
 
@@ -1330,9 +1651,8 @@ def _worker_outcome_payload(outcome: WorkerOutcome) -> dict[str, Any]:
         "status": outcome.status,
         "sprint": outcome.sprint.to_dict(),
         "quality": outcome.quality.to_dict(),
-        "telemetry_records": [
-            dict(record) for record in outcome.telemetry_records
-        ],
+        # The parent reloads telemetry from its private directory after cleanup.
+        "telemetry_records": [],
         "invocation_attempts": sanitize_invocation_attempts(
             outcome.invocation_attempts
         ),
@@ -1395,11 +1715,6 @@ def _worker_outcome_from_payload(payload: Mapping[str, Any]) -> WorkerOutcome:
             if str(note).strip()
         ),
     )
-    telemetry_records = tuple(
-        dict(record)
-        for record in (payload.get("telemetry_records") or [])
-        if isinstance(record, dict)
-    )
     invocation_attempts = sanitize_invocation_attempts(
         payload.get("invocation_attempts")
     )
@@ -1407,7 +1722,9 @@ def _worker_outcome_from_payload(payload: Mapping[str, Any]) -> WorkerOutcome:
         status=status,  # type: ignore[arg-type]
         sprint=sprint,
         quality=quality,
-        telemetry_records=telemetry_records,
+        # Child result files are not an evidence channel. The parent replaces
+        # this with records read from its private recorder directory.
+        telemetry_records=(),
         invocation_attempts=invocation_attempts,
         started_at=str(payload.get("started_at") or ""),
         ended_at=str(payload.get("ended_at") or ""),
@@ -1418,13 +1735,13 @@ def _worker_outcome_from_payload(payload: Mapping[str, Any]) -> WorkerOutcome:
     )
 
 
-def _child_environment() -> dict[str, str]:
+def _child_environment(context: WorkerContext) -> dict[str, str]:
     environment = {
         key: value
         for key in _CHILD_ENVIRONMENT_KEYS
         if (value := os.environ.get(key)) is not None
     }
-    environment["PATH"] = environment.get("PATH") or os.defpath
+    environment["PATH"] = _sanitized_benchmark_path(context)
     environment["PYTHONPATH"] = str(_source_import_root())
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
@@ -1545,7 +1862,7 @@ def _terminate_worker_child(
         return snapshot
 
     initial_snapshot = read_journal("initial_journal")
-    provider_entries = _merge_active_process_entries(initial_snapshot)
+    provider_entries = _merge_launched_process_entries(initial_snapshot)
     provider_count = _signal_provider_entries(
         provider_entries,
         signal.SIGTERM,
@@ -1574,7 +1891,7 @@ def _terminate_worker_child(
     # read and delivery of SIGTERM. This read is required regardless of whether
     # the worker exited during its grace window.
     pre_kill_snapshot = read_journal("pre_kill_journal")
-    provider_entries = _merge_active_process_entries(
+    provider_entries = _merge_launched_process_entries(
         initial_snapshot,
         pre_kill_snapshot,
     )
@@ -1607,7 +1924,7 @@ def _terminate_worker_child(
     # another call. A final read closes the remaining write/read race before
     # liveness verification.
     final_snapshot = read_journal("final_journal")
-    provider_entries = _merge_active_process_entries(
+    provider_entries = _merge_launched_process_entries(
         initial_snapshot,
         pre_kill_snapshot,
         final_snapshot,
@@ -1654,12 +1971,12 @@ def _partial_outcome(
     started_monotonic: float,
     stop_reason: str,
     error_category: str,
+    telemetry_records: tuple[Mapping[str, Any], ...],
 ) -> WorkerOutcome:
     sprint_state = _latest_sprint_state(context.workspace_root)
     sprint = _sprint_evidence(sprint_state)
     quality = _quality_evidence(sprint_state, sprint)
     duration_ms = max(int((time.monotonic() - started_monotonic) * 1000), 0)
-    telemetry_records = load_workspace_telemetry(context.workspace_root)
     journal_snapshot = _read_call_journal_strict(
         context.run_output_dir.expanduser().resolve() / "call_journal.json",
         required=True,
@@ -1711,11 +2028,12 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
     journal_path = run_output_dir / "call_journal.json"
     with contextlib.suppress(FileNotFoundError):
         journal_path.unlink()
+    _initialize_private_telemetry(context)
     try:
         _write_private_json(
             journal_path,
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "max_invocations": context.max_invocations,
                 "reserved_count": 0,
                 "remaining": context.max_invocations,
@@ -1724,13 +2042,20 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
             },
         )
     except (OSError, TypeError, ValueError) as exc:
+        _consume_private_telemetry(context)
         raise _WorkerCleanupFailure(
             "Failed to initialize benchmark call journal"
         ) from exc
-    _write_private_json(
-        manifest_path,
-        _manifest_payload(context, result_path=result_path),
-    )
+    try:
+        _write_private_json(
+            manifest_path,
+            _manifest_payload(context, result_path=result_path),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        _consume_private_telemetry(context)
+        raise _WorkerCleanupFailure(
+            "Failed to initialize benchmark worker manifest"
+        ) from exc
     with contextlib.suppress(FileNotFoundError):
         result_path.unlink()
     command = (
@@ -1747,7 +2072,7 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=_child_environment(),
+            env=_child_environment(context),
             start_new_session=True,
         )
     except Exception as exc:
@@ -1761,6 +2086,7 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
             started_monotonic=started_monotonic,
             stop_reason="worker_child_launch_failed",
             error_category=type(exc).__name__,
+            telemetry_records=_consume_private_telemetry(context),
         )
 
     timed_out = False
@@ -1790,6 +2116,23 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
             stop_reason="worker_exit_cleanup",
         )
 
+    try:
+        quarantined_entries = quarantine_unsafe_workspace_entries(
+            context.workspace_root,
+        )
+    except (ModelExecutionPolicyViolation, OSError, ValueError) as exc:
+        raise _WorkerCleanupFailure(
+            "Benchmark workspace integrity could not be verified after child cleanup"
+        ) from exc
+    if quarantined_entries:
+        worker_log.append(
+            "unsafe_workspace_entries_quarantined_by_parent",
+            entry_count=len(quarantined_entries),
+        )
+        raise _WorkerCleanupFailure(
+            "Benchmark child left unsafe filesystem entries after provider cleanup"
+        )
+
     if timed_out:
         with contextlib.suppress(FileNotFoundError):
             result_path.unlink()
@@ -1800,6 +2143,7 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
             started_monotonic=started_monotonic,
             stop_reason="run_timeout_exceeded",
             error_category="run_timeout",
+            telemetry_records=_consume_private_telemetry(context),
         )
         worker_log.append(
             "worker_parent_finished",
@@ -1811,6 +2155,7 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
     result_payload = _read_json_mapping(result_path)
     with contextlib.suppress(FileNotFoundError):
         result_path.unlink()
+    telemetry_records = _consume_private_telemetry(context)
     if process.returncode != 0 or not result_payload:
         outcome = _partial_outcome(
             context,
@@ -1819,10 +2164,14 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
             started_monotonic=started_monotonic,
             stop_reason="worker_child_failed",
             error_category="worker_child_failed",
+            telemetry_records=telemetry_records,
         )
     else:
         try:
-            outcome = _worker_outcome_from_payload(result_payload)
+            outcome = replace(
+                _worker_outcome_from_payload(result_payload),
+                telemetry_records=telemetry_records,
+            )
         except (TypeError, ValueError):
             outcome = _partial_outcome(
                 context,
@@ -1831,6 +2180,7 @@ def run_live_sprint_arm(context: WorkerContext) -> WorkerOutcome:
                 started_monotonic=started_monotonic,
                 stop_reason="worker_result_invalid",
                 error_category="worker_result_invalid",
+                telemetry_records=telemetry_records,
             )
 
     parent_duration_ms = max(

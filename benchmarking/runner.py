@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from teams_runtime.benchmarking.metrics import (
-    load_workspace_telemetry,
     reduce_telemetry,
     sanitize_invocation_record,
 )
@@ -225,9 +224,28 @@ def _journal_coverage_available(
         int(invocation_attempts[field_name])
         for field_name in _INVOCATION_ATTEMPT_STATE_COUNTS
     )
+    context_reconciled = (
+        journal_schema < 3
+        or (
+            {
+                "journal_telemetry_context_mismatch_count",
+                "verified_target_projection_count",
+                "verified_target_invocation_ids_sha256",
+            }.issubset(invocation_attempts)
+            and invocation_attempts.get("context_reconciled") is True
+            and int(
+                invocation_attempts.get(
+                    "journal_telemetry_context_mismatch_count"
+                )
+                or 0
+            )
+            == 0
+        )
+    )
     return (
         summary_schema == 1
-        and journal_schema in {1, 2}
+        and journal_schema in {1, 2, 3}
+        and context_reconciled
         and maximum == expected_max_invocations
         and reserved <= maximum
         and int(invocation_attempts["remaining_budget"])
@@ -419,10 +437,9 @@ def _run_arm(
             status="timeout",
             stop_reason="run_timeout_exceeded",
         )
-    raw_records = (
-        tuple(sanitize_invocation_record(record) for record in outcome.telemetry_records)
-        if outcome.telemetry_records
-        else load_workspace_telemetry(scenario.root)
+    raw_records = tuple(
+        sanitize_invocation_record(record)
+        for record in outcome.telemetry_records
     )
     invocation_attempts = sanitize_invocation_attempts(
         outcome.invocation_attempts
@@ -537,6 +554,40 @@ def _run_arm(
         raw_records,
         expected_invocation_count=expected_invocation_count,
         coverage_available=coverage_available,
+        verified_target_projection_count=(
+            int(
+                invocation_attempts.get("verified_target_projection_count")
+                or 0
+            )
+            if int(invocation_attempts.get("journal_schema_version") or 0) == 3
+            and invocation_attempts.get("context_reconciled") is True
+            and int(
+                invocation_attempts.get(
+                    "journal_telemetry_context_mismatch_count"
+                )
+                or 0
+            )
+            == 0
+            else 0
+        ),
+        verified_target_invocation_ids_sha256=(
+            str(
+                invocation_attempts.get(
+                    "verified_target_invocation_ids_sha256"
+                )
+                or ""
+            )
+            if int(invocation_attempts.get("journal_schema_version") or 0) == 3
+            and invocation_attempts.get("context_reconciled") is True
+            and int(
+                invocation_attempts.get(
+                    "journal_telemetry_context_mismatch_count"
+                )
+                or 0
+            )
+            == 0
+            else ""
+        ),
     )
     quality = _merge_quality(outcome, scenario)
     result = ArmResult(

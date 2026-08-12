@@ -4,6 +4,7 @@ import io
 import json
 import math
 import os
+import stat
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -178,6 +179,46 @@ class ModelTelemetryTests(unittest.TestCase):
         self.assertEqual(usage.tool_calls, 3)
         self.assertEqual(usage.source, "unavailable")
 
+    def test_usage_parsers_ignore_non_finite_counts(self):
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(source="model_usage", value=value):
+                usage = ModelUsage.from_values(
+                    input_tokens=value,
+                    cached_input_tokens=value,
+                    output_tokens=value,
+                    reasoning_output_tokens=value,
+                    total_tokens=value,
+                    tool_calls=value,
+                )
+                self.assertEqual(usage, ModelUsage())
+
+        codex_event = json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": math.inf,
+                    "output_tokens": math.nan,
+                },
+            }
+        )
+        _session_id, codex_usage, _final_message = parse_codex_jsonl(codex_event)
+        self.assertEqual(codex_usage, ModelUsage())
+
+        gemini_usage = parse_gemini_usage(
+            {
+                "models": {
+                    "model-a": {
+                        "tokens": {
+                            "prompt": math.inf,
+                            "candidates": math.nan,
+                        }
+                    }
+                },
+                "tools": {"totalCalls": -math.inf},
+            }
+        )
+        self.assertEqual(gemini_usage, ModelUsage())
+
     def test_cost_calculation_separates_cached_input(self):
         usage = ModelUsage.from_values(input_tokens=1_000_000, cached_input_tokens=400_000, output_tokens=200_000)
         rate = ModelRateCard(
@@ -303,6 +344,56 @@ class ModelTelemetryTests(unittest.TestCase):
             self.assertEqual(record["rate_card"]["input_per_million_usd"], 2.0)
             self.assertEqual(shards[0].parent.name, now.date().isoformat())
             self.assertTrue(shards[0].name.endswith(f".{os.getpid()}.jsonl"))
+
+    def test_recorder_custom_output_is_external_private_daily_shard(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            paths = RuntimePaths.from_root(workspace)
+            output_dir = root / "private-telemetry"
+            recorder = ModelTelemetryRecorder(
+                paths,
+                "benchmark:planner",
+                output_dir=output_dir,
+            )
+            now = runtime_now()
+            context = InvocationSequence(
+                runtime_identity="benchmark:planner",
+                role="planner",
+                purpose="role_task",
+            ).next()
+
+            recorder.record(
+                context,
+                provider="codex_cli",
+                model="gpt-5.5",
+                reasoning="high",
+                cli_version="codex-cli test",
+                started_at=now,
+                ended_at=now,
+                duration_ms=1,
+                session_id_before=None,
+                session_id_after=None,
+                status="completed",
+                exit_code=0,
+                error_category="",
+                prompt_chars=1,
+                output_chars=1,
+            )
+
+            expected_day_dir = output_dir / now.date().isoformat()
+            expected_shard = expected_day_dir / f"benchmark_planner.{os.getpid()}.jsonl"
+            self.assertEqual(recorder.output_dir, output_dir.resolve())
+            self.assertTrue(expected_shard.is_file())
+            self.assertFalse(paths.model_invocations_dir.exists())
+            self.assertEqual(
+                json.loads(expected_shard.read_text(encoding="utf-8"))["invocation_id"],
+                context.invocation_id,
+            )
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(expected_day_dir.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(expected_shard.stat().st_mode), 0o600)
 
     def test_disabled_recorder_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

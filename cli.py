@@ -431,7 +431,10 @@ def cmd_benchmark_sprint_ab(
     allow_dirty_source: bool = False,
     as_json: bool = False,
 ) -> int:
-    from teams_runtime.benchmarking.models import BenchmarkOptions
+    from teams_runtime.benchmarking.models import (
+        BenchmarkOptions,
+        BenchmarkWorkerSafetyError,
+    )
     from teams_runtime.benchmarking.runner import (
         BenchmarkPreflightError,
         run_sprint_ab_benchmark,
@@ -476,6 +479,9 @@ def cmd_benchmark_sprint_ab(
             options,
             worker=run_live_sprint_arm,
         )
+    except BenchmarkWorkerSafetyError as exc:
+        print(f"Benchmark safety abort: {exc}")
+        return 2
     except (BenchmarkPreflightError, FileNotFoundError, OSError, ValueError) as exc:
         print(f"Benchmark preflight failed: {exc}")
         return 2

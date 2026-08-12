@@ -292,7 +292,16 @@ class RoleAgentRuntime:
         self._session_managers: dict[str, RoleSessionManager] = {
             self.sprint_id: self.session_manager,
         }
-        self.telemetry_recorder = ModelTelemetryRecorder(paths, self.runtime_identity, telemetry_config)
+        self.telemetry_recorder = ModelTelemetryRecorder(
+            paths,
+            self.runtime_identity,
+            telemetry_config,
+            output_dir=(
+                execution_policy.telemetry_output_dir
+                if execution_policy is not None
+                else None
+            ),
+        )
         self.prompt_context_config = prompt_context_config or PromptContextRuntimeConfig()
         self.codex_runner = CodexRunner(
             runtime_config,
@@ -301,7 +310,12 @@ class RoleAgentRuntime:
             execution_policy=execution_policy,
         )
         self.runtime_config = runtime_config
-        self._run_lock = threading.Lock()
+        self._run_lock = (
+            execution_policy.execution_lock
+            if execution_policy is not None
+            and execution_policy.execution_lock is not None
+            else threading.Lock()
+        )
 
     def _project_request_for_prompt(
         self,

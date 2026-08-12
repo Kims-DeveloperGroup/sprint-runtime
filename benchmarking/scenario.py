@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -20,10 +23,20 @@ SCENARIO_ID = "sum-positive-full-sprint-v2"
 DEFAULT_HISTORY_SEED_COUNT = 48
 BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS = 8
 BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS = 16
+BENCHMARK_TARGET_TOTAL_EVENTS = DEFAULT_HISTORY_SEED_COUNT + 2
+BENCHMARK_TARGET_INCLUDED_EVENTS = BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS
+BENCHMARK_TARGET_OMITTED_EVENTS = (
+    BENCHMARK_TARGET_TOTAL_EVENTS - BENCHMARK_TARGET_INCLUDED_EVENTS
+)
+BENCHMARK_TARGET_ROLE = "research"
+BENCHMARK_TARGET_PURPOSE = "research_decision"
+BENCHMARK_TARGET_WORKFLOW_STEP = "research_initial"
 SCENARIO_MILESTONE = (
     "Fix sum_positive(values) so it returns the sum of positive values only. "
-    "Preserve the public function, do not alter benchmark tests or scenario metadata, "
-    "run the unittest suite, and commit the completed change."
+    "Use exactly `return sum(value for value in values if value > 0)` as its only "
+    "non-docstring statement; do not add imports, decorators, annotations, defaults, "
+    "or other definitions. Preserve the public function, do not alter benchmark tests "
+    "or scenario metadata, run the unittest suite, and commit the completed change."
 )
 PROTECTED_PATHS = (
     ".benchmark/scenario.json",
@@ -36,6 +49,32 @@ _RATE_FIELDS = (
     "cached_input_per_million_usd",
     "output_per_million_usd",
     "per_invocation_usd",
+)
+_MAX_ORACLE_SOURCE_BYTES = 32 * 1024
+_MAX_PROTECTED_FILE_BYTES = 1024 * 1024
+_GIT_COMMAND_TIMEOUT_SECONDS = 10.0
+_EMPTY_FILE_SHA256 = hashlib.sha256(b"").hexdigest()
+_GIT_CONFIG_OVERRIDES = (
+    "-c",
+    f"core.hooksPath={os.devnull}",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    f"core.attributesFile={os.devnull}",
+    "-c",
+    "diff.external=",
+    "-c",
+    "core.pager=",
+    "-c",
+    "pager.status=false",
+    "-c",
+    "pager.remote=false",
+    "-c",
+    "interactive.diffFilter=",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "gc.auto=0",
 )
 
 
@@ -60,6 +99,7 @@ class ScenarioWorkspace:
     comparable_config_hash: str
     history_hash: str
     history_seed: tuple[Mapping[str, Any], ...]
+    git_executable: Path | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -81,12 +121,162 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(64 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _read_regular_file_at(
+    root: Path,
+    relative_path: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    relative = Path(relative_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError(f"Unsafe relative path: {relative_path!r}")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY
+    file_flags = os.O_RDONLY | os.O_NONBLOCK
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+        file_flags |= os.O_NOFOLLOW
+
+    directory_fd = os.open(root, directory_flags)
+    try:
+        for component in relative.parts[:-1]:
+            next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(relative.parts[-1], file_flags, dir_fd=directory_fd)
+        try:
+            metadata = os.fstat(file_fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+                raise ValueError(f"Unsafe file type or size: {relative_path}")
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(file_fd, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
+            if len(payload) > max_bytes:
+                raise ValueError(f"File exceeds size limit: {relative_path}")
+            return payload
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _protected_file_hash(root: Path, relative_path: str) -> str:
+    payload = _read_regular_file_at(
+        root,
+        relative_path,
+        max_bytes=_MAX_PROTECTED_FILE_BYTES,
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _is_string_literal(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
+
+
+def _without_optional_docstring(statements: list[ast.stmt]) -> list[ast.stmt]:
+    if statements and _is_string_literal(statements[0]):
+        return statements[1:]
+    return statements
+
+
+def _is_name(node: ast.AST, identifier: str, context: type[ast.expr_context]) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == identifier
+        and isinstance(node.ctx, context)
+    )
+
+
+def _is_constrained_sum_positive(module: ast.Module) -> bool:
+    module_body = _without_optional_docstring(module.body)
+    if len(module_body) != 1 or not isinstance(module_body[0], ast.FunctionDef):
+        return False
+    function = module_body[0]
+    arguments = function.args
+    if (
+        function.name != "sum_positive"
+        or function.decorator_list
+        or function.returns is not None
+        or getattr(function, "type_params", ())
+        or arguments.posonlyargs
+        or len(arguments.args) != 1
+        or arguments.args[0].arg != "values"
+        or arguments.args[0].annotation is not None
+        or arguments.vararg is not None
+        or arguments.kwonlyargs
+        or arguments.kw_defaults
+        or arguments.kwarg is not None
+        or arguments.defaults
+    ):
+        return False
+    function_body = _without_optional_docstring(function.body)
+    if len(function_body) != 1 or not isinstance(function_body[0], ast.Return):
+        return False
+    call = function_body[0].value
+    if (
+        not isinstance(call, ast.Call)
+        or not _is_name(call.func, "sum", ast.Load)
+        or len(call.args) != 1
+        or call.keywords
+        or not isinstance(call.args[0], ast.GeneratorExp)
+    ):
+        return False
+    generator = call.args[0]
+    if (
+        not _is_name(generator.elt, "value", ast.Load)
+        or len(generator.generators) != 1
+    ):
+        return False
+    comprehension = generator.generators[0]
+    if (
+        comprehension.is_async
+        or not _is_name(comprehension.target, "value", ast.Store)
+        or not _is_name(comprehension.iter, "values", ast.Load)
+        or len(comprehension.ifs) != 1
+    ):
+        return False
+    predicate = comprehension.ifs[0]
+    return (
+        isinstance(predicate, ast.Compare)
+        and _is_name(predicate.left, "value", ast.Load)
+        and len(predicate.ops) == 1
+        and isinstance(predicate.ops[0], ast.Gt)
+        and len(predicate.comparators) == 1
+        and isinstance(predicate.comparators[0], ast.Constant)
+        and type(predicate.comparators[0].value) is int
+        and predicate.comparators[0].value == 0
+    )
+
+
+def _sum_positive_ast_oracle(root: Path) -> bool:
+    try:
+        payload = _read_regular_file_at(
+            root,
+            "benchmark_app.py",
+            max_bytes=_MAX_ORACLE_SOURCE_BYTES,
+        )
+        source = payload.decode("utf-8")
+        module = ast.parse(source, filename="benchmark_app.py", mode="exec")
+    except (MemoryError, OSError, RecursionError, SyntaxError, UnicodeError, ValueError):
+        return False
+    return _is_constrained_sum_positive(module)
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -289,39 +479,145 @@ def _benchmark_config(
     return canonical_hash(payload), canonical_hash(comparable_payload)
 
 
-def _run_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        ("git", *args),
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            "HOME": os.environ.get("HOME", ""),
-            "PATH": os.environ.get("PATH", ""),
-            "LC_ALL": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-        },
-    )
+def _resolve_git_executable(root: Path) -> Path:
+    candidate = shutil.which("git", path=os.defpath)
+    if not candidate:
+        raise ScenarioError("Git executable is unavailable")
+    try:
+        resolved = Path(candidate).expanduser().resolve(strict=True)
+        metadata = os.stat(resolved, follow_symlinks=False)
+    except OSError as exc:
+        raise ScenarioError("Git executable cannot be resolved safely") from exc
+    if (
+        not resolved.is_absolute()
+        or not stat.S_ISREG(metadata.st_mode)
+        or not os.access(resolved, os.X_OK)
+        or resolved.is_relative_to(root)
+    ):
+        raise ScenarioError("Git executable is not a safe external executable")
+    return resolved
+
+
+def _run_git(
+    root: Path,
+    *args: str,
+    git_executable: Path,
+    attributes_source: str | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        metadata = os.stat(git_executable, follow_symlinks=False)
+    except OSError as exc:
+        raise ScenarioError("Pinned Git executable is unavailable") from exc
+    if (
+        not git_executable.is_absolute()
+        or not stat.S_ISREG(metadata.st_mode)
+        or not os.access(git_executable, os.X_OK)
+        or git_executable.is_relative_to(root)
+    ):
+        raise ScenarioError("Pinned Git executable is unsafe")
+    environment = {
+        "HOME": os.devnull,
+        "PATH": os.defpath,
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_EXTERNAL_DIFF": "",
+        "GIT_PAGER": "",
+        "PAGER": "",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_PROTOCOL_FROM_USER": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    if attributes_source is not None:
+        environment["GIT_ATTR_SOURCE"] = attributes_source
+    try:
+        completed = subprocess.run(
+            (str(git_executable), "--no-pager", *_GIT_CONFIG_OVERRIDES, *args),
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ScenarioError("Pinned Git command timed out") from exc
     if check and completed.returncode:
         raise ScenarioError(f"Git command failed: git {' '.join(args)}")
     return completed
 
 
-def _initialize_git(root: Path) -> tuple[str, int]:
-    _run_git(root, "init", "-b", "benchmark")
-    _run_git(root, "config", "--local", "user.name", "teams-runtime-benchmark")
-    _run_git(root, "config", "--local", "user.email", "benchmark@invalid.local")
-    _run_git(root, "config", "--local", "commit.gpgsign", "false")
-    _run_git(root, "config", "--local", "tag.gpgsign", "false")
-    _run_git(root, "config", "--local", "core.hooksPath", ".git/benchmark-disabled-hooks")
+def _initialize_git(root: Path, *, git_executable: Path) -> tuple[str, int]:
+    _run_git(root, "init", "-b", "benchmark", git_executable=git_executable)
+    (root / ".git" / "info" / "attributes").write_bytes(b"")
+    _run_git(
+        root,
+        "config",
+        "--local",
+        "user.name",
+        "teams-runtime-benchmark",
+        git_executable=git_executable,
+    )
+    _run_git(
+        root,
+        "config",
+        "--local",
+        "user.email",
+        "benchmark@invalid.local",
+        git_executable=git_executable,
+    )
+    _run_git(
+        root,
+        "config",
+        "--local",
+        "commit.gpgsign",
+        "false",
+        git_executable=git_executable,
+    )
+    _run_git(
+        root,
+        "config",
+        "--local",
+        "tag.gpgsign",
+        "false",
+        git_executable=git_executable,
+    )
+    _run_git(
+        root,
+        "config",
+        "--local",
+        "core.hooksPath",
+        ".git/benchmark-disabled-hooks",
+        git_executable=git_executable,
+    )
     (root / ".git" / "benchmark-disabled-hooks").mkdir(mode=0o700, exist_ok=True)
-    _run_git(root, "add", "--all")
-    _run_git(root, "commit", "-m", "[benchmark] seed defective sum_positive scenario")
-    head = _run_git(root, "rev-parse", "HEAD").stdout.strip()
-    count = int(_run_git(root, "rev-list", "--count", "HEAD").stdout.strip())
-    if _run_git(root, "remote").stdout.strip():
+    _run_git(root, "add", "--all", git_executable=git_executable)
+    _run_git(
+        root,
+        "commit",
+        "-m",
+        "[benchmark] seed defective sum_positive scenario",
+        git_executable=git_executable,
+    )
+    head = _run_git(
+        root,
+        "rev-parse",
+        "HEAD",
+        git_executable=git_executable,
+    ).stdout.strip()
+    count = int(
+        _run_git(
+            root,
+            "rev-list",
+            "--count",
+            "HEAD",
+            git_executable=git_executable,
+        ).stdout.strip()
+    )
+    if _run_git(root, "remote", git_executable=git_executable).stdout.strip():
         raise ScenarioError("Benchmark repository unexpectedly has a Git remote")
     return head, count
 
@@ -351,6 +647,7 @@ def create_scenario_workspace(
     root = workspace_root.expanduser().resolve()
     root.mkdir(parents=True, mode=0o700, exist_ok=False)
     root.chmod(0o700)
+    git_executable = _resolve_git_executable(root)
     scaffold_workspace(root)
     history_seed = build_history_seed()
     scenario_payload = {
@@ -389,6 +686,12 @@ def create_scenario_workspace(
         "BENCHMARK_TASK.md": (
             "# Benchmark Task\n\n"
             f"{SCENARIO_MILESTONE}\n\n"
+            "Accepted implementation shape (comments, whitespace, and the existing "
+            "module/function docstrings are optional):\n\n"
+            "```python\n"
+            "def sum_positive(values):\n"
+            "    return sum(value for value in values if value > 0)\n"
+            "```\n\n"
             "Acceptance command: `python -m unittest discover -s tests`\n"
         ),
         ".gitignore": (
@@ -411,11 +714,14 @@ def create_scenario_workspace(
         settings=settings,
     )
     protected_hashes = {
-        relative_path: file_hash(root / relative_path)
+        relative_path: _protected_file_hash(root, relative_path)
         for relative_path in PROTECTED_PATHS
     }
     _assert_defect_reproduces(root)
-    initial_commit, commit_count = _initialize_git(root)
+    initial_commit, commit_count = _initialize_git(
+        root,
+        git_executable=git_executable,
+    )
     return ScenarioWorkspace(
         root=root,
         initial_commit=initial_commit,
@@ -425,6 +731,7 @@ def create_scenario_workspace(
         comparable_config_hash=comparable_hash,
         history_hash=canonical_hash(history_seed),
         history_seed=history_seed,
+        git_executable=git_executable,
     )
 
 
@@ -433,43 +740,84 @@ def inspect_scenario_workspace(
     *,
     timeout_seconds: float = 30.0,
 ) -> WorkspaceInspection:
+    # Retained for API compatibility; final verification is deliberately non-executing.
+    del timeout_seconds
     root = scenario.root
     notes: list[str] = []
-    try:
-        oracle = subprocess.run(
-            (sys.executable, "-m", "unittest", "discover", "-s", "tests"),
-            cwd=root,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout_seconds,
-            env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(root), "LC_ALL": "C"},
-        )
-        oracle_passed = oracle.returncode == 0
-        if not oracle_passed:
-            notes.append("behavior_oracle_failed")
-    except subprocess.TimeoutExpired:
-        oracle_passed = False
-        notes.append("behavior_oracle_timeout")
+    oracle_passed = _sum_positive_ast_oracle(root)
+    if not oracle_passed:
+        notes.append("behavior_oracle_failed")
 
     protected_unchanged = True
     for relative_path, expected_hash in scenario.protected_hashes.items():
-        path = root / relative_path
-        if not path.is_file() or file_hash(path) != expected_hash:
+        try:
+            observed_hash = _protected_file_hash(root, relative_path)
+        except (OSError, ValueError):
+            observed_hash = ""
+        if observed_hash != expected_hash:
             protected_unchanged = False
             notes.append(f"protected_file_changed:{relative_path}")
 
-    status = _run_git(root, "status", "--porcelain", "--untracked-files=all", check=False)
-    git_clean = status.returncode == 0 and not status.stdout.strip()
+    git_executable = scenario.git_executable
+    if git_executable is None:
+        git_clean = False
+        head_sha = ""
+        commit_created = False
+        no_git_remotes = False
+        notes.append("git_inspection_unavailable")
+    else:
+        try:
+            try:
+                attributes_unchanged = (
+                    _protected_file_hash(root, ".git/info/attributes")
+                    == _EMPTY_FILE_SHA256
+                )
+            except (OSError, ValueError):
+                attributes_unchanged = False
+            if attributes_unchanged:
+                status = _run_git(
+                    root,
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--ignore-submodules=all",
+                    "--no-ahead-behind",
+                    git_executable=git_executable,
+                    attributes_source=scenario.initial_commit,
+                    check=False,
+                )
+                git_clean = status.returncode == 0 and not status.stdout.strip()
+            else:
+                git_clean = False
+                notes.append("git_attributes_changed")
+            head_result = _run_git(
+                root,
+                "rev-parse",
+                "HEAD",
+                git_executable=git_executable,
+                check=False,
+            )
+            head_sha = (
+                head_result.stdout.strip() if head_result.returncode == 0 else ""
+            )
+            commit_created = bool(head_sha and head_sha != scenario.initial_commit)
+            remotes = _run_git(
+                root,
+                "remote",
+                git_executable=git_executable,
+                check=False,
+            )
+            no_git_remotes = remotes.returncode == 0 and not remotes.stdout.strip()
+        except ScenarioError:
+            git_clean = False
+            head_sha = ""
+            commit_created = False
+            no_git_remotes = False
+            notes.append("git_inspection_failed")
     if not git_clean:
         notes.append("git_worktree_not_clean")
-    head_result = _run_git(root, "rev-parse", "HEAD", check=False)
-    head_sha = head_result.stdout.strip() if head_result.returncode == 0 else ""
-    commit_created = bool(head_sha and head_sha != scenario.initial_commit)
     if not commit_created:
         notes.append("task_commit_missing")
-    remotes = _run_git(root, "remote", check=False)
-    no_git_remotes = remotes.returncode == 0 and not remotes.stdout.strip()
     if not no_git_remotes:
         notes.append("git_remote_detected")
     return WorkspaceInspection(
@@ -486,6 +834,12 @@ def inspect_scenario_workspace(
 __all__ = [
     "BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS",
     "BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS",
+    "BENCHMARK_TARGET_INCLUDED_EVENTS",
+    "BENCHMARK_TARGET_OMITTED_EVENTS",
+    "BENCHMARK_TARGET_PURPOSE",
+    "BENCHMARK_TARGET_ROLE",
+    "BENCHMARK_TARGET_TOTAL_EVENTS",
+    "BENCHMARK_TARGET_WORKFLOW_STEP",
     "DEFAULT_HISTORY_SEED_COUNT",
     "PROTECTED_PATHS",
     "RuntimeSettings",

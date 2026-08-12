@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import io
+import math
 import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -16,6 +19,7 @@ from unittest import mock
 
 import yaml
 
+from teams_runtime.benchmarking import scenario as benchmark_scenario
 from teams_runtime.benchmarking.metrics import (
     SAFE_INVOCATION_FIELDS,
     compare_metrics,
@@ -26,6 +30,7 @@ from teams_runtime.benchmarking.models import (
     ArmPlan,
     ArmResult,
     BenchmarkOptions,
+    BenchmarkWorkerSafetyError,
     QualityEvidence,
     SprintEvidence,
     WorkerContext,
@@ -39,17 +44,30 @@ from teams_runtime.benchmarking.runner import (
     run_sprint_ab_benchmark,
 )
 from teams_runtime.benchmarking.scenario import (
+    BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+    BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+    BENCHMARK_TARGET_INCLUDED_EVENTS,
+    BENCHMARK_TARGET_OMITTED_EVENTS,
+    BENCHMARK_TARGET_PURPOSE,
+    BENCHMARK_TARGET_ROLE,
+    BENCHMARK_TARGET_TOTAL_EVENTS,
+    BENCHMARK_TARGET_WORKFLOW_STEP,
     PROTECTED_PATHS,
     RuntimeSettings,
+    SCENARIO_ID,
+    SCENARIO_MILESTONE,
     build_history_seed,
     canonical_hash,
     create_scenario_workspace,
 )
 from teams_runtime.benchmarking.worker import (
+    LIVE_BENCHMARK_ENV,
     _BenchmarkHistorySeedState,
     _BenchmarkTeamService,
     _build_execution_policy,
     _history_seed_hash,
+    _summarize_call_journal,
+    run_live_sprint_arm,
 )
 from teams_runtime.cli import build_parser, cmd_benchmark_sprint_ab
 from teams_runtime.runtime.execution_policy import (
@@ -58,8 +76,11 @@ from teams_runtime.runtime.execution_policy import (
     ModelExecutionPolicy,
     ModelExecutionPolicyViolation,
 )
-from teams_runtime.shared.models import TEAM_ROLES
-from teams_runtime.shared.prompt_context import PROMPT_EVENT_SELECTION_POLICY
+from teams_runtime.shared.models import PromptContextRuntimeConfig, TEAM_ROLES
+from teams_runtime.shared.prompt_context import (
+    PROMPT_EVENT_SELECTION_POLICY,
+    project_request_record_for_prompt,
+)
 from teams_runtime.workflows.orchestration.team_service import TeamService
 from teams_runtime.workflows.sprints.lifecycle import apply_initial_plan_confirmation
 
@@ -137,6 +158,12 @@ def _telemetry_record(
     input_tokens = 240 if is_after else 480
     cached_tokens = 40 if is_after else 80
     output_tokens = 30
+    included_events = (
+        BENCHMARK_TARGET_INCLUDED_EVENTS
+        if compacted
+        else BENCHMARK_TARGET_TOTAL_EVENTS
+    )
+    omitted_events = BENCHMARK_TARGET_OMITTED_EVENTS if compacted else 0
     record: dict[str, Any] = {
         "schema_version": 1,
         "invocation_id": f"{variant}-invocation-{occurrence}",
@@ -148,9 +175,13 @@ def _telemetry_record(
         "ended_at": f"2026-07-27T00:00:1{occurrence}+00:00",
         "duration_ms": 400 if is_after else 700,
         "runtime_identity": "role",
-        "role": "developer" if occurrence == 1 else "qa",
-        "purpose": "implement" if occurrence == 1 else "validate",
-        "workflow_step": "todo_execution" if occurrence == 1 else "quality_gate",
+        "role": BENCHMARK_TARGET_ROLE if occurrence == 1 else "developer",
+        "purpose": BENCHMARK_TARGET_PURPOSE if occurrence == 1 else "implement",
+        "workflow_step": (
+            BENCHMARK_TARGET_WORKFLOW_STEP
+            if occurrence == 1
+            else "todo_execution"
+        ),
         "request_id": f"request-{occurrence}",
         "sprint_id": "benchmark-sprint",
         "todo_id": "todo-1",
@@ -168,14 +199,21 @@ def _telemetry_record(
         "reasoning_output_tokens": 10,
         "total_tokens": input_tokens + output_tokens,
         "usage_source": "native" if native_usage else "",
+        "prompt_context_enabled": is_after,
+        "prompt_context_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+        "prompt_context_included_events": included_events,
+        "prompt_context_omitted_events": omitted_events,
+        "prompt_context_recent_events": BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+        "prompt_context_max_events": BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+        "prompt_context_selection_policy": PROMPT_EVENT_SELECTION_POLICY,
         "prompt_context": {
             "enabled": is_after,
             "compacted": bool(compacted),
-            "total_events": 48,
-            "included_events": 16 if compacted else 48,
-            "omitted_events": 32 if compacted else 0,
-            "recent_events": 8,
-            "max_events": 16,
+            "total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+            "included_events": included_events,
+            "omitted_events": omitted_events,
+            "recent_events": BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+            "max_events": BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
             "selection_policy": PROMPT_EVENT_SELECTION_POLICY,
             "raw_history": "SENSITIVE_HISTORY_SHOULD_NOT_PERSIST",
         },
@@ -218,6 +256,15 @@ def _arm_result(
         str(record.get("invocation_id") or "")
         for record in records
     ]
+    candidate_metrics = reduce_telemetry(records)
+    verified_target_projection_count = int(
+        candidate_metrics["compaction"]["target_projection_candidate_count"]
+    )
+    verified_target_invocation_ids_sha256 = str(
+        candidate_metrics["compaction"][
+            "target_projection_invocation_ids_sha256"
+        ]
+    )
     return ArmResult(
         arm=ArmPlan(
             pair_index=pair_index,
@@ -235,7 +282,13 @@ def _arm_result(
         error_category="",
         config_hash=f"{variant}-config",
         comparable_config_hash=comparable_config_hash,
-        metrics=reduce_telemetry(records),
+        metrics=reduce_telemetry(
+            records,
+            verified_target_projection_count=verified_target_projection_count,
+            verified_target_invocation_ids_sha256=(
+                verified_target_invocation_ids_sha256
+            ),
+        ),
         quality=_passing_quality(),
         sprint=SprintEvidence(
             sprint_id="benchmark-sprint",
@@ -248,9 +301,10 @@ def _arm_result(
         invocation_attempts={
             "schema_version": 1,
             "journal_available": True,
-            "journal_schema_version": 2,
+            "journal_schema_version": 3,
             "reconciled": True,
             "identity_reconciled": True,
+            "context_reconciled": True,
             "max_invocations": 20,
             "reserved_count": invocation_count,
             "entry_count": invocation_count,
@@ -278,6 +332,11 @@ def _arm_result(
             "telemetry_invocation_id_duplicate_count": 0,
             "telemetry_invocation_id_unmatched_count": 0,
             "journal_invocation_id_unobserved_count": 0,
+            "journal_telemetry_context_mismatch_count": 0,
+            "verified_target_projection_count": verified_target_projection_count,
+            "verified_target_invocation_ids_sha256": (
+                verified_target_invocation_ids_sha256
+            ),
         },
         invocation_records=records,
     )
@@ -394,6 +453,14 @@ class SprintBenchmarkScenarioTests(unittest.TestCase):
                 )
             )
             self.assertEqual(scenario["scenario_id"], "sum-positive-full-sprint-v2")
+            accepted_return = (
+                "return sum(value for value in values if value > 0)"
+            )
+            self.assertIn(accepted_return, scenario["milestone"])
+            self.assertIn(
+                accepted_return,
+                (before.root / "BENCHMARK_TASK.md").read_text(encoding="utf-8"),
+            )
             self.assertFalse(before_config["prompt_context"]["enabled"])
             self.assertTrue(after_config["prompt_context"]["enabled"])
             before_config["prompt_context"].pop("enabled")
@@ -419,6 +486,222 @@ class SprintBenchmarkScenarioTests(unittest.TestCase):
             )
             self.assertNotEqual(baseline.returncode, 0)
             self.assertEqual(_git(before.root, "remote").stdout.strip(), "")
+
+    def test_constrained_ast_oracle_accepts_only_the_documented_repair(self) -> None:
+        accepted = (
+            '"""Optional module docstring."""\n\n'
+            "def sum_positive(values):\n"
+            '    """Optional function docstring."""\n'
+            "    return sum(value for value in values if value > 0)\n"
+        )
+        rejected = {
+            "top_level_statement": (
+                "sentinel = 'would execute under an importing oracle'\n" + accepted
+            ),
+            "annotation": (
+                "def sum_positive(values: list[int]):\n"
+                "    return sum(value for value in values if value > 0)\n"
+            ),
+            "default": (
+                "def sum_positive(values=()):\n"
+                "    return sum(value for value in values if value > 0)\n"
+            ),
+            "list_comprehension": (
+                "def sum_positive(values):\n"
+                "    return sum([value for value in values if value > 0])\n"
+            ),
+            "renamed_operand": (
+                "def sum_positive(values):\n"
+                "    return sum(item for item in values if item > 0)\n"
+            ),
+            "extra_statement": (
+                "def sum_positive(values):\n"
+                "    positives = (value for value in values if value > 0)\n"
+                "    return sum(positives)\n"
+            ),
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "benchmark_app.py"
+            target.write_text(accepted, encoding="utf-8")
+            self.assertTrue(benchmark_scenario._sum_positive_ast_oracle(root))
+
+            for label, source in rejected.items():
+                with self.subTest(label=label):
+                    target.write_text(source, encoding="utf-8")
+                    self.assertFalse(
+                        benchmark_scenario._sum_positive_ast_oracle(root)
+                    )
+
+    def test_final_oracle_never_executes_model_modified_python(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            scenario = create_scenario_workspace(
+                root / "workspace",
+                benchmark_id="non-executing-oracle",
+                run_id="pair-001-before",
+                prompt_context_enabled=False,
+                settings=_settings(),
+            )
+            marker = root / "model-code-executed"
+            (scenario.root / "benchmark_app.py").write_text(
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('unsafe')\n\n"
+                "def sum_positive(values):\n"
+                "    return sum(value for value in values if value > 0)\n",
+                encoding="utf-8",
+            )
+
+            def fake_git(
+                _root: Path,
+                *args: str,
+                **_kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                stdout = ""
+                if args[:2] == ("rev-parse", "HEAD"):
+                    stdout = "new-commit\n"
+                return subprocess.CompletedProcess(args, 0, stdout, "")
+
+            with (
+                mock.patch.object(
+                    benchmark_scenario,
+                    "_run_git",
+                    side_effect=fake_git,
+                ),
+                mock.patch.object(
+                    benchmark_scenario.subprocess,
+                    "run",
+                    side_effect=AssertionError("workspace code must not be executed"),
+                ),
+            ):
+                inspection = benchmark_scenario.inspect_scenario_workspace(scenario)
+
+            self.assertFalse(marker.exists())
+            self.assertFalse(inspection.behavior_oracle_passed)
+            self.assertIn("behavior_oracle_failed", inspection.notes)
+
+    def test_protected_hashing_rejects_symlinked_components(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "workspace"
+            external = root / "external"
+            workspace.mkdir()
+            external.mkdir()
+            (external / "scenario.json").write_text("same bytes\n", encoding="utf-8")
+            (workspace / ".benchmark").symlink_to(external, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                benchmark_scenario._protected_file_hash(
+                    workspace,
+                    ".benchmark/scenario.json",
+                )
+
+    def test_git_inspection_pins_binary_and_overrides_executable_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            scenario = create_scenario_workspace(
+                root / "workspace",
+                benchmark_id="safe-git-inspection",
+                run_id="pair-001-after",
+                prompt_context_enabled=True,
+                settings=_settings(),
+            )
+            (scenario.root / "benchmark_app.py").write_text(
+                "def sum_positive(values):\n"
+                "    return sum(value for value in values if value > 0)\n",
+                encoding="utf-8",
+            )
+            (scenario.root / ".gitattributes").write_text(
+                "benchmark_app.py filter=model-filter\n",
+                encoding="utf-8",
+            )
+            _git(scenario.root, "add", "benchmark_app.py", ".gitattributes")
+            _git(scenario.root, "commit", "-m", "repair fixture")
+
+            config_marker = root / "config-command-executed"
+            config_command = root / "model-config-command"
+            config_command.write_text(
+                "#!/bin/sh\n"
+                f": > {str(config_marker)!r}\n"
+                "cat\n",
+                encoding="utf-8",
+            )
+            config_command.chmod(0o700)
+            for key in (
+                "core.fsmonitor",
+                "core.hooksPath",
+                "diff.external",
+                "core.pager",
+                "filter.model-filter.clean",
+            ):
+                _git(scenario.root, "config", "--local", key, str(config_command))
+            # Force status to inspect content rather than accepting the cached stat.
+            target = scenario.root / "benchmark_app.py"
+            target.write_bytes(target.read_bytes())
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            fake_git_marker = root / "fake-git-executed"
+            fake_git = fake_bin / "git"
+            fake_git.write_text(
+                "#!/bin/sh\n"
+                f": > {str(fake_git_marker)!r}\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o700)
+
+            with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}):
+                inspection = benchmark_scenario.inspect_scenario_workspace(scenario)
+
+            self.assertTrue(inspection.behavior_oracle_passed)
+            self.assertTrue(inspection.protected_files_unchanged)
+            self.assertTrue(inspection.git_clean)
+            self.assertTrue(inspection.commit_created)
+            self.assertTrue(inspection.no_git_remotes)
+            self.assertFalse(config_marker.exists())
+            self.assertFalse(fake_git_marker.exists())
+
+            (scenario.root / ".git" / "info" / "attributes").write_text(
+                "benchmark_app.py filter=model-filter\n",
+                encoding="utf-8",
+            )
+            tampered_attributes = benchmark_scenario.inspect_scenario_workspace(
+                scenario
+            )
+            self.assertFalse(tampered_attributes.git_clean)
+            self.assertIn("git_attributes_changed", tampered_attributes.notes)
+            self.assertFalse(config_marker.exists())
+
+    def test_git_command_uses_non_executing_inspection_overrides(self) -> None:
+        completed = subprocess.CompletedProcess(("git", "status"), 0, "", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with mock.patch.object(
+                benchmark_scenario.subprocess,
+                "run",
+                return_value=completed,
+            ) as run:
+                benchmark_scenario._run_git(
+                    root,
+                    "status",
+                    git_executable=Path(sys.executable).resolve(),
+                )
+
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(command[0], str(Path(sys.executable).resolve()))
+        self.assertIn("--no-pager", command)
+        self.assertIn(f"core.hooksPath={os.devnull}", command)
+        self.assertIn("core.fsmonitor=false", command)
+        self.assertIn(f"core.attributesFile={os.devnull}", command)
+        self.assertIn("diff.external=", command)
+        self.assertIn("core.pager=", command)
+        self.assertEqual(environment["GIT_EXTERNAL_DIFF"], "")
+        self.assertEqual(environment["GIT_PAGER"], "")
+        self.assertEqual(environment["PATH"], os.defpath)
+        self.assertEqual(run.call_args.kwargs["timeout"], 10.0)
 
 
 class SprintBenchmarkBackfillTests(unittest.TestCase):
@@ -591,7 +874,7 @@ class SprintBenchmarkBackfillTests(unittest.TestCase):
 
         self.assertFalse(service._benchmark_history_seeded)
 
-    def test_real_planning_builder_persists_seed_before_return(self) -> None:
+    def test_real_planning_lifecycle_produces_exact_v2_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             scenario = create_scenario_workspace(
@@ -651,21 +934,95 @@ class SprintBenchmarkBackfillTests(unittest.TestCase):
             relay_service._save_request(persisted)
             persisted = relay_service._load_request(request_record["request_id"])
 
+            with (
+                mock.patch.object(
+                    service,
+                    "_delegate_request",
+                    new=mock.AsyncMock(return_value=True),
+                ),
+                mock.patch.object(
+                    service,
+                    "_wait_for_internal_request_result",
+                    new=mock.AsyncMock(return_value={"status": "completed"}),
+                ),
+                mock.patch.object(service, "_append_role_history"),
+                mock.patch.object(service, "_record_internal_sprint_activity"),
+            ):
+                asyncio.run(
+                    service._run_internal_request_chain(
+                        sprint_id=str(sprint_state["sprint_id"]),
+                        request_record=persisted,
+                        initial_role="research",
+                    )
+                )
+            delegated = service._load_request(request_record["request_id"])
+
         seed_count = len(build_history_seed())
-        persisted_prefix = list(persisted["events"][:seed_count])
-        self.assertEqual(len(persisted["events"]), seed_count + 1)
+        persisted_prefix = list(delegated["events"][:seed_count])
+        self.assertEqual(len(delegated["events"]), BENCHMARK_TARGET_TOTAL_EVENTS)
         self.assertEqual(_history_seed_hash(persisted_prefix), _HISTORY_SEED_HASH)
         self.assertEqual(
-            persisted["params"]["_benchmark_history_seed"],
+            delegated["params"]["_benchmark_history_seed"],
             {
                 "event_count": seed_count,
                 "sha256": _HISTORY_SEED_HASH,
             },
         )
-        self.assertEqual(persisted["events"][-1]["type"], "created")
+        self.assertEqual(
+            [event["type"] for event in delegated["events"][-2:]],
+            ["created", "delegated"],
+        )
+        before_projection = project_request_record_for_prompt(
+            delegated,
+            PromptContextRuntimeConfig(
+                enabled=False,
+                recent_events=BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+                max_events=BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+            ),
+        )
+        after_projection = project_request_record_for_prompt(
+            delegated,
+            PromptContextRuntimeConfig(
+                enabled=True,
+                recent_events=BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+                max_events=BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+            ),
+        )
+        self.assertEqual(
+            (
+                before_projection.total_events,
+                before_projection.included_events,
+                before_projection.omitted_events,
+            ),
+            (BENCHMARK_TARGET_TOTAL_EVENTS, BENCHMARK_TARGET_TOTAL_EVENTS, 0),
+        )
+        self.assertEqual(
+            (
+                after_projection.total_events,
+                after_projection.included_events,
+                after_projection.omitted_events,
+            ),
+            (
+                BENCHMARK_TARGET_TOTAL_EVENTS,
+                BENCHMARK_TARGET_INCLUDED_EVENTS,
+                BENCHMARK_TARGET_OMITTED_EVENTS,
+            ),
+        )
 
 
 class SprintBenchmarkCliTests(unittest.TestCase):
+    def test_options_reject_non_finite_timeouts(self) -> None:
+        options = BenchmarkOptions(
+            source_root=Path.cwd(),
+            runtime_config_path=Path(__file__),
+        )
+
+        for field_name in ("call_timeout_seconds", "run_timeout_seconds"):
+            for value in (math.nan, math.inf, -math.inf):
+                with self.subTest(field_name=field_name, value=value):
+                    with self.assertRaises(ValueError):
+                        replace(options, **{field_name: value}).validate()
+
     def test_parser_exposes_bounded_sprint_ab_defaults(self) -> None:
         args = build_parser().parse_args(
             [
@@ -761,6 +1118,36 @@ class SprintBenchmarkCliTests(unittest.TestCase):
         )
         runner.assert_called_once()
 
+    def test_cli_returns_two_for_fatal_worker_safety_abort(self) -> None:
+        output = io.StringIO()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"TEAMS_RUNTIME_LIVE_BENCHMARK": "1"},
+                clear=True,
+            ),
+            mock.patch(
+                "teams_runtime.benchmarking.runner.run_sprint_ab_benchmark",
+                side_effect=BenchmarkWorkerSafetyError(
+                    "provider cleanup could not be confirmed"
+                ),
+            ),
+            redirect_stdout(output),
+        ):
+            exit_code = cmd_benchmark_sprint_ab(
+                live=True,
+                runtime_config="unused.yaml",
+                repetitions=1,
+                max_invocations=20,
+                call_timeout_seconds=300,
+                run_timeout_seconds=1800,
+                keep_workspaces="failures",
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Benchmark safety abort", output.getvalue())
+
 
 class SprintBenchmarkReportTests(unittest.TestCase):
     def test_fake_worker_generates_comparable_private_full_report(self) -> None:
@@ -826,9 +1213,10 @@ class SprintBenchmarkReportTests(unittest.TestCase):
                 invocation_attempts={
                     "schema_version": 1,
                     "journal_available": True,
-                    "journal_schema_version": 2,
+                    "journal_schema_version": 3,
                     "reconciled": True,
                     "identity_reconciled": True,
+                    "context_reconciled": True,
                     "max_invocations": 20,
                     "reserved_count": 2,
                     "entry_count": 2,
@@ -857,6 +1245,13 @@ class SprintBenchmarkReportTests(unittest.TestCase):
                     "telemetry_invocation_id_duplicate_count": 0,
                     "telemetry_invocation_id_unmatched_count": 0,
                     "journal_invocation_id_unobserved_count": 0,
+                    "journal_telemetry_context_mismatch_count": 0,
+                    "verified_target_projection_count": 1,
+                    "verified_target_invocation_ids_sha256": (
+                        invocation_identity_digest(
+                            (records[0]["invocation_id"],)
+                        )
+                    ),
                     "prompt": "SENSITIVE_ATTEMPT_SUMMARY_SHOULD_NOT_PERSIST",
                 },
                 started_at="2026-07-27T00:00:00+00:00",
@@ -918,10 +1313,50 @@ class SprintBenchmarkReportTests(unittest.TestCase):
             self.assertTrue(all(not run.retained_workspace for run in result.runs))
 
             report = json.loads(result.report_json.read_text(encoding="utf-8"))
-            self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(report["schema_version"], 3)
+            self.assertEqual(report["provenance"]["scenario_id"], SCENARIO_ID)
+            self.assertEqual(
+                report["controls"]["target_invocation"],
+                {
+                    "attempt_kind": "primary",
+                    "role": BENCHMARK_TARGET_ROLE,
+                    "purpose": BENCHMARK_TARGET_PURPOSE,
+                    "workflow_step": BENCHMARK_TARGET_WORKFLOW_STEP,
+                },
+            )
+            self.assertEqual(
+                report["controls"]["a_b_definition"],
+                {
+                    "before": {
+                        "prompt_context_enabled": False,
+                        "target_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                        "target_included_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                        "target_omitted_events": 0,
+                    },
+                    "after": {
+                        "prompt_context_enabled": True,
+                        "recent_events": BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+                        "max_events": BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+                        "target_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                        "target_included_events": BENCHMARK_TARGET_INCLUDED_EVENTS,
+                        "target_omitted_events": BENCHMARK_TARGET_OMITTED_EVENTS,
+                    },
+                },
+            )
             self.assertEqual(
                 report["runs"][0]["invocation_attempts"]["reserved_count"],
                 2,
+            )
+            self.assertTrue(
+                report["runs"][0]["invocation_attempts"][
+                    "context_reconciled"
+                ]
+            )
+            self.assertEqual(
+                report["runs"][0]["invocation_attempts"][
+                    "verified_target_projection_count"
+                ],
+                1,
             )
             self.assertNotIn(
                 "prompt",
@@ -951,12 +1386,22 @@ class SprintBenchmarkReportTests(unittest.TestCase):
             self.assertIn("preliminary", report["interpretation"]["note"].lower())
             markdown = result.report_markdown.read_text(encoding="utf-8")
             self.assertIn("| Reserved | Telemetry | Completed |", markdown)
+            self.assertIn(f"- Scenario: `{SCENARIO_ID}`", markdown)
+            self.assertEqual(markdown.count("| 1 | 1200 | pass |"), 1)
+            self.assertEqual(markdown.count("| 1 | 800 | pass |"), 1)
 
             for run in result.runs:
                 run_dir = result.output_dir / "runs" / run.arm.run_id
                 self.assertTrue((run_dir / "run.json").is_file())
                 self.assertTrue((run_dir / "metrics.json").is_file())
                 self.assertTrue((run_dir / "model_invocations.jsonl").is_file())
+                persisted_metrics = json.loads(
+                    (run_dir / "metrics.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    persisted_metrics["compaction"]["target_projection_count"],
+                    1,
+                )
                 invocation_lines = (
                     run_dir / "model_invocations.jsonl"
                 ).read_text(encoding="utf-8").splitlines()
@@ -973,6 +1418,54 @@ class SprintBenchmarkReportTests(unittest.TestCase):
                 if artifact.is_file():
                     content = artifact.read_text(encoding="utf-8")
                     self.assertNotIn("SENSITIVE_", content, artifact)
+
+    def test_runner_does_not_fall_back_to_workspace_telemetry(self) -> None:
+        def fake_worker(context: WorkerContext) -> WorkerOutcome:
+            metrics_root = (
+                context.workspace_root
+                / ".teams_runtime"
+                / "metrics"
+                / "model_invocations"
+            )
+            metrics_root.mkdir(parents=True, exist_ok=True)
+            forged_record = _telemetry_record(variant=context.arm.variant)
+            (metrics_root / "forged.jsonl").write_text(
+                json.dumps(forged_record, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return WorkerOutcome(status="completed", telemetry_records=())
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_root = root / "source"
+            runtime_config = root / "runtime.yaml"
+            _initialize_source_repository(source_root)
+            _write_runtime_config(runtime_config)
+            result = run_sprint_ab_benchmark(
+                BenchmarkOptions(
+                    source_root=source_root,
+                    runtime_config_path=runtime_config,
+                    output_dir=root / "reports",
+                    repetitions=1,
+                    max_invocations=20,
+                    call_timeout_seconds=300,
+                    run_timeout_seconds=1_800,
+                    keep_workspaces="none",
+                    live=False,
+                    benchmark_id="workspace-telemetry-isolation",
+                ),
+                worker=fake_worker,
+            )
+
+        self.assertEqual(result.status, "inconclusive")
+        self.assertEqual(len(result.runs), 2)
+        for run in result.runs:
+            self.assertEqual(run.invocation_records, ())
+            self.assertEqual(run.metrics["totals"]["invocation_count"], 0)
+            self.assertEqual(
+                run.metrics["compaction"]["observed_invocation_count"],
+                0,
+            )
 
     def test_untrusted_journal_never_persists_coverage_or_cost(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1339,7 +1832,7 @@ class SprintBenchmarkReportTests(unittest.TestCase):
             },
             "unsupported_journal_schema": {
                 **trusted,
-                "journal_schema_version": 3,
+                "journal_schema_version": 99,
             },
             "unreconciled": {
                 **trusted,
@@ -1390,6 +1883,29 @@ class SprintBenchmarkReportTests(unittest.TestCase):
                         expected_max_invocations=20,
                     )
                 )
+
+        trusted_v3 = {
+            **trusted,
+            "journal_schema_version": 3,
+            "context_reconciled": True,
+            "journal_telemetry_context_mismatch_count": 0,
+            "verified_target_projection_count": 1,
+            "verified_target_invocation_ids_sha256": (
+                invocation_identity_digest(("invocation-1",))
+            ),
+        }
+        self.assertTrue(
+            _journal_coverage_available(
+                trusted_v3,
+                expected_max_invocations=20,
+            )
+        )
+        self.assertFalse(
+            _journal_coverage_available(
+                {**trusted_v3, "context_reconciled": False},
+                expected_max_invocations=20,
+            )
+        )
 
     def test_unobserved_terminated_attempt_makes_pair_inconclusive(self) -> None:
         before = _arm_result(
@@ -1478,6 +1994,233 @@ class SprintBenchmarkReportTests(unittest.TestCase):
             derived_total["input_tokens"] + derived_total["output_tokens"],
         )
 
+    def test_v2_target_projection_requires_a_completed_primary_attempt(self) -> None:
+        repair = _telemetry_record(variant="after", occurrence=1)
+        repair["attempt_kind"] = "contract_repair"
+        failed_primary = _telemetry_record(variant="after", occurrence=1)
+        failed_primary["invocation_id"] = "after-failed-target"
+        failed_primary["status"] = "failed"
+        unrelated_primary = _telemetry_record(variant="after", occurrence=2)
+
+        metrics = reduce_telemetry(
+            (repair, failed_primary, unrelated_primary),
+            verified_target_projection_count=1,
+        )
+
+        self.assertEqual(metrics["compaction"]["observed_invocation_count"], 3)
+        self.assertEqual(metrics["compaction"]["compacted_invocation_count"], 3)
+        self.assertEqual(
+            metrics["compaction"]["target_projection_candidate_count"],
+            0,
+        )
+        self.assertEqual(metrics["compaction"]["target_projection_count"], 0)
+        self.assertEqual(
+            metrics["compaction"][
+                "target_projection_verification_mismatch_count"
+            ],
+            1,
+        )
+
+    def test_v2_target_projection_requires_verified_identity_digest(self) -> None:
+        record = _telemetry_record(variant="after")
+        cases = {
+            "missing": "",
+            "wrong": invocation_identity_digest(("different-invocation",)),
+        }
+
+        for label, digest in cases.items():
+            with self.subTest(label=label):
+                metrics = reduce_telemetry(
+                    (record,),
+                    verified_target_projection_count=1,
+                    verified_target_invocation_ids_sha256=digest,
+                )
+                compaction = metrics["compaction"]
+                self.assertEqual(
+                    compaction["target_projection_candidate_count"],
+                    1,
+                )
+                self.assertEqual(
+                    compaction[
+                        "target_projection_verification_mismatch_count"
+                    ],
+                    0,
+                )
+                self.assertFalse(
+                    compaction["target_projection_identity_reconciled"]
+                )
+                self.assertEqual(compaction["target_projection_count"], 0)
+
+    def test_v2_target_projection_identity_digest_is_order_independent(self) -> None:
+        first = _telemetry_record(variant="after", occurrence=1)
+        second = _telemetry_record(variant="after", occurrence=2)
+        second.update(
+            {
+                "role": BENCHMARK_TARGET_ROLE,
+                "purpose": BENCHMARK_TARGET_PURPOSE,
+                "workflow_step": BENCHMARK_TARGET_WORKFLOW_STEP,
+            }
+        )
+        reversed_ids = (
+            second["invocation_id"],
+            first["invocation_id"],
+        )
+
+        metrics = reduce_telemetry(
+            (first, second),
+            verified_target_projection_count=2,
+            verified_target_invocation_ids_sha256=(
+                invocation_identity_digest(reversed_ids)
+            ),
+        )
+
+        compaction = metrics["compaction"]
+        self.assertTrue(compaction["target_projection_identity_reconciled"])
+        self.assertEqual(compaction["target_projection_count"], 2)
+
+    def test_v2_target_projection_rejects_cross_invocation_substitution(self) -> None:
+        telemetry_target = _telemetry_record(variant="after")
+        telemetry_target["invocation_id"] = "telemetry-target"
+
+        metrics = reduce_telemetry(
+            (telemetry_target,),
+            verified_target_projection_count=1,
+            verified_target_invocation_ids_sha256=(
+                invocation_identity_digest(("journal-verified-target",))
+            ),
+        )
+
+        compaction = metrics["compaction"]
+        self.assertEqual(compaction["target_projection_candidate_count"], 1)
+        self.assertEqual(
+            compaction["target_projection_verification_mismatch_count"],
+            0,
+        )
+        self.assertFalse(compaction["target_projection_identity_reconciled"])
+        self.assertEqual(compaction["target_projection_count"], 0)
+
+    def test_exact_prompt_context_counts_require_json_integers(self) -> None:
+        for label, invalid_value in (
+            ("fractional", BENCHMARK_TARGET_TOTAL_EVENTS + 0.9),
+            ("numeric_string", str(BENCHMARK_TARGET_TOTAL_EVENTS)),
+        ):
+            with self.subTest(label=label):
+                journal_entry = _telemetry_record(variant="after")
+                journal_entry["state"] = "completed"
+                telemetry_record = _telemetry_record(variant="after")
+                telemetry_record["prompt_context_total_events"] = invalid_value
+                telemetry_record["prompt_context"][
+                    "total_events"
+                ] = invalid_value
+                snapshot = {
+                    "schema_version": 3,
+                    "max_invocations": 1,
+                    "reserved_count": 1,
+                    "remaining": 0,
+                    "entries": [journal_entry],
+                }
+
+                sanitized = sanitize_invocation_record(telemetry_record)
+                summary = _summarize_call_journal(
+                    snapshot,
+                    telemetry_records=(telemetry_record,),
+                )
+                metrics = reduce_telemetry(
+                    (telemetry_record,),
+                    verified_target_projection_count=1,
+                    verified_target_invocation_ids_sha256=(
+                        invocation_identity_digest(
+                            (telemetry_record["invocation_id"],)
+                        )
+                    ),
+                )
+
+                self.assertIsNone(
+                    sanitized["prompt_context_total_events"]
+                )
+                self.assertNotIn(
+                    "total_events",
+                    sanitized["prompt_context"],
+                )
+                self.assertFalse(summary["context_reconciled"])
+                self.assertEqual(
+                    summary["journal_telemetry_context_mismatch_count"],
+                    1,
+                )
+                self.assertEqual(
+                    summary["verified_target_projection_count"],
+                    0,
+                )
+                self.assertEqual(
+                    metrics["compaction"]["invalid_projection_count"],
+                    1,
+                )
+                self.assertEqual(
+                    metrics["compaction"][
+                        "target_projection_candidate_count"
+                    ],
+                    0,
+                )
+                self.assertEqual(
+                    metrics["compaction"]["target_projection_count"],
+                    0,
+                )
+
+    def test_pair_requires_exact_v2_target_projection_in_each_arm(self) -> None:
+        wrong_before = _telemetry_record(variant="before")
+        wrong_before["prompt_context"].update(
+            {
+                "total_events": BENCHMARK_TARGET_TOTAL_EVENTS - 1,
+                "included_events": BENCHMARK_TARGET_TOTAL_EVENTS - 1,
+                "omitted_events": 0,
+            }
+        )
+        wrong_before.update(
+            {
+                "prompt_context_total_events": BENCHMARK_TARGET_TOTAL_EVENTS - 1,
+                "prompt_context_included_events": (
+                    BENCHMARK_TARGET_TOTAL_EVENTS - 1
+                ),
+                "prompt_context_omitted_events": 0,
+            }
+        )
+        wrong_after = _telemetry_record(variant="after")
+        wrong_after["prompt_context"].update(
+            {
+                "total_events": BENCHMARK_TARGET_TOTAL_EVENTS + 1,
+                "included_events": BENCHMARK_TARGET_INCLUDED_EVENTS,
+                "omitted_events": BENCHMARK_TARGET_OMITTED_EVENTS + 1,
+            }
+        )
+        wrong_after.update(
+            {
+                "prompt_context_total_events": BENCHMARK_TARGET_TOTAL_EVENTS + 1,
+                "prompt_context_included_events": BENCHMARK_TARGET_INCLUDED_EVENTS,
+                "prompt_context_omitted_events": BENCHMARK_TARGET_OMITTED_EVENTS + 1,
+            }
+        )
+        cases = (
+            (
+                _arm_result("before", (wrong_before,)),
+                _arm_result("after", (_telemetry_record(variant="after"),)),
+                "before_v2_target_projection_not_observed",
+            ),
+            (
+                _arm_result("before", (_telemetry_record(variant="before"),)),
+                _arm_result("after", (wrong_after,)),
+                "after_v2_target_projection_not_observed",
+            ),
+        )
+
+        for before, after, expected_reason in cases:
+            with self.subTest(expected_reason=expected_reason):
+                report = _report_for_runs((before, after))
+
+                self.assertEqual(report["status"], "inconclusive")
+                reasons = report["pairs"][0]["inconclusive_reasons"]
+                self.assertIn(expected_reason, reasons)
+                self.assertNotIn("after_compaction_not_observed", reasons)
+
     def test_invalid_compaction_projection_cannot_make_a_pair_comparable(self) -> None:
         invalid_cases: dict[str, dict[str, Any]] = {}
         inconsistent_total = _telemetry_record(variant="after")
@@ -1485,7 +2228,7 @@ class SprintBenchmarkReportTests(unittest.TestCase):
         invalid_cases["inconsistent_total"] = inconsistent_total
         below_recent_tail = _telemetry_record(variant="after")
         below_recent_tail["prompt_context"].update(
-            {"included_events": 7, "omitted_events": 41}
+            {"included_events": 7, "omitted_events": 43}
         )
         invalid_cases["below_recent_tail"] = below_recent_tail
         wrong_recent_limit = _telemetry_record(variant="after")
@@ -1532,6 +2275,14 @@ class SprintBenchmarkReportTests(unittest.TestCase):
                 "total_events": 4,
                 "included_events": 4,
                 "omitted_events": 0,
+            }
+        )
+        disabled_short_history.update(
+            {
+                "prompt_context_enabled": False,
+                "prompt_context_total_events": 4,
+                "prompt_context_included_events": 4,
+                "prompt_context_omitted_events": 0,
             }
         )
 
@@ -1597,7 +2348,64 @@ class SprintBenchmarkReportTests(unittest.TestCase):
         self.assertNotIn("api_key", sanitized)
         self.assertNotIn("session_id", sanitized)
         self.assertNotIn("raw_history", sanitized["prompt_context"])
-        self.assertEqual(sanitized["prompt_context"]["omitted_events"], 32)
+        self.assertEqual(
+            sanitized["prompt_context"]["omitted_events"],
+            BENCHMARK_TARGET_OMITTED_EVENTS,
+        )
+
+    def test_divergent_flat_and_nested_prompt_context_fails_closed(self) -> None:
+        record = _telemetry_record(variant="before")
+        record.update(
+            {
+                "prompt_context_enabled": True,
+                "prompt_context_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+                "prompt_context_included_events": BENCHMARK_TARGET_INCLUDED_EVENTS,
+                "prompt_context_omitted_events": BENCHMARK_TARGET_OMITTED_EVENTS,
+                "prompt_context_recent_events": BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+                "prompt_context_max_events": BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
+                "prompt_context_selection_policy": PROMPT_EVENT_SELECTION_POLICY,
+            }
+        )
+
+        sanitized = sanitize_invocation_record(record)
+        metrics = reduce_telemetry(
+            (record,),
+            verified_target_projection_count=1,
+        )
+
+        self.assertTrue(
+            sanitized["prompt_context_representation_conflict"]
+        )
+        self.assertEqual(metrics["compaction"]["invalid_projection_count"], 1)
+        self.assertEqual(
+            metrics["compaction"]["target_projection_candidate_count"],
+            0,
+        )
+        self.assertEqual(metrics["compaction"]["target_projection_count"], 0)
+        self.assertEqual(
+            metrics["compaction"][
+                "target_projection_verification_mismatch_count"
+            ],
+            1,
+        )
+        report = _report_for_runs(
+            (
+                replace(
+                    _arm_result("before", (record,)),
+                    metrics=metrics,
+                ),
+                _arm_result(
+                    "after",
+                    (_telemetry_record(variant="after"),),
+                ),
+            )
+        )
+
+        self.assertEqual(report["status"], "inconclusive")
+        self.assertIn(
+            "before_v2_target_projection_not_reconciled",
+            report["pairs"][0]["inconclusive_reasons"],
+        )
 
     def test_sanitizer_allowlists_nested_rate_card_fields(self) -> None:
         record = _telemetry_record(variant="after")
@@ -1628,11 +2436,63 @@ class SprintBenchmarkReportTests(unittest.TestCase):
 
 
 class SprintBenchmarkExecutionSafetyTests(unittest.TestCase):
+    def test_missing_auth_live_worker_preflight_reserves_no_provider_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            scenario = create_scenario_workspace(
+                root / "workspace",
+                benchmark_id="missing-auth-boundary",
+                run_id="pair-001-before",
+                prompt_context_enabled=False,
+                settings=_settings(),
+            )
+            run_output = root / "run-output"
+            run_output.mkdir()
+            context = WorkerContext(
+                benchmark_id="missing-auth-boundary",
+                arm=ArmPlan(
+                    pair_index=1,
+                    order_index=1,
+                    variant="before",
+                    run_id="pair-001-before",
+                    prompt_context_enabled=False,
+                ),
+                workspace_root=scenario.root,
+                run_output_dir=run_output,
+                milestone=SCENARIO_MILESTONE,
+                history_seed=scenario.history_seed,
+                max_invocations=2,
+                call_timeout_seconds=5,
+                run_timeout_seconds=10,
+                live=True,
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {LIVE_BENCHMARK_ENV: "1", "PATH": os.defpath},
+                clear=True,
+            ):
+                outcome = run_live_sprint_arm(context)
+
+            journal = json.loads(
+                (run_output / "call_journal.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(outcome.status, "preflight_failed")
+            self.assertEqual(journal["schema_version"], 3)
+            self.assertEqual(journal["reserved_count"], 0)
+            self.assertEqual(journal["entries"], [])
+            self.assertEqual(outcome.invocation_attempts["reserved_count"], 0)
+            self.assertEqual(outcome.telemetry_records, ())
+            self.assertFalse(
+                (run_output / ".private_model_invocations").exists()
+            )
+
     def test_live_policy_requires_provider_only_auth_before_reserving_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
             context = mock.Mock(
-                workspace_root=root,
+                workspace_root=root / "workspace",
+                run_output_dir=root / "run-output",
                 call_timeout_seconds=30,
             )
             budget = InvocationBudget(1)
@@ -1648,12 +2508,23 @@ class SprintBenchmarkExecutionSafetyTests(unittest.TestCase):
 
             with mock.patch.dict(
                 os.environ,
-                {"CODEX_API_KEY": "provider-only-secret", "PATH": os.defpath},
+                {
+                    "CODEX_API_KEY": "provider-only-secret",
+                    "PATH": str(Path(sys.executable).resolve().parent),
+                },
                 clear=True,
+            ), mock.patch.object(
+                shutil,
+                "which",
+                return_value=sys.executable,
             ):
                 policy = _build_execution_policy(context, budget=budget)
 
             self.assertNotIn("CODEX_API_KEY", policy.shell_environment)
+            self.assertEqual(
+                policy.codex_executable,
+                Path(sys.executable).resolve(),
+            )
 
     def test_invocation_budget_rejects_the_twenty_first_call_and_journals_no_content(self) -> None:
         class InvocationContext:
@@ -1712,6 +2583,7 @@ class SprintBenchmarkExecutionSafetyTests(unittest.TestCase):
                             allowed_workspace_root=allowed,
                             invocation_budget=budget,
                             call_timeout_seconds=30,
+                            codex_executable=sys.executable,
                             shell_environment={name: "must-not-leak"},
                         )
 
@@ -1719,6 +2591,7 @@ class SprintBenchmarkExecutionSafetyTests(unittest.TestCase):
                 allowed_workspace_root=allowed,
                 invocation_budget=budget,
                 call_timeout_seconds=30,
+                codex_executable=sys.executable,
                 shell_environment={"PYTHONPATH": str(allowed)},
             )
             nested = allowed / "nested"
@@ -1892,11 +2765,16 @@ class SprintBenchmarkExecutionSafetyTests(unittest.TestCase):
                 ),
                 worker=preflight_failure,
             )
+            report_json_exists = result.report_json.is_file()
+            report_markdown_exists = result.report_markdown.is_file()
 
         self.assertEqual(seen_variants, ["before"])
         self.assertEqual(len(result.runs), 1)
         self.assertEqual(result.runs[0].status, "preflight_failed")
         self.assertEqual(result.status, "inconclusive")
+        self.assertEqual(result.exit_code, 1)
+        self.assertTrue(report_json_exists)
+        self.assertTrue(report_markdown_exists)
         self.assertEqual(
             result.report["pairs"][0]["inconclusive_reasons"],
             ["missing_arm"],

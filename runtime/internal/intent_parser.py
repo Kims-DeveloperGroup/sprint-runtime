@@ -216,14 +216,28 @@ class IntentParserRuntime:
             agent_root=paths.internal_agent_root("parser"),
             runtime_identity=self.runtime_identity,
         )
-        self.telemetry_recorder = ModelTelemetryRecorder(paths, self.runtime_identity, telemetry_config)
+        self.telemetry_recorder = ModelTelemetryRecorder(
+            paths,
+            self.runtime_identity,
+            telemetry_config,
+            output_dir=(
+                execution_policy.telemetry_output_dir
+                if execution_policy is not None
+                else None
+            ),
+        )
         self.codex_runner = CodexRunner(
             runtime_config,
             role=self.role,
             telemetry_recorder=self.telemetry_recorder,
             execution_policy=execution_policy,
         )
-        self._run_lock = threading.Lock()
+        self._run_lock = (
+            execution_policy.execution_lock
+            if execution_policy is not None
+            and execution_policy.execution_lock is not None
+            else threading.Lock()
+        )
 
     def classify(
         self,

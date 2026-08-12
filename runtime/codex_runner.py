@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import re
@@ -18,6 +19,7 @@ from teams_runtime.runtime.execution_policy import (
     ModelExecutionPolicy,
     ModelExecutionPolicyViolation,
     ModelInvocationTimeout,
+    quarantine_unsafe_workspace_entries,
 )
 from teams_runtime.runtime.model_telemetry import (
     ModelInvocationContext,
@@ -80,6 +82,10 @@ _BENCHMARK_LAUNCHER_PATH = Path(__file__).with_name(
     "benchmark_launcher.py"
 )
 _BENCHMARK_LAUNCH_READY_BYTE = b"\x01"
+
+
+class _BenchmarkProcessSafetyAbort(BaseException):
+    """Abort the dedicated worker when provider cleanup cannot be proven."""
 
 
 def _nested_mapping(payload: Any, *keys: str) -> dict[str, Any]:
@@ -222,7 +228,12 @@ def parse_gemini_usage(stats: Any) -> ModelUsage:
         }
         for target, names in aliases.items():
             value = _first_value(tokens, *names)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value >= 0
+            ):
                 totals[target] += int(value)
                 observed[target] = True
     tools = stats.get("tools") if isinstance(stats.get("tools"), dict) else {}
@@ -304,7 +315,12 @@ class CodexRunner:
     def _cli_version(self, cli_name: str) -> str:
         if self.telemetry_recorder is None or not self.telemetry_recorder.enabled:
             return ""
-        cached = self._version_cache.get(cli_name)
+        executable = (
+            self._codex_executable()
+            if cli_name == "codex"
+            else cli_name
+        )
+        cached = self._version_cache.get(executable)
         if cached is not None:
             return cached
         try:
@@ -316,7 +332,7 @@ class CodexRunner:
                     10.0,
                 )
             process = subprocess.run(
-                [cli_name, "--version"],
+                [executable, "--version"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -325,8 +341,18 @@ class CodexRunner:
             version = str(process.stdout or process.stderr or "").strip().splitlines()[0]
         except Exception:
             version = ""
-        self._version_cache[cli_name] = version
+        self._version_cache[executable] = version
         return version
+
+    def _codex_executable(self) -> str:
+        if not self.execution_policy.benchmark_mode:
+            return "codex"
+        executable = self.execution_policy.codex_executable
+        if executable is None:
+            raise ModelExecutionPolicyViolation(
+                "Benchmark execution has no pinned Codex executable."
+            )
+        return str(executable)
 
     def _discover_extra_writable_dirs(self, workspace: Path) -> list[str]:
         extra_dirs: list[str] = []
@@ -378,6 +404,10 @@ class CodexRunner:
                 "-c",
                 'sandbox_mode="workspace-write"',
                 "-c",
+                "sandbox_workspace_write.exclude_slash_tmp=true",
+                "-c",
+                "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+                "-c",
                 "mcp_servers={}",
                 "-c",
                 'shell_environment_policy.inherit="none"',
@@ -394,21 +424,83 @@ class CodexRunner:
             command.extend(["--disable", feature_name])
 
     @staticmethod
+    def _process_group_exists(process_group_id: int | None) -> bool:
+        if (
+            process_group_id is None
+            or process_group_id <= 1
+            or not hasattr(os, "killpg")
+        ):
+            return False
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    @classmethod
+    def _stop_remaining_process_group(
+        cls,
+        process_group_id: int | None,
+        *,
+        grace_seconds: float,
+    ) -> None:
+        if not cls._process_group_exists(process_group_id):
+            return
+        assert process_group_id is not None
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+        deadline = time.monotonic() + max(grace_seconds, 0.0)
+        while cls._process_group_exists(process_group_id) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if cls._process_group_exists(process_group_id):
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+        kill_deadline = time.monotonic() + max(grace_seconds, 0.1)
+        while cls._process_group_exists(process_group_id) and time.monotonic() < kill_deadline:
+            time.sleep(0.05)
+        if cls._process_group_exists(process_group_id):
+            raise _BenchmarkProcessSafetyAbort(
+                "Benchmark provider process-group cleanup could not be proven."
+            )
+
+    def _quarantine_workspace_after_provider(self, workspace: Path) -> None:
+        integrity_root = self.execution_policy.allowed_workspace_root or workspace
+        try:
+            removed_kinds = quarantine_unsafe_workspace_entries(integrity_root)
+        except (ModelExecutionPolicyViolation, OSError, ValueError) as exc:
+            raise _BenchmarkProcessSafetyAbort(
+                "Benchmark workspace integrity could not be proven after provider exit."
+            ) from exc
+        if removed_kinds:
+            raise ModelExecutionPolicyViolation(
+                "Benchmark provider created unsafe filesystem entries; they were quarantined."
+            )
+
+    @classmethod
     def _terminate_process_group(
+        cls,
         process: subprocess.Popen[str],
         *,
         process_group_id: int | None,
         grace_seconds: float,
     ) -> tuple[str, str]:
         def send_group_signal(group_signal: signal.Signals) -> None:
-            if process.poll() is not None:
-                return
             try:
                 if process_group_id is not None and hasattr(os, "killpg"):
                     os.killpg(process_group_id, group_signal)
-                elif group_signal == signal.SIGTERM:
+                elif process.poll() is None and group_signal == signal.SIGTERM:
                     process.terminate()
-                else:
+                elif process.poll() is None:
                     process.kill()
             except ProcessLookupError:
                 pass
@@ -419,6 +511,10 @@ class CodexRunner:
         except subprocess.TimeoutExpired:
             send_group_signal(signal.SIGKILL)
             stdout, stderr = process.communicate()
+        cls._stop_remaining_process_group(
+            process_group_id,
+            grace_seconds=grace_seconds,
+        )
         return str(stdout or ""), str(stderr or "")
 
     def _run_benchmark_process(
@@ -523,6 +619,10 @@ class CodexRunner:
                 timeout_seconds,
                 completed_process=completed_process,
             )
+        self._stop_remaining_process_group(
+            process_group_id,
+            grace_seconds=float(self.execution_policy.kill_grace_seconds),
+        )
         return subprocess.CompletedProcess(
             command,
             process.returncode,
@@ -558,7 +658,7 @@ class CodexRunner:
         workspace: Path,
         prompt: str,
         session_id: str | None,
-        output_file: Path,
+        output_file: Path | None,
         bypass_sandbox: bool,
     ) -> tuple[list[str], str | None]:
         is_gemini = "gemini" in self.runtime_config.model.lower()
@@ -584,18 +684,14 @@ class CodexRunner:
             command.extend(["--prompt", prompt])
             return command, None
 
-        command = ["codex", "exec"]
+        command = [self._codex_executable(), "exec"]
         if session_id:
-            command.extend(
-                [
-                    "resume",
-                    "--model",
-                    self.runtime_config.model,
-                    "-o",
-                    str(output_file),
-                    "--skip-git-repo-check",
-                ]
-            )
+            command.extend(["resume", "--model", self.runtime_config.model])
+            if not self.execution_policy.benchmark_mode:
+                if output_file is None:
+                    raise ValueError("Codex output path is required")
+                command.extend(["-o", str(output_file)])
+            command.append("--skip-git-repo-check")
             if self.execution_policy.benchmark_mode:
                 self._append_benchmark_codex_controls(
                     command,
@@ -610,18 +706,12 @@ class CodexRunner:
             command.extend(["-c", 'personality="friendly"'])
             command.extend([session_id, "-"])
             return command, prompt
-        command.extend(
-            [
-                "-",
-                "--model",
-                self.runtime_config.model,
-                "-o",
-                str(output_file),
-                "--skip-git-repo-check",
-                "-C",
-                str(workspace),
-            ]
-        )
+        command.extend(["-", "--model", self.runtime_config.model])
+        if not self.execution_policy.benchmark_mode:
+            if output_file is None:
+                raise ValueError("Codex output path is required")
+            command.extend(["-o", str(output_file)])
+        command.extend(["--skip-git-repo-check", "-C", str(workspace)])
         for extra_dir in self._discover_extra_writable_dirs(workspace):
             command.extend(["--add-dir", extra_dir])
         if self.execution_policy.benchmark_mode:
@@ -661,11 +751,16 @@ class CodexRunner:
                 directory_path = Path(directory_value).expanduser().resolve()
                 self.execution_policy.assert_workspace_allowed(directory_path)
                 directory_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        output_file = abs_workspace / ".teams_runtime_codex_output.txt"
-        try:
-            output_file.unlink()
-        except FileNotFoundError:
-            pass
+        output_file = (
+            None
+            if self.execution_policy.benchmark_mode
+            else abs_workspace / ".teams_runtime_codex_output.txt"
+        )
+        if output_file is not None:
+            try:
+                output_file.unlink()
+            except FileNotFoundError:
+                pass
         command, stdin_input = self._build_command(
             workspace=abs_workspace,
             prompt=prompt,
@@ -719,7 +814,9 @@ class CodexRunner:
                     )
                 except ModelInvocationTimeout as exc:
                     process = exc.completed_process
+                    self._quarantine_workspace_after_provider(abs_workspace)
                     raise
+                self._quarantine_workspace_after_provider(abs_workspace)
             else:
                 process = subprocess.run(
                     command,
@@ -746,7 +843,7 @@ class CodexRunner:
                 event_session_id, usage, final_message = parse_codex_jsonl(process.stdout)
                 session_match = SESSION_ID_PATTERN.search(combined)
                 resolved_session_id = event_session_id or (session_match.group(1).strip() if session_match else session_id)
-                if output_file.exists():
+                if output_file is not None and output_file.exists():
                     output = output_file.read_text(encoding="utf-8").strip()
                 if not output:
                     output = final_message or process.stderr.strip() or process.stdout.strip()

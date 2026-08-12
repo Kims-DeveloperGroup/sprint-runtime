@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
@@ -56,6 +57,16 @@ def _non_negative_finite_number(value: Any, *, name: str) -> float:
     return normalized
 
 
+def _optional_non_negative_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        normalized = int(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return normalized if normalized >= 0 else None
+
+
 class InvocationBudgetExceeded(RuntimeError):
     def __init__(self, max_invocations: int, reserved_count: int):
         self.max_invocations = max_invocations
@@ -79,6 +90,90 @@ class ModelInvocationTimeout(RuntimeError, TimeoutError):
         self.timeout_seconds = timeout_seconds
         self.completed_process = completed_process
         super().__init__(f"Model invocation exceeded the {timeout_seconds:g}-second timeout.")
+
+
+def quarantine_unsafe_workspace_entries(
+    workspace_root: str | os.PathLike[str],
+    *,
+    max_entries: int = 100_000,
+) -> tuple[str, ...]:
+    """Remove filesystem entries that could redirect trusted writes outside a benchmark.
+
+    The provider is stopped before this sweep runs, so validation and removal do not
+    race model-owned processes. Internal symlinks are retained because session
+    workspaces intentionally use them; outward/broken-loop symlinks, hard-linked
+    regular files, and special files are quarantined.
+    """
+
+    if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0:
+        raise ValueError("max_entries must be a positive integer.")
+    try:
+        root = Path(workspace_root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ModelExecutionPolicyViolation(
+            "Benchmark workspace could not be resolved for its integrity sweep."
+        ) from exc
+    if not root.is_dir():
+        raise ModelExecutionPolicyViolation(
+            "Benchmark workspace integrity sweep requires a directory."
+        )
+
+    unsafe: list[tuple[Path, str]] = []
+    pending = [root]
+    entry_count = 0
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = os.scandir(directory)
+        except OSError as exc:
+            raise ModelExecutionPolicyViolation(
+                "Benchmark workspace integrity sweep could not inspect a directory."
+            ) from exc
+        with entries:
+            for entry in entries:
+                entry_count += 1
+                if entry_count > max_entries:
+                    raise ModelExecutionPolicyViolation(
+                        "Benchmark workspace exceeded the integrity sweep entry limit."
+                    )
+                path = Path(entry.path)
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise ModelExecutionPolicyViolation(
+                        "Benchmark workspace integrity sweep could not inspect an entry."
+                    ) from exc
+                mode = metadata.st_mode
+                if stat.S_ISLNK(mode):
+                    try:
+                        target = path.resolve(strict=False)
+                    except (OSError, RuntimeError):
+                        unsafe.append((path, "unresolvable_symlink"))
+                        continue
+                    if not target.is_relative_to(root):
+                        unsafe.append((path, "outward_symlink"))
+                    continue
+                if stat.S_ISDIR(mode):
+                    pending.append(path)
+                    continue
+                if stat.S_ISREG(mode):
+                    if metadata.st_nlink != 1:
+                        unsafe.append((path, "hard_link"))
+                    continue
+                unsafe.append((path, "special_file"))
+
+    removed_kinds: list[str] = []
+    for path, kind in sorted(unsafe, key=lambda item: len(item[0].parts), reverse=True):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ModelExecutionPolicyViolation(
+                "Benchmark workspace contained an unsafe entry that could not be quarantined."
+            ) from exc
+        removed_kinds.append(kind)
+    return tuple(sorted(removed_kinds))
 
 
 class InvocationReservation:
@@ -182,6 +277,37 @@ class InvocationBudget:
                 "todo_id": str(getattr(invocation_context, "todo_id", "") or "").strip(),
                 "backlog_id": str(getattr(invocation_context, "backlog_id", "") or "").strip(),
                 "goal_id": str(getattr(invocation_context, "goal_id", "") or "").strip(),
+                "prompt_context_enabled": (
+                    getattr(invocation_context, "prompt_context_enabled", None)
+                    if isinstance(
+                        getattr(invocation_context, "prompt_context_enabled", None),
+                        bool,
+                    )
+                    else None
+                ),
+                "prompt_context_total_events": _optional_non_negative_int(
+                    getattr(invocation_context, "prompt_context_total_events", None)
+                ),
+                "prompt_context_included_events": _optional_non_negative_int(
+                    getattr(invocation_context, "prompt_context_included_events", None)
+                ),
+                "prompt_context_omitted_events": _optional_non_negative_int(
+                    getattr(invocation_context, "prompt_context_omitted_events", None)
+                ),
+                "prompt_context_recent_events": _optional_non_negative_int(
+                    getattr(invocation_context, "prompt_context_recent_events", None)
+                ),
+                "prompt_context_max_events": _optional_non_negative_int(
+                    getattr(invocation_context, "prompt_context_max_events", None)
+                ),
+                "prompt_context_selection_policy": str(
+                    getattr(
+                        invocation_context,
+                        "prompt_context_selection_policy",
+                        "",
+                    )
+                    or ""
+                ).strip(),
                 "state": "reserved",
                 "reserved_at": _utc_timestamp(),
                 "started_at": "",
@@ -202,7 +328,7 @@ class InvocationBudget:
 
     def _snapshot_locked(self) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "max_invocations": self.max_invocations,
             "reserved_count": len(self._entries),
             "remaining": max(self.max_invocations - len(self._entries), 0),
@@ -335,6 +461,14 @@ class ModelExecutionPolicy:
     kill_grace_seconds: float = 5.0
     invocation_budget: InvocationBudget | None = field(default=None, compare=False)
     allowed_workspace_root: Path | None = None
+    telemetry_output_dir: Path | None = field(default=None, compare=False)
+    codex_executable: Path | None = field(default=None, compare=False)
+    execution_lock: threading.RLock | None = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
     shell_environment: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({}),
         hash=False,
@@ -356,6 +490,9 @@ class ModelExecutionPolicy:
                 self.call_timeout_seconds is not None
                 or self.invocation_budget is not None
                 or self.allowed_workspace_root is not None
+                or self.telemetry_output_dir is not None
+                or self.codex_executable is not None
+                or self.execution_lock is not None
                 or normalized_environment
             ):
                 raise ValueError(
@@ -374,10 +511,58 @@ class ModelExecutionPolicy:
         )
         if self.invocation_budget is None:
             raise ValueError("Benchmark execution requires an invocation budget.")
+        if self.execution_lock is None:
+            raise ValueError("Benchmark execution requires a shared execution lock.")
         if self.allowed_workspace_root is None:
             raise ValueError("Benchmark execution requires an allowed workspace root.")
         allowed_root = Path(self.allowed_workspace_root).expanduser().resolve()
         object.__setattr__(self, "allowed_workspace_root", allowed_root)
+        if self.telemetry_output_dir is not None:
+            telemetry_output_dir = (
+                Path(self.telemetry_output_dir).expanduser().resolve()
+            )
+            if telemetry_output_dir.is_relative_to(allowed_root):
+                raise ValueError(
+                    "Benchmark telemetry output must be outside the provider-writable workspace."
+                )
+            object.__setattr__(
+                self,
+                "telemetry_output_dir",
+                telemetry_output_dir,
+            )
+        if self.codex_executable is None:
+            raise ValueError(
+                "Benchmark execution requires a pinned Codex executable."
+            )
+        try:
+            codex_executable = (
+                Path(self.codex_executable).expanduser().resolve(strict=True)
+            )
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(
+                "Benchmark Codex executable could not be resolved safely."
+            ) from exc
+        if not codex_executable.is_file() or not os.access(
+            codex_executable,
+            os.X_OK,
+        ):
+            raise ValueError(
+                "Benchmark Codex executable must be a regular executable file."
+            )
+        if codex_executable.is_relative_to(allowed_root):
+            raise ValueError(
+                "Benchmark Codex executable must be outside the provider-writable workspace."
+            )
+        if (
+            self.telemetry_output_dir is not None
+            and codex_executable.is_relative_to(
+                self.telemetry_output_dir.parent
+            )
+        ):
+            raise ValueError(
+                "Benchmark Codex executable must be outside the protected run output."
+            )
+        object.__setattr__(self, "codex_executable", codex_executable)
 
     @classmethod
     def for_benchmark(
@@ -386,8 +571,10 @@ class ModelExecutionPolicy:
         allowed_workspace_root: str | os.PathLike[str],
         invocation_budget: InvocationBudget,
         call_timeout_seconds: float,
+        codex_executable: str | os.PathLike[str],
         kill_grace_seconds: float = 5.0,
         shell_environment: Mapping[str, str] | None = None,
+        telemetry_output_dir: str | os.PathLike[str] | None = None,
     ) -> "ModelExecutionPolicy":
         allowed_root = Path(allowed_workspace_root).expanduser().resolve()
         provider_state_root = allowed_root / ".teams_runtime" / "benchmark_provider"
@@ -410,6 +597,13 @@ class ModelExecutionPolicy:
             kill_grace_seconds=kill_grace_seconds,
             invocation_budget=invocation_budget,
             allowed_workspace_root=allowed_root,
+            codex_executable=Path(codex_executable).expanduser(),
+            telemetry_output_dir=(
+                Path(telemetry_output_dir).expanduser().resolve()
+                if telemetry_output_dir is not None
+                else None
+            ),
+            execution_lock=threading.RLock(),
             shell_environment=environment,
         )
 
@@ -440,4 +634,5 @@ __all__ = [
     "ModelExecutionPolicy",
     "ModelExecutionPolicyViolation",
     "ModelInvocationTimeout",
+    "quarantine_unsafe_workspace_entries",
 ]

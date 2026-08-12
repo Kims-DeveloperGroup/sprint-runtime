@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -9,6 +10,12 @@ from typing import Any, Iterable, Mapping
 from teams_runtime.benchmarking.scenario import (
     BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
     BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
+    BENCHMARK_TARGET_INCLUDED_EVENTS,
+    BENCHMARK_TARGET_OMITTED_EVENTS,
+    BENCHMARK_TARGET_PURPOSE,
+    BENCHMARK_TARGET_ROLE,
+    BENCHMARK_TARGET_TOTAL_EVENTS,
+    BENCHMARK_TARGET_WORKFLOW_STEP,
 )
 from teams_runtime.shared.prompt_context import PROMPT_EVENT_SELECTION_POLICY
 
@@ -61,6 +68,7 @@ SAFE_INVOCATION_FIELDS = frozenset(
         "prompt_context_recent_events",
         "prompt_context_max_events",
         "prompt_context_selection_policy",
+        "prompt_context_representation_conflict",
         "prompt_context",
     }
 )
@@ -86,9 +94,15 @@ def _non_negative_int(value: Any) -> int | None:
         return None
     try:
         normalized = int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return normalized if normalized >= 0 else None
+
+
+def _strict_non_negative_int(value: Any) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    return value
 
 
 def _finite_number(value: Any) -> float | None:
@@ -122,13 +136,45 @@ def _sanitize_prompt_context(value: Any) -> dict[str, Any] | None:
     if isinstance(value.get("compacted"), bool):
         sanitized["compacted"] = value["compacted"]
     for field_name in _PROMPT_CONTEXT_COUNT_FIELDS:
-        normalized = _non_negative_int(value.get(field_name))
+        normalized = _strict_non_negative_int(value.get(field_name))
         if normalized is not None:
             sanitized[field_name] = normalized
     selection_policy = str(value.get("selection_policy") or "").strip()
     if selection_policy == PROMPT_EVENT_SELECTION_POLICY:
         sanitized["selection_policy"] = selection_policy
     return sanitized or None
+
+
+def _flat_prompt_context(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": record.get("prompt_context_enabled"),
+        "total_events": record.get("prompt_context_total_events"),
+        "included_events": record.get("prompt_context_included_events"),
+        "omitted_events": record.get("prompt_context_omitted_events"),
+        "recent_events": record.get("prompt_context_recent_events"),
+        "max_events": record.get("prompt_context_max_events"),
+        "selection_policy": record.get("prompt_context_selection_policy"),
+    }
+
+
+def _prompt_context_present(context: Mapping[str, Any]) -> bool:
+    return isinstance(context.get("enabled"), bool) or any(
+        context.get(field_name) is not None
+        for field_name in _PROMPT_CONTEXT_COUNT_FIELDS
+    ) or bool(str(context.get("selection_policy") or "").strip())
+
+
+def _prompt_context_identity(context: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        context.get("enabled")
+        if isinstance(context.get("enabled"), bool)
+        else None,
+        *(
+            _non_negative_int(context.get(field_name))
+            for field_name in _PROMPT_CONTEXT_COUNT_FIELDS
+        ),
+        str(context.get("selection_policy") or "").strip(),
+    )
 
 
 def sanitize_invocation_record(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -156,18 +202,33 @@ def sanitize_invocation_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "prompt_context_recent_events",
         "prompt_context_max_events",
     ):
-        sanitized[field_name] = _non_negative_int(sanitized.get(field_name))
+        sanitized[field_name] = _strict_non_negative_int(
+            sanitized.get(field_name)
+        )
     if (
         str(sanitized.get("prompt_context_selection_policy") or "").strip()
         != PROMPT_EVENT_SELECTION_POLICY
     ):
         sanitized["prompt_context_selection_policy"] = ""
+    flat_context = _flat_prompt_context(sanitized)
+    sanitized["prompt_context_representation_conflict"] = bool(
+        sanitized.get("prompt_context_representation_conflict") is True
+        or (
+            context is not None
+            and _prompt_context_present(context)
+            and _prompt_context_present(flat_context)
+            and _prompt_context_identity(context)
+            != _prompt_context_identity(flat_context)
+        )
+    )
     return sanitized
 
 
-def load_workspace_telemetry(workspace_root: Path) -> tuple[dict[str, Any], ...]:
+def load_telemetry_directory(metrics_root: Path) -> tuple[dict[str, Any], ...]:
+    """Load and sanitize recorder shards from one trusted telemetry directory."""
+
     records: list[dict[str, Any]] = []
-    metrics_root = workspace_root / ".teams_runtime" / "metrics" / "model_invocations"
+    metrics_root = Path(metrics_root).expanduser().resolve()
     if not metrics_root.is_dir():
         return ()
     for shard in sorted(metrics_root.rglob("*.jsonl")):
@@ -191,6 +252,14 @@ def load_workspace_telemetry(workspace_root: Path) -> tuple[dict[str, Any], ...]
     return tuple(records)
 
 
+def load_workspace_telemetry(workspace_root: Path) -> tuple[dict[str, Any], ...]:
+    """Load the normal runtime telemetry store outside benchmark evidence paths."""
+
+    return load_telemetry_directory(
+        workspace_root / ".teams_runtime" / "metrics" / "model_invocations"
+    )
+
+
 def _nearest_rank(values: list[int], percentile: float) -> int:
     if not values:
         return 0
@@ -200,18 +269,64 @@ def _nearest_rank(values: list[int], percentile: float) -> int:
 
 
 def _prompt_context(record: Mapping[str, Any]) -> dict[str, Any]:
+    flat = _flat_prompt_context(record)
+    if _prompt_context_present(flat):
+        return flat
     nested = record.get("prompt_context")
     if isinstance(nested, dict):
         return dict(nested)
-    return {
-        "enabled": record.get("prompt_context_enabled"),
-        "total_events": record.get("prompt_context_total_events"),
-        "included_events": record.get("prompt_context_included_events"),
-        "omitted_events": record.get("prompt_context_omitted_events"),
-        "recent_events": record.get("prompt_context_recent_events"),
-        "max_events": record.get("prompt_context_max_events"),
-        "selection_policy": record.get("prompt_context_selection_policy"),
-    }
+    return flat
+
+
+def _identity_digest(values: Iterable[Any]) -> str:
+    normalized = sorted(str(value or "").strip() for value in values)
+    canonical = json.dumps(
+        normalized,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def is_v2_target_projection(
+    value: Mapping[str, Any],
+    *,
+    state_field: str,
+) -> bool:
+    """Match the exact target using only canonical, journaled flat fields."""
+
+    if value.get("prompt_context_representation_conflict") is True:
+        return False
+    enabled = value.get("prompt_context_enabled")
+    invocation_id = str(value.get("invocation_id") or "").strip()
+    if not isinstance(enabled, bool) or not invocation_id:
+        return False
+    expected_included = (
+        BENCHMARK_TARGET_INCLUDED_EVENTS
+        if enabled
+        else BENCHMARK_TARGET_TOTAL_EVENTS
+    )
+    expected_omitted = BENCHMARK_TARGET_OMITTED_EVENTS if enabled else 0
+    return (
+        str(value.get(state_field) or "").strip() == "completed"
+        and str(value.get("attempt_kind") or "").strip() == "primary"
+        and str(value.get("role") or "").strip() == BENCHMARK_TARGET_ROLE
+        and str(value.get("purpose") or "").strip() == BENCHMARK_TARGET_PURPOSE
+        and str(value.get("workflow_step") or "").strip()
+        == BENCHMARK_TARGET_WORKFLOW_STEP
+        and _strict_non_negative_int(value.get("prompt_context_total_events"))
+        == BENCHMARK_TARGET_TOTAL_EVENTS
+        and _strict_non_negative_int(value.get("prompt_context_included_events"))
+        == expected_included
+        and _strict_non_negative_int(value.get("prompt_context_omitted_events"))
+        == expected_omitted
+        and _strict_non_negative_int(value.get("prompt_context_recent_events"))
+        == BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS
+        and _strict_non_negative_int(value.get("prompt_context_max_events"))
+        == BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS
+        and str(value.get("prompt_context_selection_policy") or "").strip()
+        == PROMPT_EVENT_SELECTION_POLICY
+    )
 
 
 def reduce_telemetry(
@@ -219,6 +334,8 @@ def reduce_telemetry(
     *,
     expected_invocation_count: int | None = None,
     coverage_available: bool = True,
+    verified_target_projection_count: int = 0,
+    verified_target_invocation_ids_sha256: str = "",
 ) -> dict[str, Any]:
     normalized = [sanitize_invocation_record(record) for record in records]
     if not isinstance(coverage_available, bool):
@@ -232,6 +349,27 @@ def reduce_telemetry(
     if not coverage_available and expected_invocation_count is not None:
         raise ValueError(
             "expected_invocation_count must be omitted when coverage is unavailable"
+        )
+    if (
+        isinstance(verified_target_projection_count, bool)
+        or not isinstance(verified_target_projection_count, int)
+        or verified_target_projection_count < 0
+    ):
+        raise ValueError(
+            "verified_target_projection_count must be a non-negative integer"
+        )
+    normalized_verified_target_digest = str(
+        verified_target_invocation_ids_sha256 or ""
+    ).strip().lower()
+    if normalized_verified_target_digest and (
+        len(normalized_verified_target_digest) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in normalized_verified_target_digest
+        )
+    ):
+        raise ValueError(
+            "verified_target_invocation_ids_sha256 must be empty or a SHA-256 digest"
         )
     observed_invocation_count = len(normalized)
     coverage_denominator = max(
@@ -305,9 +443,21 @@ def reduce_telemetry(
         "expected_recent_events": BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS,
         "expected_max_events": BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS,
         "expected_selection_policy": PROMPT_EVENT_SELECTION_POLICY,
+        "target_total_events": BENCHMARK_TARGET_TOTAL_EVENTS,
+        "target_role": BENCHMARK_TARGET_ROLE,
+        "target_purpose": BENCHMARK_TARGET_PURPOSE,
+        "target_workflow_step": BENCHMARK_TARGET_WORKFLOW_STEP,
+        "target_included_events_when_enabled": BENCHMARK_TARGET_INCLUDED_EVENTS,
+        "target_omitted_events_when_enabled": BENCHMARK_TARGET_OMITTED_EVENTS,
+        "target_projection_count": 0,
+        "target_projection_candidate_count": 0,
+        "target_projection_verification_mismatch_count": 0,
+        "target_projection_invocation_ids_sha256": "",
+        "target_projection_identity_reconciled": False,
         "selection_policies": [],
     }
     selection_policies: set[str] = set()
+    target_candidate_invocation_ids: list[str] = []
     groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for record in normalized:
         attempt_kind = str(record.get("attempt_kind") or "")
@@ -367,6 +517,9 @@ def reduce_telemetry(
         max_events = _non_negative_int(context.get("max_events"))
         enabled = context.get("enabled")
         selection_policy = str(context.get("selection_policy") or "").strip()
+        representation_conflict = (
+            record.get("prompt_context_representation_conflict") is True
+        )
         projection_candidate = isinstance(enabled, bool) or any(
             value is not None
             for value in (
@@ -394,7 +547,8 @@ def reduce_telemetry(
             if selection_policy:
                 selection_policies.add(selection_policy)
             projection_valid = (
-                max_events == BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS
+                not representation_conflict
+                and max_events == BENCHMARK_PROMPT_CONTEXT_MAX_EVENTS
                 and recent_events == BENCHMARK_PROMPT_CONTEXT_RECENT_EVENTS
                 and total_events == included_events + omitted_events
                 and selection_policy == PROMPT_EVENT_SELECTION_POLICY
@@ -438,6 +592,14 @@ def reduce_telemetry(
             compaction["omitted_events"] += omitted_events
             if enabled and omitted_events > 0:
                 compaction["compacted_invocation_count"] += 1
+        if projection_valid and is_v2_target_projection(
+            record,
+            state_field="status",
+        ):
+            compaction["target_projection_candidate_count"] += 1
+            target_candidate_invocation_ids.append(
+                str(record.get("invocation_id") or "").strip()
+            )
 
         key = tuple(
             str(record.get(field_name) or "")
@@ -520,6 +682,26 @@ def reduce_telemetry(
         if coverage_available
         else None
     )
+    target_candidate_count = int(
+        compaction["target_projection_candidate_count"]
+    )
+    compaction["target_projection_verification_mismatch_count"] = abs(
+        target_candidate_count - verified_target_projection_count
+    )
+    target_candidate_digest = _identity_digest(target_candidate_invocation_ids)
+    compaction["target_projection_invocation_ids_sha256"] = (
+        target_candidate_digest
+    )
+    target_identity_reconciled = bool(
+        normalized_verified_target_digest
+        and target_candidate_count == verified_target_projection_count
+        and target_candidate_digest == normalized_verified_target_digest
+    )
+    compaction["target_projection_identity_reconciled"] = (
+        target_identity_reconciled
+    )
+    if target_identity_reconciled:
+        compaction["target_projection_count"] = verified_target_projection_count
     compaction["selection_policies"] = sorted(selection_policies)
     return {
         "totals": totals,
@@ -735,6 +917,8 @@ def compare_metrics(
 __all__ = [
     "SAFE_INVOCATION_FIELDS",
     "compare_metrics",
+    "is_v2_target_projection",
+    "load_telemetry_directory",
     "load_workspace_telemetry",
     "reduce_telemetry",
     "sanitize_invocation_record",

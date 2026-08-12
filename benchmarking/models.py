@@ -20,6 +20,7 @@ RunStatus = Literal[
 _INVOCATION_ATTEMPT_BOOLEAN_FIELDS = frozenset(
     {
         "journal_available",
+        "context_reconciled",
         "identity_reconciled",
         "reconciled",
     }
@@ -52,6 +53,8 @@ _INVOCATION_ATTEMPT_INTEGER_FIELDS = frozenset(
         "telemetry_invocation_id_duplicate_count",
         "telemetry_invocation_id_unmatched_count",
         "journal_invocation_id_unobserved_count",
+        "journal_telemetry_context_mismatch_count",
+        "verified_target_projection_count",
     }
 )
 _INVOCATION_ATTEMPT_FLOAT_FIELDS = frozenset(
@@ -62,6 +65,7 @@ _INVOCATION_ATTEMPT_FLOAT_FIELDS = frozenset(
 _INVOCATION_ATTEMPT_HASH_FIELDS = frozenset(
     {
         "journal_invocation_ids_sha256",
+        "verified_target_invocation_ids_sha256",
     }
 )
 
@@ -97,7 +101,7 @@ def sanitize_invocation_attempts(
             continue
         try:
             normalized = int(raw_value)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             continue
         if normalized >= 0:
             sanitized[field_name] = normalized
@@ -107,7 +111,7 @@ def sanitize_invocation_attempts(
             continue
         try:
             normalized = float(raw_value)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             continue
         if math.isfinite(normalized) and 0.0 <= normalized <= 100.0:
             sanitized[field_name] = normalized
@@ -147,10 +151,16 @@ class BenchmarkOptions:
             raise ValueError("repetitions must be a positive integer")
         if self.max_invocations <= 0:
             raise ValueError("max_invocations must be a positive integer")
-        if self.call_timeout_seconds <= 0:
-            raise ValueError("call_timeout_seconds must be positive")
-        if self.run_timeout_seconds <= 0:
-            raise ValueError("run_timeout_seconds must be positive")
+        if (
+            not math.isfinite(self.call_timeout_seconds)
+            or self.call_timeout_seconds <= 0
+        ):
+            raise ValueError("call_timeout_seconds must be positive and finite")
+        if (
+            not math.isfinite(self.run_timeout_seconds)
+            or self.run_timeout_seconds <= 0
+        ):
+            raise ValueError("run_timeout_seconds must be positive and finite")
         if self.keep_workspaces not in {"none", "failures", "all"}:
             raise ValueError("keep_workspaces must be none, failures, or all")
         if not self.source_root.expanduser().is_dir():
