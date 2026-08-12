@@ -332,6 +332,12 @@ The live worker is deliberately narrower than normal runtime execution:
 - provider processes run in dedicated process groups and are terminated on call
   timeout
 - an arm timeout terminates active provider groups before the worker is stopped
+- process-group cleanup is not host-level containment: a descendant that successfully
+  creates a new session or process group can escape the journaled provider group and
+  cannot be proven terminated by this runner. Run live benchmarks inside a disposable
+  VM, container/cgroup, or equivalent host-enforced job boundary that destroys all
+  descendants after the run; do not rely on this runner alone when untrusted model
+  tools can create detached processes
 - benchmark Codex commands do not use `-o`/`--output-last-message`; the final message
   is parsed from the CLI's JSONL stdout, so the unsandboxed outer CLI is never asked to
   follow a model-created output-file symlink
